@@ -1,5 +1,4 @@
 # Synthetic Aperture Radar (SAR) Despeckling and Data Compression (DDC) on Field Programmable Gate Arrays (FPGA)
-Yes, that's a lot of acronyms. But now you know why it's called DDC_FPGA.
 <div align="center">
 
 <a href="https://pytorch.org/get-started/locally/"><img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-ee4c2c?logo=pytorch&logoColor=white"></a>
@@ -9,6 +8,7 @@ Yes, that's a lot of acronyms. But now you know why it's called DDC_FPGA.
 
 </div>
 
+Yes, that's a lot of acronyms. But now you know why it's called DDC_FPGA.
 This project implements the solution presented by Amao-Oliva et al. [1] available at [sciencedirect.com](https://www.sciencedirect.com/science/article/pii/S0924271624004866) on FPGA.
 
 ### Method
