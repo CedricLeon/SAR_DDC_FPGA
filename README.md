@@ -11,14 +11,27 @@
 Yes, that's a lot of acronyms. But now you know why it's called DDC_FPGA.
 This project implements the solution presented by Amao-Oliva et al. [1] available at [sciencedirect.com](https://www.sciencedirect.com/science/article/pii/S0924271624004866) on FPGA.
 
+==to move somewhere==: maybe there is a way to avoid the concatenation and average latent representations before hyperprior ???
+
 ### Method
-The pipeline relies on Pytorch Ligthning on [Compressai](https://github.com/InterDigitalInc/CompressAI) [2] to implemenent Hyper-autoencoders solutions based on Johannes Ballé's work [3-5].
+The pipeline relies on Pytorch Ligthning on [Compressai](https://github.com/InterDigitalInc/CompressAI) [2] to implement Hyper-autoencoders solutions based on Johannes Ballé's work [3-5].
 In addition, the despeckling task is inspired from MERLIN's self-supervised training pipeline [6].
 
 ### Data
-TerraSAR-x StripMap (SM) SSC (Single Look Slant Range Complex) images download from [ESA's platform](https://earth.esa.int/eogateway/catalog/terrasar-x-esa-archive). Submitting a form is required to access the data (2 days max delay).
+TerraSAR-x StripMap (SM) SSC (Single Look Slant Range Complex) images downloaded from [ESA's platform](https://earth.esa.int/eogateway/catalog/terrasar-x-esa-archive).
+> Submitting a form is required to access the data (2 days max delay).
 
-The `data` folder contains softlinks to the datasets. @TODO
+#### Training
+After downloading, unzipping, accessing the `.cos` files (deep in the archive in `IMAGEDATA/`), and copying all CoSAR file format in a common folder, e.g., `data/TSX_cos_files/`, datasets are created to ease training.
+> The `data` folder is ignored by Git, but typically contains softlinks to the datasets (to avoid several copies of big files).
+
+==To place somewhere else==:
+`dataset_creation.py` creates `hdf5` datasets more convenient for training that re-processing and patchifying the entire SAR SLC images everytime.
+In particular, each .cos file present in `data/TSX_cos_files/` is open, images are symmetrizeda and patchified, and the whole set of resulting patches is split in training/validation/test datasets.
+> Following MERLIN's pipeline: Patches are not normalized between 0 and 1. The log-normalization happens before feeding them to the network. They are also de-normalized afterwards.
+
+#### Testing / Inference
+@TODO, implement a script that automatically find all TSX archives, unzip them, extract the `.cos` file, pre-process the data,loads the model, despeckle and compress the images, and why not reconstruct them. (Will most likely follow MERLIN's inference workflow)
 
 ### Hardware implementation
 Vitis AI [7]

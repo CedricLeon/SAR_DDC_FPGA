@@ -1,274 +1,308 @@
 """
-SAR Utilities for TerraSAR-X Image Processing
+SAR Utilities for loading and preprocessing SAR data.
 
-This module contains utilities for processing Synthetic Aperture Radar (SAR) images,
-particularly TerraSAR-X data in CoSAR format.
-
-Some functions are re-implemented from MERLIN (https://github.com/EarthObservation/MERLIN)
+This module provides utility functions for SAR data handling:
+- Loading CoSAR format files
+- Symmetrization for zero Doppler centering
+- Visualization functions for SAR images
 """
 
 import os
+
+import matplotlib.pyplot as plt
 import numpy as np
-import struct
-from PIL import Image
-from scipy import special, signal
+import torch
 
+# Quick ANSI color code shortcuts
+r = "\033[31m"
+y = "\033[33m"
+g = "\033[32m"
+b = "\033[34m"
+e = "\033[0m"
 
-# DEFINE PARAMETERS OF SPECKLE AND NORMALIZATION FACTOR
-# These constants are from MERLIN's utils.py
-M = 10.089038980848645
-m = -1.429329123112601
-L = 1
-c = (1 / 2) * (special.psi(L) - np.log(L))
-cn = c / (M - m)  # normalized (0,1) mean of log speckle
+# Constants for normalization from the log intensity of "random_split" (Genoa/Roma/Warsaw/Cologne/Hamburg), 30/04/2025
+M = 50.32925033569336  # 95th percentile or 54.32472229003906 (99th)
+m = 28.17565727233887  # 5th percentile or 20.96910095214844 (1st)
 
 
 def normalize_sar(im):
-    """
-    Normalize SAR image using logarithmic transformation.
-    
-    Re-implemented from MERLIN-TSX-stripmap-test/utils.py
-    
-    Args:
-        im: Input SAR image (intensity)
-        
-    Returns:
-        Normalized image in the range [0, 255]
-    """
-    return ((np.log(im + np.spacing(1)) - m) * 255 / (M - m)).astype('float32')
+    # np.spacing(1) is even smaller than 1e-12
+    return ((np.log(im + np.spacing(1)).clip(min=0) - m) / (M - m)).astype("float32")
 
 
 def denormalize_sar(im):
-    """
-    Denormalize SAR image (inverse of normalize_sar).
-    
-    Re-implemented from MERLIN-TSX-stripmap-test/utils.py
-    
+    return np.exp((M - m) * (np.squeeze(im)).astype("float32") + m)
+
+
+def extract_filepath_short_name(file_path):
+    """Extract a short name from file path, typically the city name.
+
     Args:
-        im: Normalized SAR image
-        
+        file_path: Path to the file
+
     Returns:
-        Denormalized image (intensity)
+        Short name extracted from file path
     """
-    return np.exp((M - m) * (np.squeeze(im)).astype('float32') + m)
+    filename = os.path.basename(str(file_path))
+
+    # Most filenames start with the city name
+    parts = filename.split("_")
+    if parts and len(parts) > 0:
+        return parts[0]  # Usually the city name
+    else:
+        return filename[:10]  # Fall back to first 10 chars
 
 
+def extract_patches(data, patch_size, stride=None):
+    """Extract patches of size patch_size from the input data.
+
+    Args:
+        data: Input data array (2D or 3D)
+        patch_size: Size of patches to extract (patch_size x patch_size)
+        stride: Stride for extraction (default: patch_size for no overlap)
+
+    Returns:
+        List of extracted patches
+    """
+    if stride is None:
+        stride = patch_size  # Default: no overlap
+
+    patches = []
+
+    # Check if we're dealing with 3D data (real+imag channels)
+    if len(data.shape) == 3:
+        h, w, _ = data.shape
+        for i in range(0, h - patch_size + 1, stride):
+            for j in range(0, w - patch_size + 1, stride):
+                patch = data[i : i + patch_size, j : j + patch_size, :]
+                if patch.shape[:2] == (patch_size, patch_size):
+                    patches.append(patch)
+        return np.array(patches)
+    else:  # 2D data (intensity only)
+        h, w = data.shape
+        for i in range(0, h - patch_size + 1, stride):
+            for j in range(0, w - patch_size + 1, stride):
+                patch = data[i : i + patch_size, j : j + patch_size]
+                if patch.shape == (patch_size, patch_size):
+                    patches.append(patch)
+        return np.array(patches)
+
+
+def print_sar_statistics(name, data, with_intensity=True, indent=""):
+    """Print statistics of some SAR data, 1D to 4D. Statististics are computed over all elements in the array, regardless of dimensionality.
+
+    Args:
+        name: Name of the data
+        data: SAR data, 1D, 2D (assumed to be Intensity), 3D [h, w, 2] (assumed Real + Imaginary), or 4D [N, h, w, 2]
+    """
+
+    def print_statistics_obj(obj, general_indent, obj_name=None):
+        indent = general_indent + "    " + obj_name + ": " if obj_name else "    "
+        print(
+            f"{indent}mean = {r}{np.mean(obj):.3f}{e}, std = {r}{np.std(obj):.3f}{e}, min = {r}{np.min(obj):.3f}{e}, max = {r}{np.max(obj):.3f}{e}"
+        )
+
+    print(f"{indent}Statistics for {b}{name}{e} {data.shape}:")
+    if len(data.shape) == 1:
+        print_statistics_obj(data, indent)
+    elif len(data.shape) == 2:
+        print_statistics_obj(data, indent, "Intensity")
+    elif len(data.shape) == 3:
+        print_statistics_obj(data[:, :, 0], indent, "Real")
+        print_statistics_obj(data[:, :, 1], indent, "Imaginary")
+        if with_intensity:
+            print_statistics_obj(
+                data[:, :, 0] ** 2 + data[:, :, 1] ** 2, indent, "Intensity"
+            )
+    elif len(data.shape) == 4:
+        # Compute the statistics across the batch dimension
+        print_statistics_obj(data[:, :, :, 0], indent, "Real")
+        print_statistics_obj(data[:, :, :, 1], indent, "Imaginary")
+        if with_intensity:
+            print_statistics_obj(
+                data[:, :, :, 0] ** 2 + data[:, :, :, 1] ** 2, indent, "Intensity"
+            )
+    else:
+        print(
+            f"{indent}{y}Warning unsupported format: {name} has above 4 dimensions, {r}{data.shape}{e}"
+        )
+
+
+# BULLSHIT DOES NOT WORK: Generated by copilot after a few iteration (considerably simpler than the original MERLIN code)
 def symetrisation_patch(real_part, imag_part):
-    """
-    Apply symmetrization to center the Doppler spectrum (Zero Doppler Centering).
-    
-    Re-implemented from MERLIN-TSX-stripmap-test/utils.py: symetrisation_patch_test
-    
+    """Apply symmetrization to ensure real and imaginary parts independence.
+
+    This function applies zero Doppler centering by circularly shifting the
+    spectrum to the center.
+
     Args:
-        real_part: Real part of the complex SAR image, shape [1, height, width, 1]
-        imag_part: Imaginary part of the complex SAR image, shape [1, height, width, 1]
-        
+        real_part: Real part of SAR image [H, W, C]
+        imag_part: Imaginary part of SAR image [H, W, C]
+
     Returns:
-        Tuple (real_part, imag_part) of the symmetrized image
+        Tuple of (symmetrized_real, symmetrized_imag)
     """
-    # Create complex image from real and imaginary parts
-    S = np.fft.fftshift(np.fft.fft2(real_part[0,:,:,0] + 1j * imag_part[0,:,:,0]))
-    
-    # Azimuth symmetrization
-    p = np.zeros((S.shape[0]))  # azimuth (ncol)
-    for i in range(S.shape[0]):
-        p[i] = np.mean(np.abs(S[i,:]))
-    
-    # Reversed sequence for correlation
-    sp = p[::-1]
-    
-    # Compute correlation
-    c = np.real(np.fft.ifft(np.fft.fft(p) * np.conjugate(np.fft.fft(sp))))
-    d1 = np.unravel_index(c.argmax(), p.shape[0])
-    d1 = d1[0]
-    
-    # Calculate shift options
-    shift_az_1 = int(round(-(d1-1)/2)) % p.shape[0] + int(p.shape[0]/2)
-    p2_1 = np.roll(p, shift_az_1)
-    shift_az_2 = int(round(-(d1-1-p.shape[0])/2)) % p.shape[0] + int(p.shape[0]/2)
-    p2_2 = np.roll(p, shift_az_2)
-    
-    # Select best shift using Gaussian window
-    window = signal.windows.gaussian(p.shape[0], std=0.2*p.shape[0])
-    test_1 = np.sum(window * p2_1)
-    test_2 = np.sum(window * p2_2)
-    
-    # Choose the shift that maximizes correlation with Gaussian window
-    if test_1 >= test_2:
-        p2 = p2_1
-        shift_az = shift_az_1 / p.shape[0]
+    # Convert to torch tensor if needed
+    if isinstance(real_part, np.ndarray):
+        real_part = torch.from_numpy(real_part)
+        imag_part = torch.from_numpy(imag_part)
+
+    # Get image height and width
+    h, w = real_part.shape[:2]
+
+    # FFT shift for zero Doppler centering
+    complex_data = torch.complex(real_part, imag_part)
+
+    # 2D FFT
+    fft_data = torch.fft.fft2(complex_data)
+
+    # Shift zero frequency components to center
+    fft_shifted = torch.fft.fftshift(fft_data)
+
+    # Inverse FFT
+    ifft_data = torch.fft.ifft2(fft_shifted)
+
+    # Extract real and imaginary parts
+    real_sym = ifft_data.real
+    imag_sym = ifft_data.imag
+
+    return real_sym, imag_sym
+
+
+def visualize_sar(
+    real_part,
+    imag_part,
+    intensity=None,
+    reflectivity=None,
+    figsize=(12, 10),
+    log_scale=True,
+):
+    """Visualize SAR data components.
+
+    Args:
+        real_part: Real part of SAR image
+        imag_part: Imaginary part of SAR image
+        intensity: Original intensity (optional)
+        reflectivity: Reconstructed reflectivity (optional)
+        figsize: Figure size (default: (12, 10))
+        log_scale: Whether to use log scale (default: True)
+
+    Returns:
+        matplotlib figure
+    """
+    # Convert to numpy arrays
+    if isinstance(real_part, torch.Tensor):
+        real_part = real_part.detach().cpu().numpy()
+    if isinstance(imag_part, torch.Tensor):
+        imag_part = imag_part.detach().cpu().numpy()
+    if isinstance(intensity, torch.Tensor) and intensity is not None:
+        intensity = intensity.detach().cpu().numpy()
+    if isinstance(reflectivity, torch.Tensor) and reflectivity is not None:
+        reflectivity = reflectivity.detach().cpu().numpy()
+
+    # Remove singleton dimensions
+    if real_part.ndim > 2 and real_part.shape[0] == 1:
+        real_part = real_part[0]
+    if imag_part.ndim > 2 and imag_part.shape[0] == 1:
+        imag_part = imag_part[0]
+    if intensity is not None and intensity.ndim > 2 and intensity.shape[0] == 1:
+        intensity = intensity[0]
+    if (
+        reflectivity is not None
+        and reflectivity.ndim > 2
+        and reflectivity.shape[0] == 1
+    ):
+        reflectivity = reflectivity[0]
+
+    # Calculate power if not provided
+    if intensity is None:
+        intensity = real_part**2 + imag_part**2
+
+    # Count number of subplots needed
+    n_plots = 3 if reflectivity is None else 4
+
+    # Create figure with subplots
+    fig, axs = plt.subplots(1, n_plots, figsize=figsize)
+
+    # Plot real part
+    axs[0].imshow(real_part, cmap="gray")
+    axs[0].set_title("Real Part")
+    axs[0].axis("off")
+
+    # Plot imaginary part
+    axs[1].imshow(imag_part, cmap="gray")
+    axs[1].set_title("Imaginary Part")
+    axs[1].axis("off")
+
+    # Plot original intensity
+    if log_scale:
+        # Apply log transformation for better visualization
+        intensity_log = np.log(intensity + 1e-10)
+        im = axs[2].imshow(intensity_log, cmap="gray")
     else:
-        p2 = p2_2
-        shift_az = shift_az_2 / p.shape[0]
-    
-    # Apply azimuth shift
-    S2 = np.roll(S, int(shift_az * p.shape[0]), axis=0)
-    
-    # Range symmetrization
-    q = np.zeros((S.shape[1]))  # range (nlin)
-    for j in range(S.shape[1]):
-        q[j] = np.mean(np.abs(S[:,j]))
-    
-    # Reversed sequence for correlation
-    sq = q[::-1]
-    
-    # Compute correlation
-    cq = np.real(np.fft.ifft(np.fft.fft(q) * np.conjugate(np.fft.fft(sq))))
-    d2 = np.unravel_index(cq.argmax(), q.shape[0])
-    d2 = d2[0]
-    
-    # Calculate shift options
-    shift_range_1 = int(round(-(d2-1)/2)) % q.shape[0] + int(q.shape[0]/2)
-    q2_1 = np.roll(q, shift_range_1)
-    shift_range_2 = int(round(-(d2-1-q.shape[0])/2)) % q.shape[0] + int(q.shape[0]/2)
-    q2_2 = np.roll(q, shift_range_2)
-    
-    # Select best shift using Gaussian window
-    window_r = signal.windows.gaussian(q.shape[0], std=0.2*q.shape[0])
-    test_1 = np.sum(window_r * q2_1)
-    test_2 = np.sum(window_r * q2_2)
-    
-    # Choose the shift that maximizes correlation with Gaussian window
-    if test_1 >= test_2:
-        q2 = q2_1
-        shift_range = shift_range_1 / q.shape[0]
-    else:
-        q2 = q2_2
-        shift_range = shift_range_2 / q.shape[0]
-    
-    # Apply range shift
-    Sf = np.roll(S2, int(shift_range * q.shape[0]), axis=1)
-    
-    # Convert back to spatial domain
-    ima2 = np.fft.ifft2(np.fft.ifftshift(Sf))
-    ima2 = ima2.reshape(1, np.size(ima2, 0), np.size(ima2, 1), 1)
-    
-    return np.real(ima2), np.imag(ima2)
+        im = axs[2].imshow(intensity, cmap="gray")
+    axs[2].set_title("Intensity (Original)")
+    axs[2].axis("off")
+
+    # Plot reflectivity if available
+    if reflectivity is not None:
+        if log_scale:
+            # Apply log transformation for better visualization
+            reflectivity_log = np.log(reflectivity + 1e-10)
+            im = axs[3].imshow(reflectivity_log, cmap="gray")
+        else:
+            im = axs[3].imshow(reflectivity, cmap="gray")
+        axs[3].set_title("Reflectivity (Despeckled)")
+        axs[3].axis("off")
+
+    # Add colorbar
+    fig.colorbar(im, ax=axs, fraction=0.046, pad=0.04)
+
+    plt.tight_layout()
+
+    return fig
 
 
-def cos2mat(image_file):
-    """
-    Load a CoSAR format SAR image.
-    
-    Re-implemented from MERLIN/load_cosar.py
-    
+def calculate_equivalent_number_of_looks(reflectivity, intensity):
+    """Calculate equivalent number of looks (ENL) for despeckling quality evaluation.
+
     Args:
-        image_file: Path to the CoSAR file
-        
+        reflectivity: Despeckled reflectivity estimate
+        intensity: Original intensity
+
     Returns:
-        SAR image data with shape [nlines, ncolumns, 2]
-        where [:,:,0] contains the real part and [:,:,1] contains the imaginary part
+        ENL value
     """
-    print('Converting CoSAR to numpy array of size [ncolumns,nlines,2]')
+    # Convert to numpy arrays
+    if isinstance(reflectivity, torch.Tensor):
+        reflectivity = reflectivity.detach().cpu().numpy()
+    if isinstance(intensity, torch.Tensor):
+        intensity = intensity.detach().cpu().numpy()
 
-    try:
-        fin = open(image_file, 'rb')
-    except IOError:
-        legx = image_file + ': it is a not openable file'
-        print(legx)
-        print('failed to call cos2mat')
-        return None
+    # Remove singleton dimensions
+    if reflectivity.ndim > 2 and reflectivity.shape[0] == 1:
+        reflectivity = reflectivity[0]
+    if intensity.ndim > 2 and intensity.shape[0] == 1:
+        intensity = intensity[0]
 
-    # Read header information
-    ibib = struct.unpack(">i", fin.read(4))[0]
-    irsri = struct.unpack(">i", fin.read(4))[0]
-    irs = struct.unpack(">i", fin.read(4))[0]
-    ias = struct.unpack(">i", fin.read(4))[0]
-    ibi = struct.unpack(">i", fin.read(4))[0]
-    irtnb = struct.unpack(">i", fin.read(4))[0]
-    itnl = struct.unpack(">i", fin.read(4))[0]
-    
-    nlig = struct.unpack(">i", fin.read(4))[0]
-    
-    # Calculate dimensions
-    ncoltot = int(irtnb / 4)
-    ncol = ncoltot - 2
-    nlig = ias  # Use ias as number of lines
+    # Calculate statistics in a homogeneous region (center patch)
+    h, w = reflectivity.shape
+    center_h, center_w = h // 2, w // 2
+    patch_size = min(h, w) // 4
 
-    print(f'Reading image in CoSAR format. ncolumns={ncol} nlines={nlig}')
+    h_start, h_end = center_h - patch_size, center_h + patch_size
+    w_start, w_end = center_w - patch_size, center_w + patch_size
 
-    # Initialize arrays
-    firm = np.zeros(4 * ncoltot, dtype=np.byte)
-    imgcxs = np.empty([nlig, ncol], dtype=np.complex64)
+    # Extract patches
+    reflectivity_patch = reflectivity[h_start:h_end, w_start:w_end]
+    intensity_patch = intensity[h_start:h_end, w_start:w_end]
 
-    # Skip header
-    fin.seek(0)
-    firm = fin.read(4 * ncoltot)
-    firm = fin.read(4 * ncoltot)
-    firm = fin.read(4 * ncoltot)
-    firm = fin.read(4 * ncoltot)
-    
-    # Read data
-    for iut in range(nlig):
-        firm = fin.read(4 * ncoltot)
-        imgligne = np.ndarray(2 * ncoltot, '>h', firm)
-        imgcxs[iut, :] = imgligne[4:2 * ncoltot:2] + 1j * imgligne[5:2 * ncoltot:2]
+    # Calculate ENL
+    enl_orig = np.mean(intensity_patch) ** 2 / np.var(intensity_patch)
+    enl_desp = np.mean(reflectivity_patch) ** 2 / np.var(reflectivity_patch)
 
-    fin.close()
-    
-    print('[:,:,0] contains the real part of the SLC image data')
-    print('[:,:,1] contains the imaginary part of the SLC image data')
-    return np.stack((np.real(imgcxs), np.imag(imgcxs)), axis=2)
-
-
-def store_data_and_plot(im, threshold, filename):
-    """
-    Store data and generate visualization.
-    
-    Re-implemented from MERLIN-TSX-stripmap-test/utils.py
-    
-    Args:
-        im: Image data
-        threshold: Clipping threshold
-        filename: Output filename
-    """
-    im = np.clip(im, 0, threshold)
-    im = im / threshold * 255
-    im = Image.fromarray(im.astype('float64')).convert('L')
-    im.save(filename.replace('npy','png'))
-
-
-def multilook(image, n_looks):
-    """
-    Apply multi-look processing to reduce speckle.
-    
-    Args:
-        image: Input SAR image
-        n_looks: Number of looks (int or tuple of (row_looks, col_looks))
-        
-    Returns:
-        Multi-looked image
-    """
-    # Ensure n_looks is a tuple with 2 elements (row_looks, col_looks)
-    if isinstance(n_looks, int):
-        n_looks = (n_looks, n_looks)
-    
-    # Calculate new dimensions
-    rows, cols = image.shape
-    new_rows = rows // n_looks[0]
-    new_cols = cols // n_looks[1]
-    
-    # Reshape and average
-    reshaped = image[:new_rows*n_looks[0], :new_cols*n_looks[1]]
-    reshaped = reshaped.reshape(new_rows, n_looks[0], new_cols, n_looks[1])
-    return reshaped.mean(axis=(1, 3))
-
-
-def extract_patch(image, start_row, start_col, patch_size=256):
-    """
-    Extract a patch from an image.
-    
-    Args:
-        image: Input image
-        start_row: Starting row index
-        start_col: Starting column index
-        patch_size: Size of the patch
-        
-    Returns:
-        Extracted patch
-    """
-    end_row = min(start_row + patch_size, image.shape[0])
-    end_col = min(start_col + patch_size, image.shape[1])
-    return image[start_row:end_row, start_col:end_col]
-
-
+    return {
+        "enl_original": enl_orig,
+        "enl_despeckled": enl_desp,
+        "improvement": enl_desp / enl_orig,
+    }
