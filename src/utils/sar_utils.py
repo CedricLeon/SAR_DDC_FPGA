@@ -237,7 +237,7 @@ def visualize_sar(
     # Plot original intensity
     if log_scale:
         # Apply log transformation for better visualization
-        intensity_log = np.log(intensity + 1e-10)
+        intensity_log = np.log(intensity + np.spacing(1))
         im = axs[2].imshow(intensity_log, cmap="gray")
     else:
         im = axs[2].imshow(intensity, cmap="gray")
@@ -259,7 +259,6 @@ def visualize_sar(
     fig.colorbar(im, ax=axs, fraction=0.046, pad=0.04)
 
     plt.tight_layout()
-
     return fig
 
 
