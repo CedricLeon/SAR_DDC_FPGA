@@ -18,6 +18,9 @@ cn = c / (M - m)  # normalized (0,1) mean of log speckle
 
 # From MERLIN: utils.py (removed / 255)
 def normalize_sar(im):
+    print(
+        f"Warning: deprecated normalization function using MERLIN's constants: {m} and {M}. Prefer to use sar_utils.py version."
+    )
     return ((np.log(im + np.spacing(1)) - m) / (M - m)).astype("float32")
 
 
