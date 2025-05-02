@@ -1,0 +1,55 @@
+# @package _global_
+
+# to execute this experiment run:
+# python src/train.py experiment=sar_ddc
+
+defaults:
+  - override /data: tsx_ssc.yaml
+  - override /model: sar_hyperprior.yaml
+  - override /callbacks: sar_visualization.yaml  # Use our custom callback
+  - override /logger: wandb.yaml  # use Weights & Biases logger
+  - override /trainer: gpu.yaml  # use GPU for training if available
+  - override /hydra: default.yaml
+
+# ----- Copilot stuff -----
+# # name of the run determines folder name in logs
+# name: "sar_ddc"
+# # Training parameters
+# train: True
+# val: True
+# test: True
+# ckpt_path: null
+# # Metric for model checkpointing and early stopping
+# monitor: "val/loss"
+# mode: "min"
+# optimized_metric: "val/loss"
+# # Ray tune hyperparameter search
+# tune: False
+
+# The task name determines the logs path, by convention use <task>/<dataset>/<model>
+task_name: train/sar_ddc/hyperprior
+
+# Configuration for callbacks
+callbacks:
+  model_checkpoint:
+    monitor: "val/psnr"  # Monitor PSNR instead of accuracy
+    mode: "max"          # Higher PSNR is better
+  early_stopping:
+    monitor: "val/psnr"  # Monitor PSNR instead of accuracy
+    mode: "max"          # Higher PSNR is better
+    patience: 10         # More patience for real-world image tasks
+
+trainer:
+  min_epochs: 1
+  max_epochs: 2
+
+logger:
+  wandb:
+    project: "sar-ddc-test"
+    offline: False
+    # tags: ${tags}
+    # name: ${name}
+
+
+tags: ["TSX_SSC", "hyperprior"]
+seed: 42
