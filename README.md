@@ -11,7 +11,18 @@
 Yes, that's a lot of acronyms. But now you know why it's called DDC_FPGA.
 This project implements the solution presented by Amao-Oliva et al. [1] available at [sciencedirect.com](https://www.sciencedirect.com/science/article/pii/S0924271624004866) on FPGA.
 
-==to move somewhere==: maybe there is a way to avoid the concatenation and average latent representations before hyperprior ???
+## TODOs
+*I'll use this section as a TODO list, including ideas for future projects.*
+
+### Repo features
+- [ ] Make a smaller dataset (2 images, in random_split, for easier testing through epochs)
+- [ ] Spatial_split dataset
+- More metrics:
+  - [ ] SSIM and MS-SSIM if patch_size > 176 (See [this discusssion](https://github.com/francois-rozet/piqa/discussions/11))
+  - [ ] Despeckling metrics: ENL = $\frac{\mu^2}{\sigma^2}$ over the image
+
+### Long-term Experiments/Upgrades
+- [ ] Maybe there is a way to avoid the concatenation and average latent representations before hyperprior ???
 
 ### Method
 The pipeline relies on Pytorch Ligthning on [Compressai](https://github.com/InterDigitalInc/CompressAI) [2] to implement Hyper-autoencoders solutions based on Johannes Ballé's work [3-5].
