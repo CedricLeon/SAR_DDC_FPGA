@@ -11,6 +11,8 @@ import h5py
 import torch
 from torch.utils.data import Dataset
 
+from src.utils.sar_utils import normalize_sar
+
 
 class TSXSSCDataset(Dataset):
     """Dataset for pre-processed SAR patches in HDF5 format.
@@ -71,8 +73,6 @@ class TSXSSCDataset(Dataset):
         # intensity = real_part + imag_part
 
         # Apply normalization
-        from src.utils.sar_utils import normalize_sar
-
         real_norm = normalize_sar(real_part)
         imag_norm = normalize_sar(imag_part)
         # intensity_norm = normalize_sar(intensity)
