@@ -1,0 +1,34 @@
+defaults:
+  - model_checkpoint
+  - model_summary
+  - rich_progress_bar
+  - learning_rate_monitor
+  - log_reconstruction
+  - early_stopping
+  - _self_
+
+# Configuration for callbacks
+log_reconstruction:
+  log_every_n_epochs: 1
+  num_images: 2
+  verbose: True
+
+model_checkpoint:
+  dirpath: ${paths.output_dir}/checkpoints
+  filename: "epoch_{epoch:03d}"
+  monitor: "valid/loss"
+  mode: "min"
+  save_last: True
+  auto_insert_metric_name: True
+
+early_stopping:
+  monitor: "valid/loss"
+  mode: "min"
+  min_delta: 0.0001 # @TODO: Experiment with this value
+  patience: 10
+
+model_summary:
+  max_depth: 3
+
+learning_rate_monitor:
+  logging_interval: "step"
