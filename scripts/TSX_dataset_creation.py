@@ -612,6 +612,7 @@ def run_test_mode(
 def run_random_split_mode(
     input_dir,
     output_dir,
+    max_files=None,
     patch_size=256,
     train_frac=0.8,
     val_frac=0.1,
@@ -647,6 +648,9 @@ def run_random_split_mode(
     for file in cos_files:
         short_name = extract_filepath_short_name(file)
         log(f"  - {short_name}")
+    if max_files:
+        cos_files = cos_files[:max_files]
+        log(f"Limiting the dataset to the first {max_files} files.")
 
     # Create output directory paths
     output_path = Path(output_dir)
@@ -666,7 +670,9 @@ def run_random_split_mode(
     # First pass: process each file separately and save patches
     for i, file_path in enumerate(cos_files):
         short_name = extract_filepath_short_name(file_path)
-        log(f"\nProcessing {i}/{len(cos_files)}: {short_name}...", color=Colors.BLUE)
+        log(
+            f"\nProcessing {i + 1}/{len(cos_files)}: {short_name}...", color=Colors.BLUE
+        )
 
         # Process the file
         results = preprocess_sar_image(
@@ -1073,6 +1079,10 @@ def main():
     )
     args = parser.parse_args()
 
+    # Initialize logging
+    global logger
+    logger = setup_logging(args.output_dir)
+
     # Validate arguments
     if args.train_frac + args.val_frac > 1.0:
         log(
@@ -1087,7 +1097,7 @@ def main():
         )
 
     # Print configuration
-    log("\nSAR Dataset Creation - Configuration:")
+    log("\nSAR Dataset Creation - Configuration:", color=Colors.YELLOW)
     log(f"  Input directory: {args.input_dir}")
     log(f"  Output directory: {args.output_dir}")
     log(f"  Mode: {args.mode}")
@@ -1108,10 +1118,6 @@ def main():
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    # Initialize logging
-    global logger
-    logger = setup_logging(args.output_dir)
-
     # Run the selected mode
     if args.mode == "test":
         success = run_test_mode(
@@ -1125,6 +1131,7 @@ def main():
         success = run_random_split_mode(
             args.input_dir,
             args.output_dir,
+            args.max_files,
             args.patch_size,
             args.train_frac,
             args.val_frac,
