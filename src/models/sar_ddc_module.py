@@ -12,8 +12,9 @@ from typing import Any, Dict, Tuple
 import torch
 from lightning import LightningModule
 
-from src.utils.metric import (
-    calculate_psnr,
+from src.utils.metrics import (
+    calculate_psnr_1,
+    calculate_psnr_max,
 )
 from src.utils.sar_utils import save_anomaly_visualization
 
@@ -81,7 +82,17 @@ class SARDDCModule(LightningModule):
 
     def on_fit_start(self):
         """Called at the beginning of fit."""
-        # Here _rng was set using thew seed but I suspect it's useless because done with lightning.seed_everything
+        # Initialize tracking dictionaries for monitoring
+        self.weight_norms_history = {}
+        self.gradient_norms_history = {}
+        self.activation_ranges_history = {}
+
+        # Track loss ratios
+        self.loss_ratio_history = {"mse_to_bpp": [], "epochs": []}
+
+        # Make sure anomaly dir exists
+        if self.monitor_anomalies:
+            os.makedirs(self.hparams.anomaly_log_dir, exist_ok=True)
 
     def on_train_epoch_start(self):
         """Reset anomaly counter at the start of each epoch."""
@@ -166,6 +177,85 @@ class SARDDCModule(LightningModule):
 
         return is_anomaly, reason
 
+    def _enhanced_check_for_anomalies(
+        self, mse_value: float, psnr_value: float, bpp_value: float, loss_ratio: float
+    ) -> Tuple[bool, str]:
+        """Enhanced checks for various types of anomalies in the training process.
+
+        This extends the regular anomaly detection with more sophisticated checks including:
+        - Weight stability analysis
+        - Gradient norm tracking
+        - Loss balance monitoring
+        - Learning stagnation detection
+
+        Returns:
+            Tuple[bool, str]: (is_anomaly, reason)
+        """
+        # Start with basic checks from the original method
+        is_anomaly, reason = self._check_for_anomalies(mse_value, psnr_value, bpp_value)
+
+        # Check for significant imbalance between MSE and BPP losses
+        # This could indicate the network is focusing too much on one aspect
+        if loss_ratio > 1000:  # MSE dominates BPP excessively
+            is_anomaly = True
+            reason += f"MSE/BPP ratio too high: {loss_ratio:.2f}. Network may focus too much on reconstruction. "
+        elif loss_ratio < 0.001:  # BPP dominates MSE excessively
+            is_anomaly = True
+            reason += f"MSE/BPP ratio too low: {loss_ratio:.2f}. Network may focus too much on compression. "
+
+        # Check for learning stagnation - no improvement in multiple steps
+        # Only perform after we have enough history
+        if len(self.mse_history) >= 100:
+            recent_avg = sum(self.mse_history[-10:]) / 10
+            older_avg = sum(self.mse_history[-100:-90]) / 10
+
+            # If recent average is very close to or worse than older average
+            improvement_ratio = (older_avg + 1e-8) / (recent_avg + 1e-8)
+            if 0.95 < improvement_ratio < 1.05:
+                is_anomaly = True
+                reason += f"Training stagnation detected. Recent avg: {recent_avg:.4f}, Older avg: {older_avg:.4f}. "
+
+        # Check for gradient issues based on history
+        if self.gradient_norms_history and any(self.gradient_norms_history.values()):
+            # Get all gradient histories
+            for name, history in self.gradient_norms_history.items():
+                if len(history) >= 5:  # Need some history to detect issues
+                    recent_grads = history[-5:]
+
+                    # Check for vanishing gradients
+                    if max(recent_grads) < 1e-7:
+                        is_anomaly = True
+                        reason += (
+                            f"Vanishing gradient in '{name}': {max(recent_grads):.2e}. "
+                        )
+
+                    # Check for exploding gradients (very high or increasing rapidly)
+                    if max(recent_grads) > 100:
+                        is_anomaly = True
+                        reason += (
+                            f"Large gradient in '{name}': {max(recent_grads):.2f}. "
+                        )
+
+                    # Check for gradient instability
+                    if len(recent_grads) >= 3:
+                        variance = torch.tensor(recent_grads).var().item()
+                        mean = torch.tensor(recent_grads).mean().item()
+                        if (
+                            mean > 0 and variance / mean > 10
+                        ):  # High coefficient of variation
+                            is_anomaly = True
+                            reason += f"Unstable gradients in '{name}': variance/mean={variance / mean:.2f}. "
+
+        # Check for weight instability
+        if self.weight_norms_history and any(self.weight_norms_history.values()):
+            for name, history in self.weight_norms_history.items():
+                if len(history) >= 5:  # Need some history
+                    if max(history[-5:]) / (min(history[-5:]) + 1e-8) > 5:
+                        is_anomaly = True
+                        reason += f"Unstable weights in '{name}'. "
+
+        return is_anomaly, reason
+
     def _log_metrics(
         self,
         prefix: str,
@@ -178,17 +268,87 @@ class SARDDCModule(LightningModule):
         """Log training, validation, or test metrics. From Tigran in RS_DC project."""
         # Calculate PSNR for anomaly detection
         mse_value = out_criterion["mse_loss"].item()
-        psnr_value = calculate_psnr(mse_value)
+        psnr_value = calculate_psnr_1(mse_value)
+        psnr_value_max = calculate_psnr_max(mse_value, torch.max(input).item())
         bpp_value = out_criterion["bpp_loss"].item()
 
+        # Calculate loss ratio for monitoring training stability
+        loss_ratio = mse_value / (bpp_value + 1e-8)  # Avoid division by zero
+
+        # Enhanced metrics logging
         log_info = {
             f"{prefix}/aux": aux_loss,  # Use scalar aux_loss directly.
             f"{prefix}/loss": out_criterion["loss"].item(),
-            f"{prefix}/mse": mse_value,  # * 255 ** 2 / 3
+            f"{prefix}/mse": mse_value,
             f"{prefix}/bpp": bpp_value,
-            f"{prefix}/psnr": psnr_value,
-            # f"{prefix}/ssim": calculate_ssim(reconstructions, batch["what we aim to reconstruct"]),
+            f"{prefix}/psnr_1": psnr_value,
+            f"{prefix}/psnr_max": psnr_value_max,
+            f"{prefix}/loss_ratio_mse_bpp": loss_ratio,
+            # Track how much each loss contributes to total loss
+            f"{prefix}/mse_percent": (mse_value / (out_criterion["loss"].item() + 1e-8))
+            * 100,
+            f"{prefix}/bpp_percent": (bpp_value / (out_criterion["loss"].item() + 1e-8))
+            * 100,
         }
+
+        # Track layer statistics periodically (every 50 steps)
+        if prefix == "train" and self.global_step % 50 == 0:
+            # Track weight norms
+            for name, param in self.net.named_parameters():
+                if param.requires_grad:
+                    norm = param.data.norm().item()
+                    log_info[f"{prefix}/weight_norm/{name}"] = norm
+
+                    # Track history for anomaly detection
+                    if name not in self.weight_norms_history:
+                        self.weight_norms_history[name] = []
+                    self.weight_norms_history[name].append(norm)
+
+                    # If we have gradient, track it too
+                    if param.grad is not None:
+                        grad_norm = param.grad.data.norm().item()
+                        log_info[f"{prefix}/grad_norm/{name}"] = grad_norm
+
+                        # Track gradient history
+                        if name not in self.gradient_norms_history:
+                            self.gradient_norms_history[name] = []
+                        self.gradient_norms_history[name].append(grad_norm)
+
+        # Save loss ratio history for epoch-level tracking
+        if prefix == "train" and self.global_step % 10 == 0:  # Sample every 10 batches
+            self.loss_ratio_history["mse_to_bpp"].append(loss_ratio)
+
+        if prefix == "valid" and self.global_step == 0:  # Only once per validation
+            # Save epoch-level metrics
+            self.loss_ratio_history["epochs"].append(self.current_epoch)
+
+            # Log ratio trend as line plot
+            if len(self.loss_ratio_history["epochs"]) > 1:
+                try:
+                    import matplotlib.pyplot as plt
+
+                    fig = plt.figure(figsize=(10, 5))
+                    plt.plot(
+                        self.loss_ratio_history["epochs"],
+                        [
+                            sum(
+                                self.loss_ratio_history["mse_to_bpp"][
+                                    i * 10 : (i + 1) * 10
+                                ]
+                            )
+                            / 10
+                            for i in range(len(self.loss_ratio_history["epochs"]))
+                        ],
+                    )
+                    plt.title("MSE/BPP Ratio Over Training")
+                    plt.xlabel("Epoch")
+                    plt.ylabel("MSE/BPP Ratio")
+
+                    self.logger.experiment.log({"training/loss_ratio_trend": fig})
+                    plt.close()
+                except Exception as e:
+                    print(f"Error plotting loss ratio trend: {str(e)}")
+
         # Configure per prefix (e.g. train/valid/test) logging **kwargs.
         on_step, on_epoch, prog_bar, sync_dist = None, None, False, True
         if prefix == "train":
@@ -206,8 +366,8 @@ class SARDDCModule(LightningModule):
             prog_bar=prog_bar,
         )
 
-        # Check for anomalies
-        if prefix == "train" and self.current_epoch > 1 and self.monitor_anomalies:
+        # Check for anomalies - modified to check from epoch 0
+        if prefix == "train" and self.monitor_anomalies:
             # Reset counter if epoch changed
             if self.current_epoch_tracked != self.current_epoch:
                 self.anomalies_this_epoch = 0
@@ -215,9 +375,9 @@ class SARDDCModule(LightningModule):
 
             # Check if we've reached the maximum number of anomaly logs for this epoch
             if self.anomalies_this_epoch < self.hparams.max_anomalies_per_epoch:
-                # Check for anomalies
-                is_anomaly, anomaly_reason = self._check_for_anomalies(
-                    mse_value, psnr_value, bpp_value
+                # Enhanced anomaly checks
+                is_anomaly, anomaly_reason = self._enhanced_check_for_anomalies(
+                    mse_value, psnr_value, bpp_value, loss_ratio
                 )
 
                 # Save visualization if anomaly detected
