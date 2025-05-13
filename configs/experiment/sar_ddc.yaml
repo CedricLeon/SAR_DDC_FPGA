@@ -12,13 +12,15 @@ defaults:
   - override /hydra: default.yaml
 
 data:
-  hdf5_dir: ${paths.data_dir}processed_hdf5/small_random_split_preserved_60dB
+  hdf5_dir: ${paths.data_dir}processed_hdf5/randomsplit5_nopres_norm0nat
+  log_mode: "natural"
+  normalize: 0 # 0 <=> true min-max, 1 <=> min-max with 1% and 99% percentiles, etc.
   batch_size: 16
   num_workers: 11
 
 model:
-  # criterion:
-  #   lmbda: 0.1
+  criterion:
+    lmbda: 0.1
 
   net_optimizer:
     lr: 0.0001 # Got infinite loss with 0.001
@@ -34,7 +36,7 @@ callbacks:
 
 trainer:
   min_epochs: 1
-  max_epochs: 20
+  max_epochs: 50
 
 logger:
   wandb:
@@ -46,4 +48,4 @@ logger:
 # The task name determines the logs path, by convention use <task>/<dataset>/<model>
 task_name: train/sar_ddc/hyperprior
 tags: ["TSX_SSC", "hyperprior"]
-seed: 13
+seed: 42
