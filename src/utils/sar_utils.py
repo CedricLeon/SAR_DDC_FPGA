@@ -25,13 +25,36 @@ M = 50.32925033569336  # 95th percentile or 54.32472229003906 (99th)
 m = 28.17565727233887  # 5th percentile or 20.96910095214844 (1st)
 
 
-def normalize_sar(im):
-    # np.spacing(1) is even smaller than 1e-12
-    return ((np.log(im + np.spacing(1)).clip(min=0) - m) / (M - m)).astype("float32")
+#################### Normalization functions ####################
+# np.spacing(1) is similar to using 1e-10 (to avoid log(0))
+def normalize_minmax_log_natural(x):
+    """Normalize input to natural log space, and then to the range [0, 1] using min-max scaling."""
+    return ((np.log(x + np.spacing(1)) - m) / (M - m)).astype("float32")
 
 
-def denormalize_sar(im):
-    return np.exp((M - m) * (np.squeeze(im)).astype("float32") + m)
+def denormalize_minmax_log_natural(x):
+    """Denormalize input from the range [0, 1] and natural log space."""
+    return np.exp((x * (M - m)) + m).astype("float32")
+
+
+def normalize_minmax_log10(x):
+    """Normalize input to decibel (10 * log10) space, and then to the range [0, 1] using min-max scaling."""
+    return ((convert_to_db(x) - m) / (M - m)).astype("float32")
+
+
+def denormalize_minmax_log10(x):
+    """Denormalize input from the range [0, 1] and decibel (10 * log10) space."""
+    return convert_from_db((x * (M - m)) + m).astype("float32")
+
+
+def convert_to_db(x):
+    """Convert input to decibels (dB)."""
+    return 10 * np.log10(x + np.spacing(1))
+
+
+def convert_from_db(x):
+    """Convert input from decibels (dB) to linear scale."""
+    return pow(10, x / 10)
 
 
 def extract_filepath_short_name(file_path):
