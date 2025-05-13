@@ -32,6 +32,17 @@ In addition, the despeckling task is inspired from MERLIN's self-supervised trai
 TerraSAR-x StripMap (SM) SSC (Single Look Slant Range Complex) images downloaded from [ESA's platform](https://earth.esa.int/eogateway/catalog/terrasar-x-esa-archive).
 > Submitting a form is required to access the data (2 days max delay).
 
+The data is pre-processed into train/val/test HDF5 files using the `script/TSX_dataset_creation.py`. This script has many options, use `--help` for details.
+I'll try to follow the dataset naming conventions below: `<split_type><nb_images>_<preservation_threshold>_<normalization_percentiles><log_mode>.hdf5`, where:
+- `split_type` is how the patches where split ("randomsplit" or "spatialsplit")
+- `nb_images` corresponds to the number of `.cos` files used for the dataset (typically 5)
+- `preservation_threshold` indicates if strong point-like scatterers were preserved following (@TODO add equation in [[Math.md]]) and the threshold, for example "nopres" or "pres60dB".
+- `normalization_percentiles` indicates if min-max normalization was performed on the patches, and which percentiles were used as "min" and "max". For example, "nonorm" or "norm1".
+- `log_mode` the logarithmic base was used in the normalization, either "db" (`np.log10()`) or "nat" (natural: `np.log()`)
+Examples:
+- "randomsplit5_pres60dB_norm5db" was processed with preservation of scatterers with signals above 60dB, the patches were placed in log10 base before being "min-maxed" with p5 and p95 (i.e., value 0 corresponds to p5 and value 1 to p95)
+- "randomsplit5_nopres_norm0nat" was processed without scatterer preservation but with normalization to natural logarithm and traditional min-max (0 means 0%)
+
 #### Training
 After downloading, unzipping, accessing the `.cos` files (deep in the archive in `IMAGEDATA/`), and copying all CoSAR file format in a common folder, e.g., `data/TSX_cos_files/`, datasets are created to ease training.
 > The `data` folder is ignored by Git, but typically contains softlinks to the datasets (to avoid several copies of big files).
