@@ -1,23 +1,33 @@
 #!/usr/bin/env python3
 """
-TSX_dataset_creation.py - Process SAR .cos files to HDF5 datasets
+TSX_dataset_creation_2.py - Streamlined SAR data preprocessing pipeline
 
 This script processes TerraSAR-X CoSAR format (.cos) images and converts them to
-HDF5 format for training deep learning models. It performs preprocessing steps:
-- Loading images from .cos files
-- Patch extraction
-- SAR preprocessing (symmetrization)
-- Scatterer preservation
-- Creating train/val/test splits
-- Saving as HDF5 files and log-intensity histograms
-All steps posses parameters for customization, see --help for details.
+HDF5 format for training deep learning models. Processing pipeline:
+1. Load images from .cos files
+2. Extract patches
+3. Symmetrize patches
+4. Square real and imaginary parts
+5. Optionally preserve point-like scatterers
+6. Optionally normalize data
+7. Split into train/val/test sets
+8. Save as HDF5 files with histograms
 
-Usage:
-    python TSX_dataset_creation.py --input-dir INPUT_DIR --output-dir OUTPUT_DIR --mode {test|random_split|spatial_split}
+Basic usage:
+    python TSX_dataset_creation_2.py --input-dir INPUT_DIR --output-dir OUTPUT_DIR
+
+Optional arguments:
+    --preserve-threshold THRESHOLD  # Enable scatterer preservation with threshold in dB
+    --norm-mode {db,natural}        # Enable normalization with specified log mode
+    --norm-minmax PERCENT           # Percentile for min-max normalization (1, 5, 10, etc.)
+    --patch-size SIZE               # Size of extracted patches (default: 256)
+    --max-files N                   # Process only N files
+    --verbose                       # Print detailed statistics at each processing stage
 """
 
 # Imports
 import argparse
+import gc
 import logging
 import os
 import random
@@ -33,65 +43,14 @@ from tqdm import tqdm
 
 # Add parent directory to path to import from src
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-
-# Import original SAR utilities
-from src.utils.MERLIN_sar_utils import (
-    cos2mat,
-    symetrisation_patch_test,
-)
+# Import SAR utilities
+from src.utils.MERLIN_sar_utils import cos2mat, symetrisation_patch_test
+from src.utils.pylogger import RankedLogger
 from src.utils.sar_utils import (
+    convert_to_db,
     extract_filepath_short_name,
     extract_patches,
-    print_sar_statistics,
 )
-
-
-# Configure logging - simplified version
-def setup_logging(output_dir, filename="dataset_creation.log", level=logging.INFO):
-    """Set up logging to both console and file.
-
-    Args:
-        output_dir: Directory to save log file
-        filename: Log filename
-        level: Logging level
-
-    Returns:
-        logger: Configured logger instance
-    """
-    # Create logger
-    logger = logging.getLogger()
-    logger.setLevel(level)
-
-    # Clear any existing handlers
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Create file handler
-    log_path = os.path.join(output_dir, filename)
-    file_handler = logging.FileHandler(log_path)
-    file_handler.setLevel(level)
-
-    # Create console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(level)
-
-    # Create formatters
-    # Simple formatter that just passes through the message
-    console_format = logging.Formatter("%(message)s")
-    console_handler.setFormatter(console_format)
-
-    # File formatter without colors
-    file_format = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    file_handler.setFormatter(file_format)
-
-    # Add handlers to the logger
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
-
-    return logger
 
 
 # ANSI color codes for console output
@@ -103,51 +62,41 @@ class Colors:
     RESET = "\033[0m"
 
 
-# Simple log function
-def log(message, level="info", color=None):
-    """Log a message with optional color.
-    The color will appear in the console but not in the log file.
+def compute_statistics(data):
+    return {
+        "mean": np.mean(data),
+        "median": np.median(data),
+        "std": np.std(data),
+        "min": np.min(data),
+        "max": np.max(data),
+        "p1": np.percentile(data, 1),
+        "p5": np.percentile(data, 5),
+        "p10": np.percentile(data, 10),
+        "p90": np.percentile(data, 90),
+        "p95": np.percentile(data, 95),
+        "p99": np.percentile(data, 99),
+    }
 
-    Args:
-        message: Message to log
-        level: Logging level (info, warning, error, debug)
-        color: Color to use for console output (from Colors class)
+
+def norm_minmax(x, min, max):
+    return (x - min) / (max - min)
+
+
+def preserve_point_like_scatterers(real2, imag2, threshold_db=60):
     """
-    # Add color to the message for console display
-    colored_message = (
-        f"{color if color else ''}{message}{Colors.RESET if color else ''}"
-    )
-
-    # Log at the appropriate level
-    if level == "info":
-        logging.info(colored_message)
-    elif level == "warning":
-        logging.warning(colored_message)
-    elif level == "error":
-        logging.error(colored_message)
-    elif level == "debug":
-        logging.debug(colored_message)
-
-
-def preserve_point_like_scatterers(real2, imag2, threshold_db=9):
-    """Preserve point-like scatterers in SAR image above a certain threshold.
+    Preserve point-like scatterers in TSX image above a certain threshold.
 
     Args:
         real2: Squared real part of SAR image
         imag2: Squared imaginary part of SAR image
-        threshold_db: Threshold in dB for scatterer preservation (default: 9dB)
+        threshold_db: Threshold in dB for scatterer preservation
 
     Returns:
-        Tuple of (restacked_data, scatterer_mask)
+        Tuple of (processed_data, scatterer_mask)
     """
-    # Convert intensity to dB (10*log10(intensity)), add a small epsilon to avoid log(0)
     intensity = real2 + imag2
-    intensity_db = 10 * np.log10(intensity + 1e-10)
-
-    # Create mask for scatterers above threshold
+    intensity_db = convert_to_db(intensity)
     scatterer_mask = intensity_db > threshold_db
-
-    # Create copies of the input arrays to avoid modifying originals
     real2_proc = real2.copy()
     imag2_proc = imag2.copy()
 
@@ -160,45 +109,139 @@ def preserve_point_like_scatterers(real2, imag2, threshold_db=9):
     return np.stack((real2_proc, imag2_proc), axis=2), scatterer_mask
 
 
-def preprocess_sar_image(filepath, patch_size=256, preserve_scatterers_threshold=None):
-    """Full preprocessing pipeline for a single SAR image using original functions.
+def normalize_data(data, norm_mode="db", norm_minmax_val=0, verbose=False):
+    """
+    Normalize data using log transformation and min-max scaling.
 
     Args:
-        filepath: Path to the SAR image file
+        data: Input data with shape [N, H, W, 2]
+        norm_mode: "db" or "natural" for log mode
+        norm_minmax_val: Percentile value for min-max normalization (0 for full min-max, other values for percentiles)
+        verbose: Whether to print statistics
+        log: Logger object
+
+    Returns:
+        Normalized data
+    """
+    # Process real and imaginary parts independently
+    normalized_data = np.zeros_like(data, dtype=np.float32)
+    stats = {"real": {}, "imag": {}}
+
+    # Extract real and imaginary components
+    real_data = data[..., 0]
+    imag_data = data[..., 1]
+
+    # Apply log transformation based on mode
+    if norm_mode == "db":
+        real_log = convert_to_db(real_data)
+        imag_log = convert_to_db(imag_data)
+        if verbose and log:
+            log.info("      Applied dB (10*log10) transformation")
+    elif norm_mode == "natural":
+        real_log = np.log(real_data + np.spacing(1))
+        imag_log = np.log(imag_data + np.spacing(1))
+        if verbose and log:
+            log.info("      Applied natural log transformation")
+    else:
+        raise ValueError(f"Invalid normalization mode: {norm_mode}")
+
+    # Compute statistics
+    stats["real"] = compute_statistics(real_log)
+    stats["imag"] = compute_statistics(imag_log)
+
+    # Determine min-max values based on percentile
+    if norm_minmax_val == 0:
+        # Use actual min and max
+        min_real, max_real = stats["real"]["min"], stats["real"]["max"]
+        min_imag, max_imag = stats["imag"]["min"], stats["imag"]["max"]
+
+        if verbose and log:
+            log.info("      Using full min-max range for normalization")
+            log.info(f"         Real channel: min={min_real:.4f}, max={max_real:.4f}")
+            log.info(f"         Imag channel: min={min_imag:.4f}, max={max_imag:.4f}")
+    else:
+        # Use percentiles
+        min_real = stats["real"][f"p{norm_minmax_val}"]
+        max_real = stats["real"][f"p{100 - norm_minmax_val}"]
+        min_imag = stats["imag"][f"p{norm_minmax_val}"]
+        max_imag = stats["imag"][f"p{100 - norm_minmax_val}"]
+
+        if verbose and log:
+            log.info(
+                f"      Using {norm_minmax_val}-{100 - norm_minmax_val} percentile range for normalization"
+            )
+            log.info(
+                f"          Real channel: p{norm_minmax_val}={min_real:.4f}, p{100 - norm_minmax_val}={max_real:.4f}"
+            )
+            log.info(
+                f"          Imag channel: p{norm_minmax_val}={min_imag:.4f}, p{100 - norm_minmax_val}={max_imag:.4f}"
+            )
+
+    # Apply min-max normalization
+    normalized_data[..., 0] = norm_minmax(real_log, min_real, max_real)
+    normalized_data[..., 1] = norm_minmax(imag_log, min_imag, max_imag)
+
+    return normalized_data
+
+
+def preprocess_tsx_image(
+    filepath,
+    patch_size=256,
+    preserve_threshold=None,
+    norm_mode=None,
+    norm_minmax_val=0,
+    verbose=False,
+):
+    """
+    Full preprocessing pipeline for a single CoSAR image.
+
+    Args:
+        filepath: Path to the CoSAR image file
         patch_size: Size of patches to extract
+        preserve_threshold: Threshold for preserving scatterers (None to disable)
+        norm_mode: Normalization mode (None, "db", or "natural")
+        norm_minmax_val: Percentile for min-max normalization
+        verbose: Whether to print detailed statistics
+        log: Logger object
 
     Returns:
         Dictionary with processed data at different stages
     """
     short_name = extract_filepath_short_name(filepath)
 
-    # 1. Load SAR data
-    log("    1. Loading SAR data...")
-    sar_data = cos2mat(str(filepath), verbose=False)
-    if sar_data is None:
+    # 1. Load TSX data
+    log.info(f"  1. Loading TSX data from {short_name}...")
+    tsx_data = cos2mat(str(filepath))
+    if tsx_data is None:
         raise ValueError(f"Failed to load {short_name}")
 
-    # Store original data
-    original_data = sar_data.copy()
-    # print_sar_statistics("Original data", original_data, indent="        ")
+    if verbose:
+        log.info(f"    Original data shape: {tsx_data.shape}")
+        log.info(
+            f"    Real part - "
+            f"min: {np.min(tsx_data[:, :, 0]):.2f}, mean: {np.mean(tsx_data[:, :, 0]):.2f}, max: {np.max(tsx_data[:, :, 0]):.2f}"
+        )
+        log.info(
+            f"    Imag part - "
+            f"min: {np.min(tsx_data[:, :, 1]):.2f}, mean: {np.mean(tsx_data[:, :, 1]):.2f}, max: {np.max(tsx_data[:, :, 1]):.2f}"
+        )
 
-    # 2. Extract patches with NO OVERLAP (stride=patch_size//2 for 50% overlap)
-    log(
-        f"    2. Extracting patches of size {patch_size}x{patch_size} with no overlap..."
-    )
-    original_patches = extract_patches(original_data, patch_size, stride=patch_size)
-    log(
-        f"          Extracted {len(original_patches)} patches of size {patch_size}x{patch_size}"
-    )
+    # 2. Extract patches
+    log.info(f"  2. Extracting patches of size {patch_size}x{patch_size}...")
+    original_patches = extract_patches(tsx_data, patch_size, stride=patch_size)
+    if verbose:
+        log.info(
+            f"    Extracted {len(original_patches)} patches of size {patch_size}x{patch_size}. Patches shape: {original_patches.shape}."
+        )
 
     if len(original_patches) == 0:
         raise ValueError(f"No patches could be extracted from {short_name}")
 
     # 3. Apply symmetrization to each patch
-    log("    3. Applying symmetrization to each patch...")
+    log.info("  3. Applying symmetrization to each patch...")
     symmetrized_patches = []
     for patch in original_patches:
-        # Reshape to match MERLIN's expected format: [h, w, 2] -> real_ and imag_part [1, h, w, 1]
+        # Reshape to match MERLIN's expected format: [h, w, 2] -> real and imag_part [1, h, w, 1]
         real_part = patch[:, :, 0]
         imag_part = patch[:, :, 1]
         real_part_reshaped = real_part.reshape(1, *real_part.shape, 1)
@@ -213,255 +256,407 @@ def preprocess_sar_image(filepath, patch_size=256, preserve_scatterers_threshold
         symmetrized_patches.append(symmetrized_patch)
 
     symmetrized_patches = np.array(symmetrized_patches)
-    # log(f"          Symmetrized {len(symmetrized_patches)} patches")
-    print_sar_statistics("Symmetrized patches", symmetrized_patches, indent="        ")
+
+    if verbose:
+        log.info(f"    Symmetrized patches shape: {symmetrized_patches.shape}")
+        log.info(
+            f"    Real part - "
+            f"min: {np.min(symmetrized_patches[:, :, :, 0]):.2f}, "
+            f"mean: {np.mean(symmetrized_patches[:, :, :, 0]):.2f}, "
+            f"max: {np.max(symmetrized_patches[:, :, :, 0]):.2f}"
+        )
+        log.info(
+            f"    Imag part - "
+            f"min: {np.min(symmetrized_patches[:, :, :, 1]):.2f}, "
+            f"mean: {np.mean(symmetrized_patches[:, :, :, 1]):.2f}, "
+            f"max: {np.max(symmetrized_patches[:, :, :, 1]):.2f}"
+        )
 
     # 4. Square the real and imaginary parts
-    log("    4. Squaring the real and imaginary parts of the patches...")
-    symmetrized_patches_squared = np.square(symmetrized_patches)
-    # print_sar_statistics(
-    #     "Squared patches", symmetrized_patches_squared, with_intensity=False, indent="        "
-    # )
+    log.info("  4. Squaring the real and imaginary parts...")
+    squared_patches = np.square(symmetrized_patches)
 
-    # 5. Preserve scatterers in each patch
-    if preserve_scatterers_threshold:
-        log("    5. Preserving point-like scatterers in each patch...")
-        preserved_patches_squared = []
-        scatterer_masks = []
-        for patch in symmetrized_patches_squared:
-            preserved_patch_squared, scatterer_mask = preserve_point_like_scatterers(
-                patch[:, :, 0],
-                patch[:, :, 1],
-                threshold_db=preserve_scatterers_threshold,
-            )
-            preserved_patches_squared.append(preserved_patch_squared)
-            scatterer_masks.append(scatterer_mask)
-
-        preserved_patches_squared = np.array(preserved_patches_squared)
-        scatterer_masks = np.array(scatterer_masks)
-        _, nb_scatterer_preserved = np.unique(scatterer_masks, return_counts=True)
-        log(
-            f"          Strong scatterers preserved = {nb_scatterer_preserved[1]} (or {nb_scatterer_preserved[1] / nb_scatterer_preserved[0] * 100:.6f}%).",
-            color=Colors.GREEN,
+    if verbose:
+        log.info(f"    Squared patches shape: {squared_patches.shape}")
+        log.info(
+            f"    Real part² - "
+            f"min: {np.min(squared_patches[:, :, :, 0]):.2f}, "
+            f"mean: {np.mean(squared_patches[:, :, :, 0]):.2f}, "
+            f"max: {np.max(squared_patches[:, :, :, 0]):.2f}"
         )
-        # print_sar_statistics(
-        #     "Preserved patches", preserved_patches_squared, with_intensity=False, indent="        "
-        # )
+        log.info(
+            f"    Imag part² - "
+            f"min: {np.min(squared_patches[:, :, :, 1]):.2f}, "
+            f"mean: {np.mean(squared_patches[:, :, :, 1]):.2f}, "
+            f"max: {np.max(squared_patches[:, :, :, 1]):.2f}"
+        )
+
+    # 5. Preserve scatterers (optional)
+    preserved_patches = squared_patches
+    scatterer_masks = None
+
+    if preserve_threshold is not None:
+        log.info(
+            f"  5. Preserving point-like scatterers above {preserve_threshold} dB..."
+        )
+        preserved_patches_list = []
+        scatterer_masks_list = []
+
+        for patch in squared_patches:
+            preserved_patch, scatterer_mask = preserve_point_like_scatterers(
+                patch[:, :, 0], patch[:, :, 1], threshold_db=preserve_threshold
+            )
+            preserved_patches_list.append(preserved_patch)
+            scatterer_masks_list.append(scatterer_mask)
+
+        preserved_patches = np.array(preserved_patches_list)
+        scatterer_masks = np.array(scatterer_masks_list)
+
+        # Count preserved scatterers
+        _, nb_scatterer_preserved = np.unique(scatterer_masks, return_counts=True)
+        log.info(
+            f"          {Colors.GREEN}Strong scatterers preserved = {nb_scatterer_preserved[1]} (or {nb_scatterer_preserved[1] / nb_scatterer_preserved[0] * 100:.6f}%).{Colors.RESET}"
+        )
+
+        if verbose:
+            log.info(f"    Preserved patches shape: {preserved_patches.shape}")
+            log.info(
+                f"    Real part - "
+                f"min: {np.min(preserved_patches[:, :, :, 0]):.2f}, "
+                f"mean: {np.mean(preserved_patches[:, :, :, 0]):.2f}, "
+                f"max: {np.max(preserved_patches[:, :, :, 0]):.2f}"
+            )
+            log.info(
+                f"    Imag part - "
+                f"min: {np.min(preserved_patches[:, :, :, 1]):.2f}, "
+                f"mean: {np.mean(preserved_patches[:, :, :, 1]):.2f}, "
+                f"max: {np.max(preserved_patches[:, :, :, 1]):.2f}"
+            )
+    else:
+        log.info("  5. Scatterer preservation disabled, skipping...")
+
+    # 6. Normalize data (optional)
+    normalized_patches = None
+    norm_stats = None
+
+    if norm_mode is not None:
+        log.info(
+            f"  6. Normalizing data using {norm_mode} log mode with {norm_minmax_val}% range..."
+        )
+        normalized_patches = normalize_data(
+            preserved_patches,
+            norm_mode=norm_mode,
+            norm_minmax_val=norm_minmax_val,
+            verbose=verbose,
+        )
+        norm_stats_real = compute_statistics(normalized_patches[..., 0])
+        norm_stats_imag = compute_statistics(normalized_patches[..., 1])
+        # Combine the statistics for real and imaginary parts
+        norm_stats = {
+            "real": norm_stats_real,
+            "imag": norm_stats_imag,
+        }
+
+        if verbose:
+            log.info(f"    Normalized patches shape: {normalized_patches.shape}")
+            log.info(
+                f"    Real part - "
+                f"min: {norm_stats_real['min']:.4f}, "
+                f"mean: {norm_stats_real['mean']:.4f}, "
+                f"max: {norm_stats_real['max']:.4f}"
+            )
+            log.info(
+                f"    Imag part - "
+                f"min: {norm_stats_imag['min']:.4f}, "
+                f"mean: {norm_stats_imag['mean']:.4f}, "
+                f"max: {norm_stats_imag['max']:.4f}"
+            )
+    else:
+        log.info("  6. Normalization disabled, skipping...")
 
     # Return the results at different stages of the pipeline
-    return {
-        "original_data": original_data,
+    result = {
+        "original_data": tsx_data,
         "original_patches": original_patches,
         "symmetrized_patches": symmetrized_patches,
-        "scatterer_masks": scatterer_masks if preserve_scatterers_threshold else None,
-        "patches": preserved_patches_squared
-        if preserve_scatterers_threshold
-        else symmetrized_patches_squared,  # Final processed patches
+        "squared_patches": squared_patches,
+        "preserved_patches": preserved_patches,
+        "scatterer_masks": scatterer_masks,
+        "normalized_patches": normalized_patches,
+        "norm_stats": norm_stats,
     }
 
+    # Determine which set of patches should be the final output
+    if normalized_patches is not None:
+        result["final_patches"] = normalized_patches
+        log.info("  Final patches: normalized_patches")
+    else:
+        result["final_patches"] = preserved_patches
+        log.info("  Final patches: preserved_patches")
 
-def write_hdf5(patches, statistics, path):
-    """Write dataset patches to HDF5 at path.
+    return result
+
+
+def plot_processing_histograms(results, output_path, title_prefix=""):
+    """
+    Plot histograms of the TSX data at different processing stages.
+
+    Args:
+        results: Dictionary with processed data at different stages
+        output_path: Path to save the histogram plots
+        title_prefix: Prefix for plot titles
+
+    Returns:
+        None
+    """
+    # Determine which stages are available in the results
+    has_preserved = (
+        results["preserved_patches"] is not None
+        and results["scatterer_masks"] is not None
+    )
+    has_normalized = results["normalized_patches"] is not None
+
+    # Create figure with subplots
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig.suptitle(f"{title_prefix} TSX Data Processing Pipeline", fontsize=16)
+
+    # Plot all histograms
+    plot_hist(
+        results["original_patches"],
+        axes[0, 0],
+        "Original Patches (Intensity [dB])",
+        intensity=True,
+        is_squared=False,
+    )
+    plot_hist(
+        results["symmetrized_patches"],
+        axes[0, 1],
+        "Symmetrized Patches (Intensity [dB])",
+        intensity=True,
+        is_squared=False,
+    )
+    plot_hist(
+        results["squared_patches"],
+        axes[0, 2],
+        "Squared Patches (Intensity [dB])",
+        intensity=True,
+    )
+    if has_preserved:
+        plot_hist(
+            results["preserved_patches"],
+            axes[1, 0],
+            f"Preserved Patches (>{results.get('preserve_threshold', 0)} dB, Intensity [dB])",
+            intensity=True,
+        )
+    else:
+        axes[1, 0].set_visible(False)
+
+    # Plot normalized patches if available
+    if has_normalized:
+        plot_hist(
+            results["normalized_patches"][..., 0].flatten(),
+            axes[1, 1],
+            f"Real Norm ({results['norm_mode']} at {results['norm_minmax_val']}%)",
+        )
+        plot_hist(
+            results["normalized_patches"][..., 1].flatten(),
+            axes[1, 2],
+            f"Imag Norm ({results['norm_mode']} at {results['norm_minmax_val']}%)",
+        )
+    else:
+        axes[1, 1].set_visible(False)
+        axes[1, 2].set_visible(False)
+
+    # Add tight layout and save
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.9)
+    plt.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+
+# Helper function to plot histogram
+def plot_hist(data, ax, title, intensity=False, is_squared=True, data_percent=10):
+    # Sample only a percentage of patches to handle large datasets
+    n_sample = max(1, int(len(data) * data_percent / 100))
+    indices = np.random.choice(len(data), n_sample, replace=False)
+    data = data[indices]
+
+    if intensity:
+        assert len(data.shape) == 4, (
+            f"Data must be [N,h,w,2] for intensity histogram, but {data.shape}"
+        )
+        assert data.shape[-1] == 2, (
+            f"Data must have 2 channels (real and imag), but {data.shape}"
+        )
+        # Convert to intensity (dB)
+        if is_squared:
+            intensity_patches = convert_to_db(data[..., 0] + data[..., 1])
+        else:
+            intensity_patches = convert_to_db(data[..., 0] ** 2 + data[..., 1] ** 2)
+        data = intensity_patches.flatten()
+    else:
+        assert len(data.shape) == 1, (
+            f"Data must be flattened for non-intensity histogram, but {data.shape}"
+        )
+    # Compute statistics
+    mean = np.mean(data)
+    median = np.median(data)
+    p5 = np.percentile(data, 5)
+    p95 = np.percentile(data, 95)
+    min_val = np.min(data)
+    max_val = np.max(data)
+
+    # Plot histogram
+    ax.hist(data, bins=100, color="blue", alpha=0.7)
+
+    # Add vertical lines for key statistics
+    ax.axvline(mean, color="r", linestyle="--", label=f"Mean: {mean:.4f}")
+    ax.axvline(median, color="g", linestyle="--", label=f"Median: {median:.4f}")
+    ax.axvline(p5, color="orange", linestyle=":", label=f"5%: {p5:.4f}")
+    ax.axvline(p95, color="orange", linestyle=":", label=f"95%: {p95:.4f}")
+
+    # Set labels and legend
+    ax.set_title(
+        f"{title} ({data_percent}% of data) - min: {min_val:.4f}, max: {max_val:.4f}"
+    )
+    ax.set_xlabel("Intensity (dB)" if intensity else "Value")
+    ax.set_ylabel("Frequency")
+    ax.legend(fontsize="small")
+    ax.grid(True, alpha=0.3)
+
+
+def create_combined_histogram(
+    train_path,
+    val_path,
+    test_path,
+    output_path,
+    data_percent=10,
+    is_squared=True,
+    intensity=False,
+):
+    """
+    Create a combined histogram figure with train, val, and test subplots.
+
+    Args:
+        train_path: Path to train HDF5 file
+        val_path: Path to validation HDF5 file
+        test_path: Path to test HDF5 file
+        output_path: Path to save the histogram plot
+        data_percent: Percentage of data to use for statistics
+        is_squared: Whether data is already squared (default: True)
+        intensity: Whether to plot intensity instead of log-intensity (default: False)
+
+    Returns:
+        None
+    """
+    log.info(f"Creating combined histogram (using {data_percent}% of data)...")
+
+    # Create figure with subplots
+    fig, axs = plt.subplots(1, 3, figsize=(18, 6))
+
+    # Load and plot training data
+    log.info(f"  Loading training data from {train_path}")
+    with h5py.File(train_path, "r") as f:
+        train_patches = f["patches"][:]
+        plot_hist(
+            train_patches[..., 0].flatten(),
+            axs[0],
+            "Training Set (Real)",
+            intensity=intensity,
+            is_squared=is_squared,
+            data_percent=data_percent,
+        )
+
+    # Load and plot validation data
+    log.info(f"  Loading validation data from {val_path}")
+    with h5py.File(val_path, "r") as f:
+        val_patches = f["patches"][:]
+        plot_hist(
+            val_patches[..., 0].flatten(),
+            axs[1],
+            "Validation Set (Real)",
+            intensity=intensity,
+            is_squared=is_squared,
+            data_percent=data_percent,
+        )
+
+    # Load and plot test data
+    log.info(f"  Loading test data from {test_path}")
+    with h5py.File(test_path, "r") as f:
+        test_patches = f["patches"][:]
+        plot_hist(
+            test_patches[..., 0].flatten(),
+            axs[2],
+            "Test Set (Real)",
+            intensity=intensity,
+            is_squared=is_squared,
+            data_percent=data_percent,
+        )
+
+    # Add title and adjust layout
+    fig.suptitle("Dataset Distributions of Real parts", fontsize=16)
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.9)
+
+    # Save figure
+    plt.savefig(output_path, dpi=300)
+    log.info(f"  Saved combined histogram to {output_path}")
+    plt.close(fig)
+
+
+def write_hdf5(patches, metadata, path):
+    """
+    Write dataset patches to HDF5 at path.
 
     Args:
         patches: Array of patches to write
-        statistics: Dictionary with statistics (mean, median, and various percentiles)
+        metadata: Dictionary with metadata and statistics
         path: Path to save HDF5 file
 
     Returns:
         bool: Success status
     """
     n_patches = len(patches)
-    log(f"      Writing {n_patches} patches to {path}...")
 
     with h5py.File(path, "w") as f:
+        # Store patches
         f.create_dataset("patches", data=patches, dtype="float32")
 
-        # Add metadata
-        f.attrs["num_patches"] = n_patches
-        f.attrs["mean"] = statistics["mean"]
-        f.attrs["median"] = statistics["median"]
-        f.attrs["p1"] = statistics["p1"]
-        f.attrs["p5"] = statistics["p5"]
-        f.attrs["p10"] = statistics["p10"]
-        f.attrs["p90"] = statistics["p90"]
-        f.attrs["p95"] = statistics["p95"]
-        f.attrs["p99"] = statistics["p99"]
-        f.attrs["patch_size"] = patches.shape[1]  # Assuming square patches
-        f.attrs["creation_date"] = str(datetime.now())
+        # Add all metadata as attributes
+        for key, value in metadata.items():
+            if isinstance(value, (int, float, str, bool)):
+                f.attrs[key] = value
+            elif isinstance(value, dict):
+                group = f.create_group(key)
+                for k, v in value.items():
+                    if isinstance(v, dict):
+                        subgroup = group.create_group(k)
+                        for sk, sv in v.items():
+                            subgroup.attrs[sk] = sv
+                    else:
+                        group.attrs[k] = v
+
     return True
 
 
-def plot_intensity_histogram(
-    data, output_path, title="Log-Intensity Histogram", is_squared=True
-):
-    """Plot histogram of log-intensity values and print key statistics.
-
-    Args:
-        data: SAR data in [h, w, 2] format (single image) or [n, h, w, 2] format (batch of patches)
-        output_path: Path to save the histogram plot
-        title: Title for the plot
-        is_squared: If True, assumes the data is already squared (e.g., preserved_patches)
-
-    Returns:
-        Dictionary with statistics
+def split_patches(patches, metadata, train_frac=0.8, val_frac=0.1):
     """
-    # Check if we're dealing with a batch of patches or a single image
-    # log(f"Data shape: {data.shape}, is_squared: {is_squared}")
-    is_batch = len(data.shape) == 4  # [n, h, w, 2] format
-
-    if is_batch:
-        # log(f"Processing batch of {len(data)} patches for histogram...")
-
-        intensity_values = []
-        for patch in data:
-            if is_squared:
-                intensity = patch[:, :, 0] + patch[:, :, 1]
-            else:
-                intensity = patch[:, :, 0] ** 2 + patch[:, :, 1] ** 2
-            # Flatten and append to our list
-            intensity_values.append(intensity.flatten())
-        # Concatenate all flattened arrays into a single 1D array
-        intensity_all = np.concatenate(intensity_values)
-    else:
-        if is_squared:
-            intensity = data[:, :, 0] + data[:, :, 1]
-        else:
-            intensity = data[:, :, 0] ** 2 + data[:, :, 1] ** 2
-        intensity_all = intensity.flatten()
-
-    # Convert to dB (log scale)
-    epsilon = 1e-10  # Small value to avoid log(0)
-    log_intensity = 10 * np.log10(intensity_all + epsilon)
-
-    # Calculate statistics
-    statistics = {
-        "mean": np.mean(log_intensity),
-        "median": np.median(log_intensity),
-        "min": np.min(log_intensity),
-        "p1": np.percentile(log_intensity, 1),
-        "p5": np.percentile(log_intensity, 5),
-        "p10": np.percentile(log_intensity, 10),
-        "p90": np.percentile(log_intensity, 90),
-        "p95": np.percentile(log_intensity, 95),
-        "p99": np.percentile(log_intensity, 99),
-        "max": np.max(log_intensity),
-    }
-
-    # Print statistics
-    log(f"      {title} [dB] statistics:")
-    for key, value in statistics.items():
-        log(f"        - {key.capitalize()}: {value:.2f} dB")
-
-    # Plot histogram
-    plt.figure(figsize=(10, 6))
-    hist, bins, _ = plt.hist(log_intensity, bins=100, color="blue", alpha=0.7)
-
-    # Add vertical lines for key statistics
-    plt.axvline(
-        float(statistics["mean"]),
-        color="r",
-        linestyle="--",
-        label=f"Mean ({statistics['mean']:.2f} dB)",
-    )
-    plt.axvline(
-        float(statistics["median"]),
-        color="g",
-        linestyle="--",
-        label=f"Median ({statistics['median']:.2f} dB)",
-    )
-    plt.axvline(
-        float(statistics["p5"]),
-        color="orange",
-        linestyle=":",
-        label=f"5th percentile ({statistics['p5']:.2f} dB)",
-    )
-    plt.axvline(
-        float(statistics["p95"]),
-        color="orange",
-        linestyle=":",
-        label=f"95th percentile ({statistics['p95']:.2f} dB)",
-    )
-
-    # Add labels and title
-    plt.xlabel("Log-Intensity (dB)")
-    plt.ylabel("Frequency")
-    plt.title(title)
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-
-    # Save the figure
-    plt.savefig(output_path)
-    log(f"      Saved histogram to {output_path}")
-    plt.close()
-
-    # Return statistics dictionary for potential further use
-    return statistics
-
-
-def process_all_files(file_paths, patch_size=256, max_files=None):
-    """Process all SAR files and extract patches.
-
-    Args:
-        file_paths: List of file paths to process
-        patch_size: Size of patches to extract
-        max_files: Maximum number of files to process (optional)
-
-    Returns:
-        List of all extracted patches
-    """
-    all_patches = []
-    files_to_process = file_paths[:max_files] if max_files else file_paths
-    log(f"Processing {len(files_to_process)} files...", color=Colors.BLUE)
-
-    for file_path in tqdm(files_to_process, desc="Extracting patches from files"):
-        short_name = extract_filepath_short_name(file_path)
-        results = preprocess_sar_image(file_path, patch_size=patch_size)
-        file_patches = results["patches"]  # The fully pre-processed patches
-
-        log(
-            f"  Extracted {len(file_patches)} patches from {short_name}",
-            color=Colors.BLUE,
-        )
-        all_patches.append(file_patches)
-
-    # Combine all patches
-    if all_patches:
-        combined_patches = np.vstack(all_patches)
-        log(f"Total patches collected: {len(combined_patches)}")
-        return combined_patches
-    else:
-        log("No valid patches processed.", level="error")
-        return None
-
-
-def split_patches(patches, train_frac=0.8, val_frac=0.1, seed=42):
-    """Split patches into train, validation, and test sets.
+    Split patches into train, validation, and test sets.
 
     Args:
         patches: Array of patches to split
+        metadata: Dictionary with metadata and statistics
         train_frac: Fraction of data for training
         val_frac: Fraction of data for validation
-        seed: Random seed for reproducibility
 
     Returns:
-        Dictionary with train, val, and test patch arrays
+        Dictionary with train, val, and test patch arrays and metadata
     """
-    # Set random seed for reproducibility
-    np.random.seed(seed)
-    random.seed(seed)
-
     # Calculate number of patches for each split
     n_samples = len(patches)
     n_train = int(n_samples * train_frac)
     n_val = int(n_samples * val_frac)
     n_test = n_samples - n_train - n_val
-
-    log(f"Splitting {n_samples} patches into:")
-    log(f"  - Training: {n_train} patches ({train_frac * 100:.1f}%)")
-    log(f"  - Validation: {n_val} patches ({val_frac * 100:.1f}%)")
-    log(f"  - Testing: {n_test} patches ({(1 - train_frac - val_frac) * 100:.1f}%)")
 
     # Create random permutation of indices
     indices = np.random.permutation(n_samples)
@@ -476,164 +671,60 @@ def split_patches(patches, train_frac=0.8, val_frac=0.1, seed=42):
     val_patches = patches[val_indices]
     test_patches = patches[test_indices]
 
-    return {"train": train_patches, "val": val_patches, "test": test_patches}
-
-
-def verify_hdf5(file_path):
-    """Verify HDF5 file can be read and return summary.
-
-    Args:
-        file_path: Path to HDF5 file
-
-    Returns:
-        bool: Success status
-    """
-    if not os.path.exists(file_path):
-        log(f"File {file_path} does not exist!", level="error")
-        return False
-
-    with h5py.File(file_path, "r") as f:
-        log(f"HDF5 file: {file_path}")
-        log(f"Keys: {list(f.keys())}")
-        log(f"Attributes: {dict(f.attrs)}")
-        log("Dataset shapes:")
-        for key in f.keys():
-            log(f"  {key}: {f[key].shape}")
-        return True
-
-
-def split_dataset_by_file(file_paths, test_ratio=0.2, val_ratio=0.1, seed=42):
-    """Split dataset into train, val, and test sets based on files.
-
-    Args:
-        file_paths: List of file paths
-        test_ratio: Ratio of files to use for testing
-        val_ratio: Ratio of files to use for validation
-        seed: Random seed for reproducibility
-
-    Returns:
-        Dictionary with 'train', 'val', and 'test' lists of files
-    """
-    # Set seed for reproducibility
-    random.seed(seed)
-
-    # Shuffle the file paths deterministically
-    shuffled_files = file_paths.copy()
-    random.shuffle(shuffled_files)
-
-    # Calculate the number of files for each split
-    n_files = len(shuffled_files)
-    n_test = max(1, int(n_files * test_ratio))
-    n_val = max(1, int(n_files * val_ratio))
-    n_train = n_files - n_test - n_val
-
-    # Split the files
-    train_files = shuffled_files[:n_train]
-    val_files = shuffled_files[n_train : n_train + n_val]
-    test_files = shuffled_files[n_train + n_val :]
-
-    log(f"Split {n_files} files into:")
-    log(f"  - Train: {len(train_files)} files")
-    log(f"  - Validation: {len(val_files)} files")
-    log(f"  - Test: {len(test_files)} files")
-
-    return {"train": train_files, "val": val_files, "test": test_files}
-
-
-def run_test_mode(
-    input_dir,
-    output_dir,
-    patch_size=256,
-    file_number=0,
-    preserve_scatterers_threshold=None,
-):
-    """Run the test mode: process one image and verify the results.
-
-    Args:
-        input_dir: Directory containing .cos files
-        output_dir: Directory to save results
-        patch_size: Size of patches to extract
-        file_number: Index of the file to process (default: 0 = first file)
-
-    Returns:
-        bool: Success status
-    """
-    log("Running in TEST mode", color=Colors.YELLOW)
-
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Find .cos files
-    input_path = Path(input_dir)
-    cos_files = list(input_path.glob("*.cos"))
-
-    assert len(cos_files) > 0, f"No .cos files found in {input_dir}"
-
-    # Make sure file_number is within range
-    if file_number >= len(cos_files):
-        log(
-            f"Warning: file_number {file_number} exceeds the number of files ({len(cos_files)}). Using the first file instead.",
-            level="warning",
-        )
-        file_number = 0
-
-    # Process the specified file
-    test_file = cos_files[file_number]
-    short_name = extract_filepath_short_name(test_file)
-    log(f"Testing with file {file_number}: {test_file}")
-
-    # Process the test file
-    results = preprocess_sar_image(test_file, patch_size, preserve_scatterers_threshold)
-
-    # Create histogram
-    output_path = Path(output_dir)
-    hist_path = output_path / f"test_histogram_{short_name}.png"
-
-    # Create and save histogram
-    patches_statistics = plot_intensity_histogram(
-        results["patches"],
-        hist_path,
-        title=f"Log-Intensity Histogram - {short_name}",
-        is_squared=True,
+    # Add split information to metadata
+    split_metadata = metadata.copy()
+    split_metadata.update(
+        {
+            "train_size": n_train,
+            "val_size": n_val,
+            "test_size": n_test,
+            "train_fraction": train_frac,
+            "val_fraction": val_frac,
+            "test_fraction": 1 - train_frac - val_frac,
+        }
     )
 
-    # Save a sample to HDF5
-    test_output = output_path / "test_sample.h5"
-    write_hdf5(results["patches"], patches_statistics, test_output)
-
-    # Verify the HDF5 file
-    log("Verifying the created HDF5 file:")
-    verify_hdf5(test_output)
-
-    log("Test mode completed successfully!")
-    return True
+    return {
+        "train": {"patches": train_patches, "metadata": split_metadata},
+        "val": {"patches": val_patches, "metadata": split_metadata},
+        "test": {"patches": test_patches, "metadata": split_metadata},
+        "metadata": split_metadata,
+    }
 
 
-def run_random_split_mode(
+def process_dataset(
     input_dir,
     output_dir,
     max_files=None,
     patch_size=256,
     train_frac=0.8,
     val_frac=0.1,
-    seed=42,
-    preserve_scatterers_threshold=None,
+    preserve_threshold=None,
+    norm_mode=None,
+    norm_minmax_val=0,
+    verbose=False,
 ):
-    """Run random split mode: process all images, merge and shuffle patches from all images together, then split. Not optimal for the generalization of the model + may spatially overfit, but fast implementation (and most likely better results)
-    Memory-optimized version that processes files individually to reduce memory usage.
+    """
+    Process all TSX CoSAR files, extract patches, and create train/val/test datasets.
 
     Args:
         input_dir: Directory containing .cos files
         output_dir: Directory to save results
+        max_files: Maximum number of files to process
         patch_size: Size of patches to extract
         train_frac: Fraction of data for training
         val_frac: Fraction of data for validation
-        seed: Random seed for reproducibility
+        preserve_threshold: Threshold for preserving scatterers (None to disable)
+        norm_mode: Normalization mode (None, "db", or "natural")
+        norm_minmax_val: Percentile for min-max normalization
+        verbose: Whether to print detailed statistics
+        log: Logger object
 
     Returns:
         bool: Success status
     """
-    log("Running in RANDOM SPLIT mode", color=Colors.YELLOW)
+    # Record start time for tracking processing duration
+    start_time = datetime.now()
 
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -642,63 +733,67 @@ def run_random_split_mode(
     input_path = Path(input_dir)
     cos_files = list(input_path.glob("*.cos"))
 
-    assert len(cos_files) > 0, f"No .cos files found in {input_dir}"
+    if len(cos_files) == 0:
+        log.error(f"No .cos files found in {input_dir}")
+        return False
 
-    log(f"\nFound {len(cos_files)} .cos files in {input_dir}")
+    log.info(f"Found {len(cos_files)} .cos files in {input_dir}")
     for file in cos_files:
         short_name = extract_filepath_short_name(file)
-        log(f"  - {short_name}")
-    if max_files:
-        cos_files = cos_files[:max_files]
-        log(f"Limiting the dataset to the first {max_files} files.")
+        log.info(f"  - {short_name}")
 
-    # Create output directory paths
+    # Limit the number of files if specified
+    if max_files and max_files < len(cos_files):
+        cos_files = cos_files[:max_files]
+        log.info(f"Processing only the first {max_files} files")
+
+    # Create temporary directory for patches
     output_path = Path(output_dir)
-    patches_dir = output_path / "patches"
+    patches_dir = output_path / "tmp_patches"
     os.makedirs(patches_dir, exist_ok=True)
 
-    # Process each file individually and save split patches
-    total_patches_train = 0
-    total_patches_val = 0
-    total_patches_test = 0
+    # Initialize counters
+    total_patches = 0
     file_info = []
 
-    # Set seeds for reproducibility
-    np.random.seed(seed)
-    random.seed(seed)
-
-    # First pass: process each file separately and save patches
+    # Process each file and save patches
+    log.info(f"{Colors.BLUE}Processing TSX CoSAR files...{Colors.RESET}")
     for i, file_path in enumerate(cos_files):
         short_name = extract_filepath_short_name(file_path)
-        log(
-            f"\nProcessing {i + 1}/{len(cos_files)}: {short_name}...", color=Colors.BLUE
+        log.info(
+            f"{Colors.BLUE}Processing {i + 1}/{len(cos_files)}: {short_name}{Colors.RESET}"
         )
 
         # Process the file
-        results = preprocess_sar_image(
-            file_path, patch_size, preserve_scatterers_threshold
+        results = preprocess_tsx_image(
+            file_path,
+            patch_size=patch_size,
+            preserve_threshold=preserve_threshold,
+            norm_mode=norm_mode,
+            norm_minmax_val=norm_minmax_val,
+            verbose=verbose,
         )
+        # Add additional metadata to results
+        results["preserve_threshold"] = preserve_threshold
+        results["norm_mode"] = norm_mode
+        results["norm_minmax_val"] = norm_minmax_val
 
-        # Get the patches
-        patches = results["patches"]
+        # Get final patches
+        patches = results["final_patches"]
         num_patches = len(patches)
 
-        if num_patches == 0:
-            log(
-                f"Warning: No patches extracted from {short_name}. Skipping.",
-                level="warning",
-            )
-            continue
+        # Create histograms for this file
+        hist_path = output_path / f"{short_name}_histograms.png"
+        plot_processing_histograms(results, hist_path, title_prefix=short_name)
+        log.info(f"  Saved processing histograms to {hist_path}")
 
-        # Calculate split sizes for this file
+        # Determine split sizes for this file using random split
         num_train = int(num_patches * train_frac)
         num_val = int(num_patches * val_frac)
         num_test = num_patches - num_train - num_val
 
-        # Update totals
-        total_patches_train += num_train
-        total_patches_val += num_val
-        total_patches_test += num_test
+        # Update total count
+        total_patches += num_patches
 
         # Create random permutation for this file
         indices = np.random.permutation(num_patches)
@@ -706,36 +801,40 @@ def run_random_split_mode(
         val_indices = indices[num_train : num_train + num_val]
         test_indices = indices[num_train + num_val :]
 
-        # Save patches to separate files to avoid keeping everything in memory
-        train_file = patches_dir / f"{short_name}_train.h5"
-        val_file = patches_dir / f"{short_name}_val.h5"
-        test_file = patches_dir / f"{short_name}_test.h5"
+        # Prepare metadata
+        metadata = {
+            "source_file": str(file_path),
+            "short_name": short_name,
+            "num_patches": num_patches,
+            "patch_size": patch_size,
+            "preserve_threshold": preserve_threshold,
+            "norm_mode": norm_mode,
+            "norm_minmax_val": norm_minmax_val,
+        }
+        if results["norm_stats"] is not None:
+            metadata.update({"norm_stats": results["norm_stats"]})
 
-        # Create and save histograms for this file's patches
-        hist_path = output_path / f"{short_name}_histogram.png"
-        file_stats = plot_intensity_histogram(
-            patches, hist_path, title=f"{short_name} Log-Intensity", is_squared=True
-        )
-
-        # Save train patches
+        # Save patches as temporary HDF5 files
         if num_train > 0:
+            train_file = patches_dir / f"{short_name}_train.h5"
             train_patches = patches[train_indices]
-            write_hdf5(train_patches, file_stats, train_file)
-            del train_patches  # Explicitly free memory
-
-        # Save validation patches
+            write_hdf5(train_patches, metadata, train_file)
+            log.info(f"  Saved {num_train} training patches to {train_file}")
+            del train_patches
         if num_val > 0:
+            val_file = patches_dir / f"{short_name}_val.h5"
             val_patches = patches[val_indices]
-            write_hdf5(val_patches, file_stats, val_file)
-            del val_patches  # Explicitly free memory
-
-        # Save test patches
+            write_hdf5(val_patches, metadata, val_file)
+            log.info(f"  Saved {num_val} validation patches to {val_file}")
+            del val_patches
         if num_test > 0:
+            test_file = patches_dir / f"{short_name}_test.h5"
             test_patches = patches[test_indices]
-            write_hdf5(test_patches, file_stats, test_file)
-            del test_patches  # Explicitly free memory
+            write_hdf5(test_patches, metadata, test_file)
+            log.info(f"  Saved {num_test} test patches to {test_file}")
+            del test_patches
 
-        # Record file info for second pass
+        # Record file info for merging
         file_info.append(
             {
                 "name": short_name,
@@ -745,134 +844,144 @@ def run_random_split_mode(
                 "num_train": num_train,
                 "num_val": num_val,
                 "num_test": num_test,
+                "metadata": metadata,
             }
         )
 
-        # Force garbage collection to free memory
+        # Force garbage collection
         del patches
         del results
-        import gc
-
         gc.collect()
 
-    # Second pass: combine patches from all files for each split
-    total_patches = total_patches_train + total_patches_val + total_patches_test
-    log(
-        f"\nProcessed all files. Total patches: {total_patches}. Combining patches from all files..."
+    # Merge all patches into final datasets
+    log.info(f"{Colors.BLUE}Merging patches from all files...{Colors.RESET}")
+
+    # Calculate split sizes
+    total_train = sum(info["num_train"] for info in file_info)
+    total_val = sum(info["num_val"] for info in file_info)
+    total_test = sum(info["num_test"] for info in file_info)
+
+    log.info(f"Total patches: {total_patches}")
+    log.info(
+        f"  - Training: {total_train} patches ({total_train / total_patches * 100:.2f}%)"
+    )
+    log.info(
+        f"  - Validation: {total_val} patches ({total_val / total_patches * 100:.2f}%)"
+    )
+    log.info(
+        f"  - Testing: {total_test} patches ({total_test / total_patches * 100:.2f}%)"
     )
 
     # Function to merge patches from multiple files
-    def merge_and_save_split(split_name, file_list, output_file):
+    def merge_patches(file_list, output_file, set_name, start_time=None):
         if not file_list:
-            log(f"No files for {split_name} split. Skipping.")
+            log.warning(f"No files for {set_name} set. Skipping.")
             return None
-        # log(f"Combining {len(file_list)} files for {split_name} split...")
 
-        # Initialize combined statistics
-        combined_stats = None
+        # Determine total size and shape
+        total_count = sum(h5py.File(f, "r")["patches"].shape[0] for f in file_list)
+        with h5py.File(file_list[0], "r") as f:
+            patch_shape = f["patches"].shape[1:]
 
-        # Create the output dataset using chunks
+        # Create dataset with chunks
         with h5py.File(output_file, "w") as out_f:
-            # First determine total size
-            total_patches = sum(
-                h5py.File(f, "r")["patches"].shape[0] for f in file_list
-            )
-
-            # Get shape of a single patch for dataset creation
-            with h5py.File(file_list[0], "r") as sample_f:
-                sample_shape = sample_f["patches"].shape[1:]
-
-            # Create extensible dataset with chunks
-            chunk_size = min(
-                1000, total_patches
-            )  # Adjust chunk size based on your data
+            # Create extensible dataset
+            chunk_size = min(1000, total_count)
             patches_dset = out_f.create_dataset(
                 "patches",
-                shape=(0,) + sample_shape,
-                maxshape=(total_patches,) + sample_shape,
+                shape=(0,) + patch_shape,
+                maxshape=(total_count,) + patch_shape,
                 dtype="float32",
-                chunks=(chunk_size,) + sample_shape,
+                chunks=(chunk_size,) + patch_shape,
             )
+
+            # Copy metadata from first file
+            with h5py.File(file_list[0], "r") as first_f:
+                for attr_name, attr_value in first_f.attrs.items():
+                    if attr_name != "num_patches":  # We'll update this
+                        out_f.attrs[attr_name] = attr_value
+
+                # Copy groups like norm_stats if they exist
+                for group_name in first_f.keys():
+                    if group_name != "patches" and isinstance(
+                        first_f[group_name], h5py.Group
+                    ):
+                        group = out_f.create_group(group_name)
+                        for attr_name, attr_value in first_f[group_name].attrs.items():
+                            group.attrs[attr_name] = attr_value
 
             # Add patches from each file
             start_idx = 0
-            intensity_values = []
-
-            for i, file_path in enumerate(file_list):
+            for i, file_path in enumerate(
+                tqdm(file_list, desc=f"Merging {set_name} files")
+            ):
                 with h5py.File(file_path, "r") as in_f:
                     file_patches = in_f["patches"][:]
                     num_file_patches = len(file_patches)
 
-                    # Resize dataset to accommodate new patches
+                    # Resize dataset and copy patches
                     patches_dset.resize(start_idx + num_file_patches, axis=0)
-
-                    # Copy patches to output file
                     patches_dset[start_idx : start_idx + num_file_patches] = (
                         file_patches
                     )
 
-                    # Calculate intensity for statistics
-                    for j in range(
-                        0, num_file_patches, max(1, num_file_patches // 10)
-                    ):  # Sample ~10% for stats
-                        patch = file_patches[j]
-                        intensity = (
-                            patch[:, :, 0] + patch[:, :, 1]
-                        )  # Assuming squared values
-                        intensity_values.append(intensity.flatten())
-
                     # Update start index
                     start_idx += num_file_patches
 
-                    # Copy attributes if this is the first file
-                    if i == 0:
-                        for attr_name, attr_value in in_f.attrs.items():
-                            if (
-                                attr_name != "num_patches"
-                            ):  # We'll update this at the end
-                                out_f.attrs[attr_name] = attr_value
+            # Collect short names of all images
+            image_short_names = []
+            for file_path in file_list:
+                with h5py.File(file_path, "r") as in_f:
+                    if "short_name" in in_f.attrs:
+                        short_name = in_f.attrs["short_name"]
+                        if short_name not in image_short_names:
+                            image_short_names.append(short_name)
 
-                # Free memory
-                del file_patches
-                gc.collect()
+            # Calculate statistics for a subset of data (10%)
+            stats_data_percent = 10
+            log.info(
+                f"Calculating statistics using {stats_data_percent}% of the data..."
+            )
+            sample_size = max(1, int(total_count * stats_data_percent / 100))
+            indices = np.random.choice(total_count, sample_size, replace=False)
+            sample_data = patches_dset[indices]
 
-            # Calculate statistics on the combined dataset
-            if intensity_values:
-                intensity_all = np.concatenate(
-                    [sample for sample in intensity_values if len(sample) > 0]
-                )
-                log_intensity = 10 * np.log10(intensity_all + 1e-10)
+            # Calculate statistics for real and imaginary parts
+            real_data = sample_data[..., 0]
+            imag_data = sample_data[..., 1]
 
-                combined_stats = {
-                    "mean": float(np.mean(log_intensity)),
-                    "median": float(np.median(log_intensity)),
-                    "p1": float(np.percentile(log_intensity, 1)),
-                    "p5": float(np.percentile(log_intensity, 5)),
-                    "p10": float(np.percentile(log_intensity, 10)),
-                    "p90": float(np.percentile(log_intensity, 90)),
-                    "p95": float(np.percentile(log_intensity, 95)),
-                    "p99": float(np.percentile(log_intensity, 99)),
-                }
+            # Update final metadata
+            out_f.attrs["creation_date"] = str(datetime.now())
+            out_f.attrs["processing_duration"] = str(datetime.now() - start_time)
+            out_f.attrs["preserve_threshold"] = (
+                "None" if preserve_threshold is None else preserve_threshold
+            )
+            out_f.attrs["norm_mode"] = "None" if norm_mode is None else norm_mode
+            out_f.attrs["norm_minmax_val"] = norm_minmax_val
+            out_f.attrs["total_patches"] = total_count
+            out_f.attrs["patch_size"] = patch_size
+            out_f.attrs["images_short_names"] = "/".join(image_short_names)
+            out_f.attrs["train_size"] = total_train
+            out_f.attrs["val_size"] = total_val
+            out_f.attrs["test_size"] = total_test
+            out_f.attrs["stats_data_percent"] = stats_data_percent
 
-                # Update dataset attributes with combined statistics
-                for key, value in combined_stats.items():
-                    out_f.attrs[key] = value
+            # Add statistics for real and imaginary parts
+            out_f.attrs["min_real"] = float(np.min(real_data))
+            out_f.attrs["max_real"] = float(np.max(real_data))
+            out_f.attrs["mean_real"] = float(np.mean(real_data))
+            out_f.attrs["p5_real"] = float(np.percentile(real_data, 5))
+            out_f.attrs["p95_real"] = float(np.percentile(real_data, 95))
 
-                # Update num_patches attribute
-                out_f.attrs["num_patches"] = total_patches
-                out_f.attrs["creation_date"] = str(datetime.now())
+            out_f.attrs["min_imag"] = float(np.min(imag_data))
+            out_f.attrs["max_imag"] = float(np.max(imag_data))
+            out_f.attrs["mean_imag"] = float(np.mean(imag_data))
+            out_f.attrs["p5_imag"] = float(np.percentile(imag_data, 5))
+            out_f.attrs["p95_imag"] = float(np.percentile(imag_data, 95))
 
-                # log(f"  {split_name} split has {total_patches} patches")
-                log(f"  Mean intensity: {combined_stats['mean']:.2f} dB")
+        return output_file
 
-        return combined_stats
-
-    # Merge train, val, and test splits
-    train_output = output_path / "train.h5"
-    val_output = output_path / "val.h5"
-    test_output = output_path / "test.h5"
-
-    # Get lists of files for each split
+    # Merge sets
     train_files = [
         info["train_file"] for info in file_info if info["train_file"] is not None
     ]
@@ -881,91 +990,28 @@ def run_random_split_mode(
         info["test_file"] for info in file_info if info["test_file"] is not None
     ]
 
-    # Merge and save each split
-    log(
-        f"  - Training: {total_patches_train} patches ({(total_patches_train / total_patches) * 100:.4f}%)"
+    # Merge each split
+    log.info(f"Merging {len(train_files)} training files...")
+    train_result = merge_patches(
+        train_files, output_path / "train.h5", "training", start_time
     )
-    train_stats = merge_and_save_split("Training", train_files, train_output)
-    log(
-        f"  - Validation: {total_patches_val} patches ({(total_patches_val / total_patches) * 100:.4f}%)"
+
+    log.info(f"Merging {len(val_files)} validation files...")
+    val_result = merge_patches(
+        val_files, output_path / "val.h5", "validation", start_time
     )
-    val_stats = merge_and_save_split("Validation", val_files, val_output)
-    log(
-        f"  - Testing: {total_patches_test} patches ({(total_patches_test / total_patches) * 100:.4f}%)"
+
+    log.info(f"Merging {len(test_files)} test files...")
+    test_result = merge_patches(test_files, output_path / "test.h5", "test", start_time)
+
+    # Create combined histogram
+    combined_histogram_path = output_path / "combined_histograms.png"
+    create_combined_histogram(
+        train_result, val_result, test_result, combined_histogram_path
     )
-    test_stats = merge_and_save_split("Testing", test_files, test_output)
 
-    # Create combined histograms
-    train_hist = output_path / "train_histogram.png"
-    val_hist = output_path / "val_histogram.png"
-    test_hist = output_path / "test_histogram.png"
-
-    # Function to create histogram from statistics
-    def create_histogram_from_stats(stats, output_path, title):
-        if not stats:
-            log(f"No statistics available for {title}. Skipping histogram.")
-            return
-
-        plt.figure(figsize=(10, 6))
-
-        # Draw vertical lines for key statistics
-        plt.axvline(
-            stats["mean"],
-            color="r",
-            linestyle="--",
-            label=f"Mean ({stats['mean']:.2f} dB)",
-        )
-        plt.axvline(
-            stats["median"],
-            color="g",
-            linestyle="--",
-            label=f"Median ({stats['median']:.2f} dB)",
-        )
-        plt.axvline(
-            stats["p5"],
-            color="orange",
-            linestyle=":",
-            label=f"5th percentile ({stats['p5']:.2f} dB)",
-        )
-        plt.axvline(
-            stats["p95"],
-            color="orange",
-            linestyle=":",
-            label=f"95th percentile ({stats['p95']:.2f} dB)",
-        )
-
-        # Add labels and title
-        plt.xlabel("Log-Intensity (dB)")
-        plt.ylabel("Frequency (approximate)")
-        plt.title(title)
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-
-        # Set x-axis limits based on the 1st and 99th percentiles
-        plt.xlim([stats["p1"] - 5, stats["p99"] + 5])
-
-        plt.tight_layout()
-        plt.savefig(output_path)
-        log(f"  Saved histogram to {output_path}")
-        plt.close()
-
-    # Generate histogram plots if statistics are available
-    log("\nCreating histograms for merged datasets...")
-    create_histogram_from_stats(train_stats, train_hist, "Training Set Log-Intensity")
-    create_histogram_from_stats(val_stats, val_hist, "Validation Set Log-Intensity")
-    create_histogram_from_stats(test_stats, test_hist, "Test Set Log-Intensity")
-
-    # # Verify the HDF5 files
-    # log("\nVerifying the created HDF5 files:")
-    # log("\nTrain set:")
-    # verify_hdf5(train_output)
-    # log("\nValidation set:")
-    # verify_hdf5(val_output)
-    # log("\nTest set:")
-    # verify_hdf5(test_output)
-
-    # Optionally, clean up temporary files
-    log("\nCleaning up temporary files...", color=Colors.BLUE)
+    # Clean up temporary files
+    log.info("Cleaning up temporary files...")
     for info in file_info:
         if info["train_file"] and os.path.exists(info["train_file"]):
             os.remove(info["train_file"])
@@ -974,66 +1020,24 @@ def run_random_split_mode(
         if info["test_file"] and os.path.exists(info["test_file"]):
             os.remove(info["test_file"])
 
-    # Remove temp directory if it's empty
-    try:
-        os.rmdir(patches_dir)
-        log(f"Removed temporary directory: {patches_dir}")
-    except:
-        log(f"Could not remove temporary directory: {patches_dir}")
+    # Remove tmp directory
+    os.rmdir(patches_dir)
 
-    log("\nRandom split mode completed successfully!", color=Colors.GREEN)
-    return True
-
-
-def run_spatial_split_mode(
-    input_dir,
-    output_dir,
-    patch_size=256,
-    test_ratio=0.2,
-    val_ratio=0.1,
-    seed=42,
-    preserve_scatterers_threshold=None,
-):
-    """Run spatial split mode: first split by files, then process each group.
-    For this dataset the idea is to download many more tiles (like 20), first split each tile into their respective dataset, for example 15 train/valid and 5 test, and then build the datasets from maybe 15% of the patches of each tile.
-
-    Args:
-        input_dir: Directory containing .cos files
-        output_dir: Directory to save results
-        patch_size: Size of patches to extract
-        test_ratio: Ratio of files to use for testing
-        val_ratio: Ratio of files to use for validation
-        seed: Random seed for reproducibility
-
-    Returns:
-        bool: Success status
-    """
-    log("\nSPATIAL SPLIT mode is not yet implemented.", level="error")
-    log(
-        "This mode will split the dataset spatially to avoid data leakage between train and test sets.",
-        level="warning",
-    )
-    log("The implementation will be added in a future update.", level="warning")
-    return False
+    # Success if at least one split was created
+    return train_result is not None or val_result is not None or test_result is not None
 
 
 def main():
+    """Main function for TSX dataset creation."""
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
-        description="Process SAR .cos files and create HDF5 datasets for training."
+        description="Process TSX .cos files and create HDF5 datasets."
     )
     parser.add_argument(
         "--input-dir", type=str, required=True, help="Directory containing .cos files"
     )
     parser.add_argument(
         "--output-dir", type=str, required=True, help="Directory to save HDF5 files"
-    )
-    parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["test", "random_split", "spatial_split"],
-        required=True,
-        help="Processing mode",
     )
     parser.add_argument(
         "--patch-size",
@@ -1057,7 +1061,7 @@ def main():
         "--seed",
         type=int,
         default=42,
-        help="Random seed for reproducibility (default: 42)",
+        help="Seed for reproducibility (default: 42)",
     )
     parser.add_argument(
         "--max-files",
@@ -1066,97 +1070,128 @@ def main():
         help="Maximum number of files to process (optional)",
     )
     parser.add_argument(
-        "--file-number",
-        type=int,
-        default=0,
-        help="File index to process in test mode (default: 0)",
-    )
-    parser.add_argument(
-        "--preserve-scatterers-threshold",
+        "--preserve-threshold",
         type=float,
         default=None,
-        help="Threshold above which point-like scatterers are preserved (default: None = no preservation)",
+        help="Threshold above which point-like scatterers are preserved (default: None)",
     )
+    parser.add_argument(
+        "--norm-mode",
+        type=str,
+        choices=["db", "natural"],
+        default=None,
+        help="Normalization mode: 'db' or 'natural' (default: None -> no normalization is done)",
+    )
+    parser.add_argument(
+        "--norm-minmax",
+        type=int,
+        default=0,
+        help="Percentiles used in place of min and max in the normalization: 0, 1, 5, or 10 (default: 0 -> normal min and max values used)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print detailed statistics during processing",
+    )
+
     args = parser.parse_args()
 
-    # Initialize logging
-    global logger
-    logger = setup_logging(args.output_dir)
+    # Setup logging
+    # 1. Configure rank_zero_only
+    from lightning_utilities.core.rank_zero import rank_zero_only
+
+    rank_zero_only.rank = 0  # Set rank for single-process script
+    # 2. Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    # 3. Setup logging to file and console
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    # 4. Clear any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    # 5. File handler
+    file_handler = logging.FileHandler(
+        os.path.join(args.output_dir, "dataset_creation.log")
+    )
+    file_format = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    file_handler.setFormatter(file_format)
+    logger.addHandler(file_handler)
+    # 6. Console handler
+    console_handler = logging.StreamHandler()
+    console_format = logging.Formatter("%(message)s")
+    console_handler.setFormatter(console_format)
+    logger.addHandler(console_handler)
+    # 7. Initialize RankedLogger
+    global log
+    log = RankedLogger(__name__, rank_zero_only=True)
 
     # Validate arguments
     if args.train_frac + args.val_frac > 1.0:
-        log(
-            "Warning: Train + validation fractions exceed 1.0. Adjusting values...",
-            level="warning",
-        )
+        log.warning("Train + validation fractions exceed 1.0. Adjusting values...")
         total = args.train_frac + args.val_frac
         args.train_frac /= total
         args.val_frac /= total
-        log(
-            f"Adjusted fractions: train={args.train_frac:.2f}, val={args.val_frac:.2f}, test={1 - args.train_frac - args.val_frac:.2f}"
+        log.info(
+            f"Adjusted fractions: train={args.train_frac:.2f}, "
+            f"val={args.val_frac:.2f}, test={1 - args.train_frac - args.val_frac:.2f}"
         )
 
     # Print configuration
-    log("\nSAR Dataset Creation - Configuration:", color=Colors.YELLOW)
-    log(f"  Input directory: {args.input_dir}")
-    log(f"  Output directory: {args.output_dir}")
-    log(f"  Mode: {args.mode}")
-    log(f"  Preserve point-like scatterers: {args.preserve_scatterers_threshold}")
-    log(f"  Patch size: {args.patch_size}x{args.patch_size}")
-    log(f"  Train fraction: {args.train_frac}")
-    log(f"  Validation fraction: {args.val_frac}")
-    log(f"  Test fraction: {1 - args.train_frac - args.val_frac}")
-    log(f"  Random seed: {args.seed}")
-    if args.file_number > 0:
-        log(f"  File number for test mode: {args.file_number}")
+    log.info(f"{Colors.YELLOW}TSX Dataset Creation - Configuration:{Colors.RESET}")
+    log.info(f"  Input directory: {args.input_dir}")
+    log.info(f"  Output directory: {args.output_dir}")
+    log.info(f"  Patch size: {args.patch_size}x{args.patch_size}")
+    log.info(f"  Train fraction: {args.train_frac}")
+    log.info(f"  Validation fraction: {args.val_frac}")
+    log.info(f"  Test fraction: {1 - args.train_frac - args.val_frac}")
+    log.info(f"  Seed: {args.seed}")
     if args.max_files:
-        log(f"  Max files: {args.max_files}")
-    log("")
+        log.info(f"  Max files: {args.max_files}")
+    if args.preserve_threshold is not None:
+        log.info(f"  Preserve scatterers threshold: {args.preserve_threshold} dB")
+    else:
+        log.info("  Preserve scatterers: Disabled")
+    if args.norm_mode is not None:
+        log.info(f"  Normalization mode: {args.norm_mode}")
+        log.info(f"  Min-max normalization percentile: {args.norm_minmax}%")
+    else:
+        log.info("  Normalization: Disabled")
+    log.info(f"  Verbose mode: {'Enabled' if args.verbose else 'Disabled'}")
+    log.info("")
 
     # Set seeds for reproducibility
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    # Run the selected mode
-    if args.mode == "test":
-        success = run_test_mode(
-            args.input_dir,
-            args.output_dir,
-            args.patch_size,
-            args.file_number,
-            args.preserve_scatterers_threshold,
-        )
-    elif args.mode == "random_split":
-        success = run_random_split_mode(
-            args.input_dir,
-            args.output_dir,
-            args.max_files,
-            args.patch_size,
-            args.train_frac,
-            args.val_frac,
-            args.seed,
-            args.preserve_scatterers_threshold,
-        )
-    elif args.mode == "spatial_split":
-        success = run_spatial_split_mode(
-            args.input_dir,
-            args.output_dir,
-            args.patch_size,
-            1 - args.train_frac - args.val_frac,
-            args.val_frac,
-            args.seed,
-            args.preserve_scatterers_threshold,
-        )
-    else:
-        log(f"Invalid mode selected: {args.mode}", level="error")
-        return 1
+    # Process the dataset
+    start_time = datetime.now()
+    log.info(f"Starting dataset creation at {start_time}")
+
+    success = process_dataset(
+        input_dir=args.input_dir,
+        output_dir=args.output_dir,
+        max_files=args.max_files,
+        patch_size=args.patch_size,
+        train_frac=args.train_frac,
+        val_frac=args.val_frac,
+        preserve_threshold=args.preserve_threshold,
+        norm_mode=args.norm_mode,
+        norm_minmax_val=args.norm_minmax,
+        verbose=args.verbose,
+    )
+
+    end_time = datetime.now()
+    duration = end_time - start_time
 
     if success:
-        log("\nProcessing completed successfully!", color=Colors.GREEN)
+        log.info(f"{Colors.GREEN}Processing completed successfully!{Colors.RESET}")
+        log.info(f"Started: {start_time}")
+        log.info(f"Finished: {end_time}")
+        log.info(f"Total duration: {duration}")
         return 0
     else:
-        log("\nProcessing completed with errors.", level="error")
+        log.error(f"{Colors.RED}Processing completed with errors.{Colors.RESET}")
         return 1
 
 
