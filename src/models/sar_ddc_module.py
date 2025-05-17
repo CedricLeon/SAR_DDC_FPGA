@@ -9,17 +9,19 @@ import datetime
 import os
 from typing import Any, Dict, Tuple
 
+import lightning
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
-from lightning import LightningModule
+import torch.nn.functional as F
 
 from src.utils.metrics import (
     calculate_psnr_1,
     calculate_psnr_max,
 )
-from src.utils.sar_utils import save_anomaly_visualization
 
 
-class SARDDCModule(LightningModule):
+class SARDDCModule(lightning.LightningModule):
     """Lightning Module for SAR Despeckling and Data Compression.
 
     This module implements the training and testing logic for joint
@@ -35,29 +37,23 @@ class SARDDCModule(LightningModule):
         scheduler: torch.optim.lr_scheduler,
         gradient_clip_norm: float = 1.0,
         compile: bool = False,
-        monitor_anomalies: bool = False,
-        anomaly_log_dir: str = "anomaly_logs",
-        anomaly_psnr_threshold: float = 0.0,  # PSNR below this value triggers visualization
-        anomaly_bpp_threshold: float = 4.0,  # BPP above this value triggers visualization
-        max_anomalies_per_epoch: int = 5,  # Maximum number of anomalies to log per epoch
-        mse_spike_ratio: float = 10.0,  # Detect spikes in MSE (current vs rolling avg)
+        anomalies_log_dir: str = "anomalies",  # Directory for low PSNR logs
     ):
         """Initialize the Lightning Module.
 
         Args:
-            lambda_: Rate-distortion tradeoff parameter (default: 0.01)
-            lr: Learning rate for optimizer (default: 1e-4)
-            net: Additional model parameters (default: None)
-            monitor_anomalies: Whether to monitor and log anomalous batches
-            anomaly_psnr_threshold: PSNR threshold below which to log anomalies
-            anomaly_bpp_threshold: BPP threshold above which to log anomalies
-            anomaly_log_dir: Directory to save anomaly visualizations
-            max_anomalies_per_epoch: Maximum number of anomalies to log per epoch
-            mse_spike_ratio: Factor to detect sudden MSE spikes compared to moving average
+            net: Neural network module
+            criterion: Loss criterion
+            net_optimizer: Main optimizer for network parameters
+            aux_optimizer: Auxiliary optimizer for quantiles
+            scheduler: Learning rate scheduler
+            gradient_clip_norm: Maximum gradient norm for clipping (default: 1.0)
+            compile: Whether to compile the model (default: False)
+            anomalies_log_dir: Directory to save anomalies (default: anomalies)
         """
         super().__init__()
 
-        # Save hyperparameters to be accessible via self.hparams (ignore nn.Module)
+        # Save hyperparameters to be accessible via self.hparams (ignore nn.Modules)
         self.save_hyperparameters(ignore=["criterion", "net"], logger=False)
 
         # Hydra recursive instantiation.
@@ -67,38 +63,30 @@ class SARDDCModule(LightningModule):
         # Activate manual optimization, because we have two optimizers.
         self.automatic_optimization = False
 
-        # # @TODO: Metrics: EuroSAT images (64x64) are too small for MS-SSIM => we use SSIM.
-        # self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
-
-        # Anomaly detection setup
-        self.monitor_anomalies = monitor_anomalies
-        if self.monitor_anomalies:
-            os.makedirs(anomaly_log_dir, exist_ok=True)
-            self.anomaly_count = 0
-            self.anomalies_this_epoch = 0
-            self.current_epoch_tracked = 0
-            self.mse_history = []  # Track MSE history for spike detection
-            self.mse_window_size = 100  # Window size for rolling average
+        # Set up directory for low PSNR logs
+        self.low_psnr_count = 0
+        self.psnr_ano_threshold = 5.0
+        os.makedirs(self.hparams.anomalies_log_dir, exist_ok=True)
 
     def on_fit_start(self):
         """Called at the beginning of fit."""
-        # Initialize tracking dictionaries for monitoring
-        self.weight_norms_history = {}
-        self.gradient_norms_history = {}
-        self.activation_ranges_history = {}
+        # # Initialize tracking dictionaries for monitoring
+        # self.weight_norms_history = {}
+        # self.gradient_norms_history = {}
 
-        # Track loss ratios
-        self.loss_ratio_history = {"mse_to_bpp": [], "epochs": []}
+        # Set up wandb watch to monitor parameters and gradients
+        if isinstance(self.trainer.logger, lightning.pytorch.loggers.wandb.WandbLogger):
+            self.trainer.logger.watch(
+                self.net,
+                log="all",  # Track both gradients and parameters
+                log_freq=100,  # Log every 100 batches
+                # log_graph=False,  # Disable logging model graph
+            )
 
-        # Make sure anomaly dir exists
-        if self.monitor_anomalies:
-            os.makedirs(self.hparams.anomaly_log_dir, exist_ok=True)
-
-    def on_train_epoch_start(self):
-        """Reset anomaly counter at the start of each epoch."""
-        if self.monitor_anomalies:
-            self.anomalies_this_epoch = 0
-            self.current_epoch_tracked = self.current_epoch
+    def on_train_end(self):
+        # Remove the hooks added by watch() to the model
+        if isinstance(self.trainer.logger, lightning.pytorch.loggers.wandb.WandbLogger):
+            self.trainer.logger.unwatch(self.net)
 
     def _random_switch_Re_Im(
         self, batch: Dict[str, torch.Tensor]
@@ -123,231 +111,264 @@ class SARDDCModule(LightningModule):
     ) -> Tuple[Dict[str, Any], torch.Tensor]:
         output = self.forward(input)
         out_criterion = self.criterion(output, target)
-        # TMP MEMO (@TODO remove): compressai.losses.RateDistortionLoss computes "mse_loss", "bpp_loss", and loss:
-        # out["mse_loss"] = nn.MSELoss(output["x_hat"], target)
-        # out["bpp_loss"] = sum(
-        #     (torch.log(likelihoods).sum() / (-math.log(2) * num_pixels))
-        #     for likelihoods in output["likelihoods"].values()
-        # )
-        # out["loss"] = self.lmbda * (255**2 * out["mse_loss"]) + out["bpp_loss"]
-        # @TODO: That 255**2 most likely don't fit our SAR usage, might have to redefine my own loss function
-
         return out_criterion, output["x_hat"]
 
-    def _check_for_anomalies(
-        self, mse_value: float, psnr_value: float, bpp_value: float
-    ) -> Tuple[bool, str]:
-        """Check for various types of anomalies in the training process.
+    def _log_anomalies(
+        self,
+        prefix: str,
+        input: torch.Tensor,
+        target: torch.Tensor,
+        reconstruction: torch.Tensor,
+        trigger: Tuple[str, float],
+        additional_info: Dict = None,
+    ) -> None:
+        """Log and visualize current metrics and batch statistics.
 
-        Returns:
-            Tuple[bool, str]: (is_anomaly, reason)
+        Args:
+            prefix: Log prefix (train/valid/test)
+            input: Input tensor
+            target: Target tensor
+            reconstruction: Reconstructed output
+            trigger: Tuple with the metric and its value that triggered the logging
+            additional_info: Additional information to include in the log
         """
-        # Store MSE for tracking
-        self.mse_history.append(mse_value)
-        if len(self.mse_history) > self.mse_window_size:
-            self.mse_history.pop(0)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.low_psnr_count += 1
 
-        # Check for MSE spikes compared to recent history
-        is_anomaly = False
-        reason = ""
+        # Create log directory with timestamp
+        log_dir = os.path.join(
+            self.hparams.anomalies_log_dir,
+            f"{prefix}_ano{self.low_psnr_count}_e{self.current_epoch}_step{self.global_step}_{trigger[0]}:{trigger[1]:.2f}dB",
+        )
+        os.makedirs(log_dir, exist_ok=True)
 
-        # Only check for spikes if we have enough history
-        if len(self.mse_history) >= 10:
-            recent_avg = sum(self.mse_history[:-1]) / (len(self.mse_history) - 1)
-            # Avoid division by zero
-            if recent_avg > 1e-6:
-                spike_ratio = mse_value / recent_avg
-                if spike_ratio > self.hparams.mse_spike_ratio:
-                    is_anomaly = True
-                    reason += f"MSE spike: current={mse_value:.2f}, avg={recent_avg:.2f}, ratio={spike_ratio:.2f}. "
+        # Create a general information file
+        with open(os.path.join(log_dir, "info.txt"), "w") as f:
+            f.write(
+                f"===== LOW {trigger[0].upper()} DETECTED: {trigger[1]:.2f} dB (threshold: {self.psnr_ano_threshold:.2f} dB) =====\n\n"
+            )
+            f.write(f"Time: {timestamp}\n")
+            f.write(f"Epoch: {self.current_epoch}\n")
+            f.write(f"Global step: {self.global_step}\n\n")
 
-        # Check basic thresholds
-        if psnr_value < self.hparams.anomaly_psnr_threshold:
-            is_anomaly = True
-            reason += f"PSNR={psnr_value:.2f} (threshold={self.hparams.anomaly_psnr_threshold}). "
+            # Write additional information if provided
+            if additional_info:
+                f.write("Additional Metrics:\n")
+                for key, value in additional_info.items():
+                    if isinstance(value, float):
+                        f.write(f"  {key}: {value:.6f}\n")
+                    else:
+                        f.write(f"  {key}: {value}\n")
+                f.write("\n")
 
-        if bpp_value > self.hparams.anomaly_bpp_threshold:
-            is_anomaly = True
-            reason += f"BPP={bpp_value:.2f} (threshold={self.hparams.anomaly_bpp_threshold}). "
+            # Write batch statistics
+            f.write("Batch Statistics:\n")
+            batch_size = input.shape[0] if input.ndim > 3 else 1  # Use torch shape
+            f.write(f"  Batch size: {batch_size}\n")
 
-        # Check for NaN or extremely large values in the MSE
-        if torch.isnan(torch.tensor(mse_value)) or mse_value > 1000:
-            is_anomaly = True
-            reason += f"Invalid MSE value: {mse_value}. "
+            # Write overall statistics for the entire batch
+            f.write("\nOverall Statistics:\n")
+            f.write("Input:\n")
+            f.write(f"  Shape: {tuple(input.shape)}\n")  # Cast to tuple for printing
+            f.write(
+                f"  Mean: {torch.mean(input.float()).item():.6f}\n"
+            )  # Convert to float before mean
+            f.write(f"  Std: {torch.std(input.float()).item():.6f}\n")
+            f.write(f"  Min: {torch.min(input).item():.6f}\n")
+            f.write(f"  Max: {torch.max(input).item():.6f}\n")
+            f.write(f"  NaN count: {torch.isnan(input.float()).sum().item()}\n")
+            f.write(f"  Inf count: {torch.isinf(input.float()).sum().item()}\n\n")
 
-        return is_anomaly, reason
+            f.write("Target:\n")
+            f.write(f"  Shape: {tuple(target.shape)}\n")  # Cast to tuple for printing
+            f.write(f"  Mean: {torch.mean(target.float()).item():.6f}\n")
+            f.write(f"  Std: {torch.std(target.float()).item():.6f}\n")
+            f.write(f"  Min: {torch.min(target).item():.6f}\n")
+            f.write(f"  Max: {torch.max(target).item():.6f}\n")
+            f.write(f"  NaN count: {torch.isnan(target.float()).sum().item()}\n")
+            f.write(f"  Inf count: {torch.isinf(target.float()).sum().item()}\n\n")
 
-    def _enhanced_check_for_anomalies(
-        self, mse_value: float, psnr_value: float, bpp_value: float, loss_ratio: float
-    ) -> Tuple[bool, str]:
-        """Enhanced checks for various types of anomalies in the training process.
+            f.write("Reconstruction:\n")
+            f.write(
+                f"  Shape: {tuple(reconstruction.shape)}\n"
+            )  # Cast to tuple for printing
+            f.write(f"  Mean: {torch.mean(reconstruction.float()).item():.6f}\n")
+            f.write(f"  Std: {torch.std(reconstruction.float()).item():.6f}\n")
+            f.write(f"  Min: {torch.min(reconstruction).item():.6f}\n")
+            f.write(f"  Max: {torch.max(reconstruction).item():.6f}\n")
+            f.write(
+                f"  NaN count: {torch.isnan(reconstruction.float()).sum().item()}\n"
+            )
+            f.write(
+                f"  Inf count: {torch.isinf(reconstruction.float()).sum().item()}\n\n"
+            )
 
-        This extends the regular anomaly detection with more sophisticated checks including:
-        - Weight stability analysis
-        - Gradient norm tracking
-        - Loss balance monitoring
-        - Learning stagnation detection
+            # Write statistics for each sample in the batch
+            num_samples = min(16, batch_size)
+            num_vis_samples = min(4, batch_size)
+            f.write("\nPer-Sample Statistics:\n")
+            for i in range(num_samples):
+                f.write(f"\nSample {i + 1}:\n")
+                if input.ndim > 3:
+                    sample_input = input[i].squeeze()
+                    sample_target = target[i].squeeze()
+                    sample_recon = reconstruction[i].squeeze()
+                else:
+                    sample_input = input.squeeze()
+                    sample_target = target.squeeze()
+                    sample_recon = reconstruction.squeeze()
 
-        Returns:
-            Tuple[bool, str]: (is_anomaly, reason)
-        """
-        # Start with basic checks from the original method
-        is_anomaly, reason = self._check_for_anomalies(mse_value, psnr_value, bpp_value)
+                f.write("  Input:\n")
+                f.write(f"    Mean: {torch.mean(sample_input.float()).item():.6f}\n")
+                f.write(f"    Std: {torch.std(sample_input.float()).item():.6f}\n")
+                f.write(f"    Min: {torch.min(sample_input).item():.6f}\n")
+                f.write(f"    Max: {torch.max(sample_input).item():.6f}\n")
+                f.write(
+                    f"    NaN count: {torch.isnan(sample_input.float()).sum().item()}\n"
+                )
+                f.write(
+                    f"    Inf count: {torch.isinf(sample_input.float()).sum().item()}\n"
+                )
 
-        # Check for significant imbalance between MSE and BPP losses
-        # This could indicate the network is focusing too much on one aspect
-        if loss_ratio > 1000:  # MSE dominates BPP excessively
-            is_anomaly = True
-            reason += f"MSE/BPP ratio too high: {loss_ratio:.2f}. Network may focus too much on reconstruction. "
-        elif loss_ratio < 0.001:  # BPP dominates MSE excessively
-            is_anomaly = True
-            reason += f"MSE/BPP ratio too low: {loss_ratio:.2f}. Network may focus too much on compression. "
+                f.write("  Target:\n")
+                f.write(f"    Mean: {torch.mean(sample_target.float()).item():.6f}\n")
+                f.write(f"    Std: {torch.std(sample_target.float()).item():.6f}\n")
+                f.write(f"    Min: {torch.min(sample_target).item():.6f}\n")
+                f.write(f"    Max: {torch.max(sample_target).item():.6f}\n")
+                f.write(
+                    f"    NaN count: {torch.isnan(sample_target.float()).sum().item()}\n"
+                )
+                f.write(
+                    f"    Inf count: {torch.isinf(sample_target.float()).sum().item()}\n"
+                )
 
-        # Check for learning stagnation - no improvement in multiple steps
-        # Only perform after we have enough history
-        if len(self.mse_history) >= 100:
-            recent_avg = sum(self.mse_history[-10:]) / 10
-            older_avg = sum(self.mse_history[-100:-90]) / 10
+                f.write("  Reconstruction:\n")
+                f.write(f"    Mean: {torch.mean(sample_recon.float()).item():.6f}\n")
+                f.write(f"    Std: {torch.std(sample_recon.float()).item():.6f}\n")
+                f.write(f"    Min: {torch.min(sample_recon).item():.6f}\n")
+                f.write(f"    Max: {torch.max(sample_recon).item():.6f}\n")
+                f.write(
+                    f"    NaN count: {torch.isnan(sample_recon.float()).sum().item()}\n"
+                )
+                f.write(
+                    f"    Inf count: {torch.isinf(sample_recon.float()).sum().item()}\n"
+                )
 
-            # If recent average is very close to or worse than older average
-            improvement_ratio = (older_avg + 1e-8) / (recent_avg + 1e-8)
-            if 0.95 < improvement_ratio < 1.05:
-                is_anomaly = True
-                reason += f"Training stagnation detected. Recent avg: {recent_avg:.4f}, Older avg: {older_avg:.4f}. "
+                # Calculate sample PSNR using torch.nn.functional.mse_loss and calculate_psnr_1
+                sample_mse = F.mse_loss(
+                    sample_recon.float(), sample_target.float()
+                ).item()
+                sample_psnr = calculate_psnr_1(sample_mse)
+                f.write(f"  MSE: {sample_mse:.6f}\n")
+                f.write(f"  PSNR: {sample_psnr:.2f} dB\n")
 
-        # Check for gradient issues based on history
-        if self.gradient_norms_history and any(self.gradient_norms_history.values()):
-            # Get all gradient histories
-            for name, history in self.gradient_norms_history.items():
-                if len(history) >= 5:  # Need some history to detect issues
-                    recent_grads = history[-5:]
+                # Visualize the first few samples
+                if i < num_vis_samples:
+                    # Convert back to numpy only for visualization
+                    sample_input = sample_input.detach().cpu().numpy()
+                    sample_target = sample_target.detach().cpu().numpy()
+                    sample_recon = sample_recon.detach().cpu().numpy()
 
-                    # Check for vanishing gradients
-                    if max(recent_grads) < 1e-7:
-                        is_anomaly = True
-                        reason += (
-                            f"Vanishing gradient in '{name}': {max(recent_grads):.2e}. "
-                        )
+                    fig, axs = plt.subplots(2, 3, figsize=(15, 10))
+                    fig.suptitle(
+                        f"Low PSNR Sample {i + 1} - PSNR: {sample_psnr:.2f} dB (threshold: {self.psnr_ano_threshold:.2f} dB)",
+                        fontsize=16,
+                    )
 
-                    # Check for exploding gradients (very high or increasing rapidly)
-                    if max(recent_grads) > 100:
-                        is_anomaly = True
-                        reason += (
-                            f"Large gradient in '{name}': {max(recent_grads):.2f}. "
-                        )
+                    # Plot original data
+                    axs[0, 0].imshow(sample_input, cmap="gray")
+                    axs[0, 0].set_title("Input")
+                    axs[0, 0].axis("off")
 
-                    # Check for gradient instability
-                    if len(recent_grads) >= 3:
-                        variance = torch.tensor(recent_grads).var().item()
-                        mean = torch.tensor(recent_grads).mean().item()
-                        if (
-                            mean > 0 and variance / mean > 10
-                        ):  # High coefficient of variation
-                            is_anomaly = True
-                            reason += f"Unstable gradients in '{name}': variance/mean={variance / mean:.2f}. "
+                    axs[0, 1].imshow(sample_target, cmap="gray")
+                    axs[0, 1].set_title("Target")
+                    axs[0, 1].axis("off")
 
-        # Check for weight instability
-        if self.weight_norms_history and any(self.weight_norms_history.values()):
-            for name, history in self.weight_norms_history.items():
-                if len(history) >= 5:  # Need some history
-                    if max(history[-5:]) / (min(history[-5:]) + 1e-8) > 5:
-                        is_anomaly = True
-                        reason += f"Unstable weights in '{name}'. "
+                    axs[0, 2].imshow(sample_recon, cmap="gray")
+                    axs[0, 2].set_title("Reconstruction")
+                    axs[0, 2].axis("off")
 
-        return is_anomaly, reason
+                    # Plot differences and error map
+                    diff_input_target = np.abs(sample_input - sample_target)
+                    axs[1, 0].imshow(diff_input_target, cmap="hot")
+                    axs[1, 0].set_title("Input-Target Difference")
+                    axs[1, 0].axis("off")
+
+                    diff_recon_target = np.abs(sample_recon - sample_target)
+                    axs[1, 1].imshow(diff_recon_target, cmap="hot")
+                    axs[1, 1].set_title("Recon-Target Difference")
+                    axs[1, 1].axis("off")
+
+                    # Square error map (for better visualization of errors)
+                    error_map = (sample_recon - sample_target) ** 2
+                    axs[1, 2].imshow(error_map, cmap="hot")
+                    axs[1, 2].set_title("Squared Error Map")
+                    axs[1, 2].axis("off")
+
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(log_dir, f"sample_{i + 1}.png"), dpi=150)
+                    plt.close(fig)
+
+        # Log to console
+        print(
+            f"WARNING: Low {trigger[0].upper()} ({trigger[1]:.2f} dB) detected at epoch {self.current_epoch}, step {self.global_step}"
+        )
+        print(f"Statistics saved to {log_dir}")
 
     def _log_metrics(
         self,
         prefix: str,
         out_criterion: Dict[str, Any],
-        aux_loss: float,  # Ensure aux_loss is a scalar (float or torch.Tensor.item()).
+        aux_loss: float,
         input: torch.Tensor,
         reconstructions: torch.Tensor,
         target: torch.Tensor,
     ) -> None:
-        """Log training, validation, or test metrics. From Tigran in RS_DC project."""
-        # Calculate PSNR for anomaly detection
+        """Log training, validation, or test metrics."""
         mse_value = out_criterion["mse_loss"].item()
-        psnr_value = calculate_psnr_1(mse_value)
+        psnr_value_1 = calculate_psnr_1(mse_value)
         psnr_value_max = calculate_psnr_max(mse_value, torch.max(input).item())
         bpp_value = out_criterion["bpp_loss"].item()
 
-        # Calculate loss ratio for monitoring training stability
-        loss_ratio = mse_value / (bpp_value + 1e-8)  # Avoid division by zero
-
         # Enhanced metrics logging
         log_info = {
-            f"{prefix}/aux": aux_loss,  # Use scalar aux_loss directly.
+            f"{prefix}/aux": aux_loss,
             f"{prefix}/loss": out_criterion["loss"].item(),
             f"{prefix}/mse": mse_value,
             f"{prefix}/bpp": bpp_value,
-            f"{prefix}/psnr_1": psnr_value,
-            f"{prefix}/psnr_max": psnr_value_max,
-            f"{prefix}/loss_ratio_mse_bpp": loss_ratio,
-            # Track how much each loss contributes to total loss
-            f"{prefix}/mse_percent": (mse_value / (out_criterion["loss"].item() + 1e-8))
+            f"{prefix}/psnr_1": psnr_value_1,
+            f"{prefix}/psnr_max": psnr_value_max,  # Both metrics are very similar
+            # Track how much each loss contributes to total loss = R + lmbda * D
+            f"{prefix}/mse_percent": (
+                self.criterion.lmbda * mse_value / (out_criterion["loss"].item() + 1e-8)
+            )
             * 100,
             f"{prefix}/bpp_percent": (bpp_value / (out_criterion["loss"].item() + 1e-8))
             * 100,
         }
 
-        # Track layer statistics periodically (every 50 steps)
-        if prefix == "train" and self.global_step % 50 == 0:
-            # Track weight norms
-            for name, param in self.net.named_parameters():
-                if param.requires_grad:
-                    norm = param.data.norm().item()
-                    log_info[f"{prefix}/weight_norm/{name}"] = norm
+        # # Manual tracking of weight and gradients
+        # if prefix == "train" and self.global_step % 50 == 0:
+        #     # Track weight norms
+        #     for name, param in self.net.named_parameters():
+        #         if param.requires_grad:
+        #             norm = param.data.norm().item()
+        #             log_info[f"{prefix}/weight_norm/{name}"] = norm
 
-                    # Track history for anomaly detection
-                    if name not in self.weight_norms_history:
-                        self.weight_norms_history[name] = []
-                    self.weight_norms_history[name].append(norm)
+        #             # Track history for weight monitoring
+        #             if name not in self.weight_norms_history:
+        #                 self.weight_norms_history[name] = []
+        #             self.weight_norms_history[name].append(norm)
 
-                    # If we have gradient, track it too
-                    if param.grad is not None:
-                        grad_norm = param.grad.data.norm().item()
-                        log_info[f"{prefix}/grad_norm/{name}"] = grad_norm
+        #             # If we have gradient, track it too
+        #             if param.grad is not None:
+        #                 grad_norm = param.grad.data.norm().item()
+        #                 log_info[f"{prefix}/grad_norm/{name}"] = grad_norm
 
-                        # Track gradient history
-                        if name not in self.gradient_norms_history:
-                            self.gradient_norms_history[name] = []
-                        self.gradient_norms_history[name].append(grad_norm)
-
-        # Save loss ratio history for epoch-level tracking
-        if prefix == "train" and self.global_step % 10 == 0:  # Sample every 10 batches
-            self.loss_ratio_history["mse_to_bpp"].append(loss_ratio)
-
-        if prefix == "valid" and self.global_step == 0:  # Only once per validation
-            # Save epoch-level metrics
-            self.loss_ratio_history["epochs"].append(self.current_epoch)
-
-            # Log ratio trend as line plot
-            if len(self.loss_ratio_history["epochs"]) > 1:
-                try:
-                    import matplotlib.pyplot as plt
-
-                    fig = plt.figure(figsize=(10, 5))
-                    plt.plot(
-                        self.loss_ratio_history["epochs"],
-                        [
-                            sum(
-                                self.loss_ratio_history["mse_to_bpp"][
-                                    i * 10 : (i + 1) * 10
-                                ]
-                            )
-                            / 10
-                            for i in range(len(self.loss_ratio_history["epochs"]))
-                        ],
-                    )
-                    plt.title("MSE/BPP Ratio Over Training")
-                    plt.xlabel("Epoch")
-                    plt.ylabel("MSE/BPP Ratio")
-
-                    self.logger.experiment.log({"training/loss_ratio_trend": fig})
-                    plt.close()
-                except Exception as e:
-                    print(f"Error plotting loss ratio trend: {str(e)}")
+        #                 # Track gradient history
+        #                 if name not in self.gradient_norms_history:
+        #                     self.gradient_norms_history[name] = []
+        #                 self.gradient_norms_history[name].append(grad_norm)
 
         # Configure per prefix (e.g. train/valid/test) logging **kwargs.
         on_step, on_epoch, prog_bar, sync_dist = None, None, False, True
@@ -366,70 +387,44 @@ class SARDDCModule(LightningModule):
             prog_bar=prog_bar,
         )
 
-        # Check for anomalies - modified to check from epoch 0
-        if prefix == "train" and self.monitor_anomalies:
-            # Reset counter if epoch changed
-            if self.current_epoch_tracked != self.current_epoch:
-                self.anomalies_this_epoch = 0
-                self.current_epoch_tracked = self.current_epoch
-
-            # Check if we've reached the maximum number of anomaly logs for this epoch
-            if self.anomalies_this_epoch < self.hparams.max_anomalies_per_epoch:
-                # Enhanced anomaly checks
-                is_anomaly, anomaly_reason = self._enhanced_check_for_anomalies(
-                    mse_value, psnr_value, bpp_value, loss_ratio
-                )
-
-                # Save visualization if anomaly detected
-                if is_anomaly:
-                    self.anomaly_count += 1
-                    self.anomalies_this_epoch += 1
-                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"{self.hparams.anomaly_log_dir}/anomaly_{prefix}_{timestamp}_{self.anomaly_count:03d}"
-
-                    # Create a comprehensive info dict for logging
-                    info = {
-                        "prefix": prefix,
-                        "timestamp": timestamp,
-                        "reason": anomaly_reason,
-                        "current_epoch": self.current_epoch,
-                        "global_step": self.global_step,
-                        "metrics": log_info,
-                    }
-
-                    save_anomaly_visualization(
-                        input=input,
-                        target=target,
-                        reconstruction=reconstructions,
-                        filename=filename,
-                        info=info,
-                    )
-
-                    # Log anomaly to console for better visibility
-                    self.log(
-                        f"{prefix}/anomalies_detected", 1, on_step=True, on_epoch=False
-                    )
-                    print(
-                        f"WARNING: Anomaly detected at epoch {self.current_epoch}, step {self.global_step}: {anomaly_reason}"
-                    )
+        # Log anomalies (low PSNR)
+        if self.current_epoch > 0 and psnr_value_1 < self.psnr_ano_threshold:
+            additional_info = {
+                "bpp": bpp_value,
+                "mse": mse_value,
+                "loss": out_criterion["loss"].item(),
+            }
+            self._log_anomalies(
+                prefix,
+                input,
+                target,
+                reconstructions,
+                ("PSNR", psnr_value_1),
+                additional_info,
+            )
 
     def training_step(self, batch, batch_idx):
         """Training step using Noise2Noise approach.
         Because we have two optimizers, we need to manually optimize.
         During training, we randomly switch between real and imaginary parts."""
-        # Get the optimizers and manually zero the gradients.
-        net_optimizer, aux_optimizer = self.optimizers()
+        # Get the optimizers as a list to handle properly
+        optimizers = self.optimizers()
+        if not isinstance(optimizers, list):
+            optimizers = list(optimizers)
+
+        net_optimizer = optimizers[0]
+        aux_optimizer = optimizers[1]
+
         net_optimizer.zero_grad()
         aux_optimizer.zero_grad()
 
-        # Forward pass.
+        # Forward pass
         input, target = self._random_switch_Re_Im(batch)
 
         # Verify input and target sanity before forward pass
         if torch.isnan(input).any() or torch.isinf(input).any():
             self.log("train/nan_inf_inputs", 1.0, on_step=True)
             print(f"WARNING: NaN or Inf detected in inputs at step {self.global_step}")
-            # Could return early here, but let's continue to log the error properly
 
         if torch.isnan(target).any() or torch.isinf(target).any():
             self.log("train/nan_inf_targets", 1.0, on_step=True)
@@ -450,23 +445,21 @@ class SARDDCModule(LightningModule):
         if torch.isnan(out_criterion["loss"]) or torch.isinf(out_criterion["loss"]):
             self.log("train/nan_inf_loss", 1.0, on_step=True)
             print(f"WARNING: NaN or Inf detected in loss at step {self.global_step}")
-            # We could skip the backward pass, but let's allow the training to continue and address this elsewhere
 
-        # Backward pass for the main loss.
+        # Backward pass for the main loss
         self.manual_backward(out_criterion["loss"])
-        if self.hparams.gradient_clip_norm > 0.0:
+        if self.hparams.gradient_clip_norm > 0.0:  # Prevent exploding gradients
             torch.nn.utils.clip_grad_norm_(
                 self.net.parameters(), self.hparams.gradient_clip_norm
             )
         net_optimizer.step()
-        # The scheduler is updated in on_validation_epoch_end, because we monitor "valid/loss".
 
-        # Auxiliary loss.
+        # Auxiliary loss
         aux_loss = self.net.aux_loss()
         self.manual_backward(aux_loss)
         aux_optimizer.step()
 
-        # Log metrics, returning the loss is not required in manual optimization.
+        # Log metrics
         self._log_metrics(
             "train", out_criterion, aux_loss.item(), input, reconstructions, target
         )
@@ -475,7 +468,6 @@ class SARDDCModule(LightningModule):
         """Validation step with optimized processing of both real and imaginary parts."""
         input, target = self._random_switch_Re_Im(batch)
         out_criterion, reconstructions = self._model_forward(input, target)
-        # Ensure aux_loss is a scalar, original logging does not use self.net.aux_loss().item(), only self.net.aux_loss().
         aux_loss = self.net.aux_loss()
         self._log_metrics(
             "valid", out_criterion, aux_loss.item(), input, reconstructions, target
@@ -485,7 +477,6 @@ class SARDDCModule(LightningModule):
         """Test step with optimized processing of both real and imaginary parts."""
         input, target = self._random_switch_Re_Im(batch)
         out_criterion, reconstructions = self._model_forward(input, target)
-        # Ensure aux_loss is a scalar, original logging does not use self.net.aux_loss().item(), only self.net.aux_loss().
         aux_loss = self.net.aux_loss()
         self._log_metrics(
             "test", out_criterion, aux_loss.item(), input, reconstructions, target
@@ -497,7 +488,7 @@ class SARDDCModule(LightningModule):
         if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             lr_scheduler.step(self.trainer.callback_metrics["valid/loss"])
 
-    def configure_optimizers(self):  # -> Can probably be optimized further.
+    def configure_optimizers(self):
         """Choose what optimizers and learning-rate schedulers to use in your optimization.
         Normally you'd need one. But in the case of GANs or similar, you might have multiple.
 
@@ -516,13 +507,15 @@ class SARDDCModule(LightningModule):
         ]
 
         # Validation: Ensure no parameter overlap and all parameters are accounted for
-        all_params = set(self.net.named_parameters())
+        all_params = set(
+            param for _, param in self.net.named_parameters() if param.requires_grad
+        )
         assert not set(main_params) & set(aux_params), (
             "Intersection found in main and auxiliary parameters"
         )
-        assert set(main_params) | set(aux_params) == {
-            param for _, param in all_params
-        }, "Union of main and auxiliary parameters does not match all model parameters"
+        assert set(main_params) | set(aux_params) == all_params, (
+            "Union of main and auxiliary parameters does not match all model parameters"
+        )
 
         # Instantiate optimizers from the configuration
         net_optimizer = self.hparams.net_optimizer(params=main_params)

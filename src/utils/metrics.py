@@ -39,32 +39,28 @@ class UnitaryRDLoss(nn.Module):
         #     distortion = 1 - out["ms_ssim_loss"]
         # else:
         out["mse_loss"] = self.metric(output["x_hat"], target)
-        distortion = out["mse_loss"]  # * 255**2
+        # distortion = out["mse_loss"]  # * 255**2
 
-        out["loss"] = self.lmbda * distortion + out["bpp_loss"]
+        out["loss"] = self.lmbda * out["mse_loss"] + out["bpp_loss"]
         if self.return_type == "all":
             return out
         else:
             return out[self.return_type]
 
 
+# @TODO: Is there a way to use torch.log10() and other math operation? And If yes, would it be faster?
 def calculate_psnr_1(mse_loss: float) -> float:
     """Calculate PSNR from MSE loss, assuming the max of the image is 1."""
-    warnings.warn(
-        "calculate_psnr() assumes the maximum is 1 (i.e., simply computes `-10 * math.log10(mse_loss)`).",
-        DeprecationWarning,
-        stacklevel=2,
-    )
     return -10 * math.log10(mse_loss)
 
 
 def calculate_psnr_max(mse_loss: float, max_value: float) -> float:
     """Calculate PSNR from MSE loss."""
     return 10 * math.log10((max_value**2) / mse_loss)
-    # return 20 * math.log10(max_value) - 10 * math.log10(mse_loss)
+    # equivalent to: return 20 * math.log10(max_value) - 10 * math.log10(mse_loss)
 
 
-def calculate_bpp(self, likelihoods, input_shape):
+def calculate_bpp(likelihoods, input_shape):
     """Calculate bits per pixel.
 
     Args:
@@ -88,7 +84,7 @@ def calculate_bpp(self, likelihoods, input_shape):
     return bpp
 
 
-def calculate_ssim(self, x, x_hat):
+def calculate_ssim(x, x_hat):
     """Calculate Structural Similarity Index Measure.
 
     Args:

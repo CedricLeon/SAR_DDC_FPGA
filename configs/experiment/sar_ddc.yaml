@@ -14,16 +14,16 @@ defaults:
 data:
   hdf5_dir: ${paths.data_dir}processed_hdf5/randomsplit5_nopres_norm0nat
   log_mode: "natural"
-  normalize: 0 # 0 <=> true min-max, 1 <=> min-max with 1% and 99% percentiles, etc.
+  must_normalize: null # 0 <=> true min-max, 1 <=> min-max with 1% and 99% percentiles, etc.
   batch_size: 16
   num_workers: 11
 
 model:
   criterion:
-    lmbda: 0.1
+    lmbda: 10
 
   net_optimizer:
-    lr: 0.0001 # Got infinite loss with 0.001
+    lr: 1e-5 # Got infinite loss with 0.001
 
 callbacks:
   log_reconstruction:
@@ -36,7 +36,7 @@ callbacks:
 
 trainer:
   min_epochs: 1
-  max_epochs: 50
+  max_epochs: 10
 
 logger:
   wandb:
@@ -49,3 +49,5 @@ logger:
 task_name: train/sar_ddc/hyperprior
 tags: ["TSX_SSC", "hyperprior"]
 seed: 42
+# Flatten the lmbda value because W&B custom chart expressions do not support nested dicts
+lambda: ${model.criterion.lmbda}

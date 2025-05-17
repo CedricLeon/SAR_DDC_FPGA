@@ -32,9 +32,4 @@ scheduler:
 gradient_clip_norm: 1.0 # https://github.com/ali-zafari/TBTC/blob/master/lit_model.py
 compile: False          # compile model for faster training with pytorch 2.0
 
-monitor_anomalies: True
-max_anomalies_per_epoch: 5
-anomaly_log_dir: ${paths.output_dir}/anomalies
-mse_spike_ratio: 20.0
-anomaly_psnr_threshold: 0.0  # PSNR below this value triggers log and visualization
-anomaly_bpp_threshold: 4.0  # BPP above this value triggers log and visualization
+anomalies_log_dir: ${paths.output_dir}/anomalies
