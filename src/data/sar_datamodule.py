@@ -24,7 +24,7 @@ class TSXSSCDataModule(LightningDataModule):
         self,
         hdf5_dir: str,
         log_mode: str = "natural",
-        normalize: float | None = None,
+        must_normalize: float | None = None,
         batch_size: int = 16,
         num_workers: int = 4,
         pin_memory: bool = True,
@@ -36,7 +36,7 @@ class TSXSSCDataModule(LightningDataModule):
         Args:
             hdf5_dir: Directory containing HDF5 dataset files
             log_mode: logarithmic base of the loaded data, either "db": Transformed with 10*log10() or "natural": Transformed with log(). Default: "natural".
-            normalize: Min-max normalization used for the data. None means not normalized, while any other percent indicates the percentiles used in place of min and max values, e.g., 1 <=> norm_x = (x - p1) / (p99 - p1). In particular, 0 implies the traditionnal min-max normalization. Default: None.
+            must_normalize: Min-max normalization used for the data. None means the data is already normalized, while any other percent indicates the percentiles that should be used in place of min and max values, e.g., 1 <=> norm_x = (x - p1) / (p99 - p1). In particular, 0 implies the traditionnal min-max normalization. Default: None.
             batch_size: Batch size (default: 16)
             num_workers: Number of workers for DataLoader (default: 4)
             pin_memory: Whether to pin memory (default: True)
@@ -75,7 +75,7 @@ class TSXSSCDataModule(LightningDataModule):
             self.data_train = TSXSSCDataset(
                 self.train_path,
                 log_mode=self.hparams.log_mode,
-                normalize=self.hparams.normalize,
+                must_normalize=self.hparams.must_normalize,
                 transform=self.transform,
             )
 
@@ -83,7 +83,7 @@ class TSXSSCDataModule(LightningDataModule):
             self.data_val = TSXSSCDataset(
                 self.val_path,
                 log_mode=self.hparams.log_mode,
-                normalize=self.hparams.normalize,
+                must_normalize=self.hparams.must_normalize,
                 transform=self.transform,
             )
 
@@ -92,7 +92,7 @@ class TSXSSCDataModule(LightningDataModule):
             self.data_test = TSXSSCDataset(
                 self.test_path,
                 log_mode=self.hparams.log_mode,
-                normalize=self.hparams.normalize,
+                must_normalize=self.hparams.must_normalize,
                 transform=self.transform,
             )
 

@@ -24,7 +24,7 @@ class TSXSSCDataset(Dataset):
         self,
         hdf5_path: Path,
         log_mode: str = "natural",
-        normalize: float | None = None,
+        must_normalize: float | None = None,
         transform=None,
     ):
         """Initialize the dataset.
@@ -32,13 +32,13 @@ class TSXSSCDataset(Dataset):
         Args:
             hdf5_path: Path to the HDF5 file containing pre-processed patches
             log_mode: logarithmic base of the loaded data, either "db": Transformed with 10*log10() or "natural": Transformed with log(). Default: "natural".
-            normalize: Min-max normalization used for the data. None means not normalized, while any other percent indicates the percentiles used in place of min and max values, e.g., 1 <=> norm_x = (x - p1) / (p99 - p1). In particular, 0 implies the traditionnal min-max normalization. Default: None.
+            must_normalize: Min-max normalization used for the data. None means the data is already normalized, while any other percent indicates the percentiles that should be used in place of min and max values, e.g., 1 <=> norm_x = (x - p1) / (p99 - p1). In particular, 0 implies the traditionnal min-max normalization. Default: None.
             transform: Optional transform to apply to samples (default: None)
         """
         super().__init__()
         self.hdf5_path = hdf5_path
         self.log_mode = log_mode
-        self.normalize = normalize
+        self.must_normalize = must_normalize
         self.transform = transform
 
         if not self.hdf5_path.exists():
@@ -69,10 +69,10 @@ class TSXSSCDataset(Dataset):
             real = patch[:, :, 0]
             imag = patch[:, :, 1]
 
-            if self.normalize != 0 and self.normalize is None:
+            if self.must_normalize is not None:
                 # @TODO: implement support for unnormalized data
                 warnings.warn(
-                    f"Unnormalized data is not supported. TSXSSCDataset was instantiated with {self.normalize=} and {self.log_mode=}."
+                    f"Unnormalized data is not supported. TSXSSCDataset was instantiated with {self.must_normalize=} and {self.log_mode=}."
                 )
                 # # Apply normalization
                 # real = normalize_sar(real)
