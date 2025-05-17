@@ -85,6 +85,7 @@ def norm_minmax(x, min, max):
 def preserve_point_like_scatterers(real2, imag2, threshold_db=60):
     """
     Preserve point-like scatterers in TSX image above a certain threshold.
+    Memory-optimized version with in-place operations where possible.
 
     Args:
         real2: Squared real part of SAR image
@@ -92,62 +93,98 @@ def preserve_point_like_scatterers(real2, imag2, threshold_db=60):
         threshold_db: Threshold in dB for scatterer preservation
 
     Returns:
-        Tuple of (processed_data, scatterer_mask)
+        Tuple of (preserved_patch, scatterer_mask) where preserved_patch is the processed image
     """
-    intensity = real2 + imag2
-    intensity_db = convert_to_db(intensity)
-    scatterer_mask = intensity_db > threshold_db
+    # Check if we need to make a copy of the input arrays or can work in-place
     real2_proc = real2.copy()
     imag2_proc = imag2.copy()
 
-    # For pixels above threshold, assign the same value to both real and imaginary parts
-    # Value = sqrt(intensity/2), which gives half the power to each component
-    scatterer_value = np.sqrt(intensity[scatterer_mask] / 2)
-    real2_proc[scatterer_mask] = scatterer_value
-    imag2_proc[scatterer_mask] = scatterer_value
+    # Compute intensity directly without intermediate arrays where possible
+    intensity = real2 + imag2
 
-    return np.stack((real2_proc, imag2_proc), axis=2), scatterer_mask
+    # Convert to dB (this operation requires a new array anyway)
+    intensity_db = convert_to_db(intensity)
+
+    # Create mask for pixels above threshold
+    scatterer_mask = intensity_db > threshold_db
+
+    # Free memory we no longer need
+    del intensity_db
+
+    # Only process if there are any scatterers above threshold
+    if np.any(scatterer_mask):
+        # For these pixels, assign the same value to both real and imaginary parts
+        # Value = sqrt(intensity/2), which gives half the power to each component
+        scatterer_value = np.sqrt(intensity[scatterer_mask] / 2)
+        real2_proc[scatterer_mask] = scatterer_value
+        imag2_proc[scatterer_mask] = scatterer_value
+
+    # Stack into final output format
+    preserved_patch = np.stack((real2_proc, imag2_proc), axis=2)
+
+    # Free more memory
+    del intensity, real2_proc, imag2_proc
+    gc.collect()
+
+    # Return expected format for compatibility with existing code
+    return preserved_patch, scatterer_mask
 
 
 def normalize_data(data, norm_mode="db", norm_minmax_val=0, verbose=False):
     """
-    Normalize data using log transformation and min-max scaling.
+    Memory-optimized normalization using log transformation and min-max scaling.
+    Processes data in batches to reduce memory usage.
 
     Args:
         data: Input data with shape [N, H, W, 2]
         norm_mode: "db" or "natural" for log mode
         norm_minmax_val: Percentile value for min-max normalization (0 for full min-max, other values for percentiles)
         verbose: Whether to print statistics
-        log: Logger object
 
     Returns:
         Normalized data
     """
+    # Compute batch size based on data shape and available memory
+    # Start with a batch size that's around 1/4 of the total data or max 1000 patches
+    batch_size = min(1000, max(1, len(data) // 4))
+    num_batches = (len(data) + batch_size - 1) // batch_size  # Ceiling division
+
     # Process real and imaginary parts independently
     normalized_data = np.zeros_like(data, dtype=np.float32)
-    stats = {"real": {}, "imag": {}}
 
-    # Extract real and imaginary components
-    real_data = data[..., 0]
-    imag_data = data[..., 1]
+    # First pass: calculate statistics on a smaller sample to save memory
+    # Use either 20% of the data or 1000 patches, whichever is smaller
+    sample_size = min(1000, max(1, int(len(data) * 0.2)))
+    sample_indices = np.random.choice(len(data), sample_size, replace=False)
+    sample_data = data[sample_indices]
 
-    # Apply log transformation based on mode
+    # Extract real and imaginary components from sample
+    sample_real = sample_data[..., 0]
+    sample_imag = sample_data[..., 1]
+
+    # Compute log-transform on sample
     if norm_mode == "db":
-        real_log = convert_to_db(real_data)
-        imag_log = convert_to_db(imag_data)
-        if verbose and log:
+        sample_real_log = convert_to_db(sample_real)
+        sample_imag_log = convert_to_db(sample_imag)
+        if verbose:
             log.info("      Applied dB (10*log10) transformation")
     elif norm_mode == "natural":
-        real_log = np.log(real_data + np.spacing(1))
-        imag_log = np.log(imag_data + np.spacing(1))
-        if verbose and log:
+        sample_real_log = np.log(sample_real + np.spacing(1))
+        sample_imag_log = np.log(sample_imag + np.spacing(1))
+        if verbose:
             log.info("      Applied natural log transformation")
     else:
         raise ValueError(f"Invalid normalization mode: {norm_mode}")
 
-    # Compute statistics
-    stats["real"] = compute_statistics(real_log)
-    stats["imag"] = compute_statistics(imag_log)
+    # Compute statistics from sample
+    stats = {
+        "real": compute_statistics(sample_real_log),
+        "imag": compute_statistics(sample_imag_log),
+    }
+
+    # Free sample memory
+    del sample_data, sample_real, sample_imag, sample_real_log, sample_imag_log
+    gc.collect()
 
     # Determine min-max values based on percentile
     if norm_minmax_val == 0:
@@ -155,7 +192,7 @@ def normalize_data(data, norm_mode="db", norm_minmax_val=0, verbose=False):
         min_real, max_real = stats["real"]["min"], stats["real"]["max"]
         min_imag, max_imag = stats["imag"]["min"], stats["imag"]["max"]
 
-        if verbose and log:
+        if verbose:
             log.info("      Using full min-max range for normalization")
             log.info(f"         Real channel: min={min_real:.4f}, max={max_real:.4f}")
             log.info(f"         Imag channel: min={min_imag:.4f}, max={max_imag:.4f}")
@@ -166,7 +203,7 @@ def normalize_data(data, norm_mode="db", norm_minmax_val=0, verbose=False):
         min_imag = stats["imag"][f"p{norm_minmax_val}"]
         max_imag = stats["imag"][f"p{100 - norm_minmax_val}"]
 
-        if verbose and log:
+        if verbose:
             log.info(
                 f"      Using {norm_minmax_val}-{100 - norm_minmax_val} percentile range for normalization"
             )
@@ -177,9 +214,44 @@ def normalize_data(data, norm_mode="db", norm_minmax_val=0, verbose=False):
                 f"          Imag channel: p{norm_minmax_val}={min_imag:.4f}, p{100 - norm_minmax_val}={max_imag:.4f}"
             )
 
-    # Apply min-max normalization
-    normalized_data[..., 0] = norm_minmax(real_log, min_real, max_real)
-    normalized_data[..., 1] = norm_minmax(imag_log, min_imag, max_imag)
+    # Second pass: process in batches
+    for i in range(num_batches):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, len(data))
+
+        # Get batch
+        batch = data[start_idx:end_idx]
+
+        # Process real component
+        real_batch = batch[..., 0]
+        if norm_mode == "db":
+            real_log = convert_to_db(real_batch)
+        else:
+            real_log = np.log(real_batch + np.spacing(1))
+
+        # In-place normalization for real component
+        normalized_data[start_idx:end_idx, ..., 0] = norm_minmax(
+            real_log, min_real, max_real
+        )
+
+        # Free memory
+        del real_batch, real_log
+
+        # Process imag component
+        imag_batch = batch[..., 1]
+        if norm_mode == "db":
+            imag_log = convert_to_db(imag_batch)
+        else:
+            imag_log = np.log(imag_batch + np.spacing(1))
+
+        # In-place normalization for imag component
+        normalized_data[start_idx:end_idx, ..., 1] = norm_minmax(
+            imag_log, min_imag, max_imag
+        )
+
+        # Free memory
+        del imag_batch, imag_log, batch
+        gc.collect()
 
     return normalized_data
 
@@ -303,9 +375,10 @@ def preprocess_tsx_image(
         scatterer_masks_list = []
 
         for patch in squared_patches:
-            preserved_patch, scatterer_mask = preserve_point_like_scatterers(
+            real_proc, imag_proc, scatterer_mask = preserve_point_like_scatterers(
                 patch[:, :, 0], patch[:, :, 1], threshold_db=preserve_threshold
             )
+            preserved_patch = np.stack((real_proc, imag_proc), axis=2)
             preserved_patches_list.append(preserved_patch)
             scatterer_masks_list.append(scatterer_mask)
 
@@ -642,6 +715,7 @@ def write_hdf5(patches, metadata, path):
 def split_patches(patches, metadata, train_frac=0.8, val_frac=0.1):
     """
     Split patches into train, validation, and test sets.
+    Memory-optimized implementation that processes data in batches.
 
     Args:
         patches: Array of patches to split
@@ -658,18 +732,62 @@ def split_patches(patches, metadata, train_frac=0.8, val_frac=0.1):
     n_val = int(n_samples * val_frac)
     n_test = n_samples - n_train - n_val
 
+    log.info(
+        f"Splitting {n_samples} patches: {n_train} train, {n_val} val, {n_test} test"
+    )
+
     # Create random permutation of indices
     indices = np.random.permutation(n_samples)
 
-    # Split the data
+    # Split the indices
     train_indices = indices[:n_train]
     val_indices = indices[n_train : n_train + n_val]
     test_indices = indices[n_train + n_val :]
 
-    # Create the splits
-    train_patches = patches[train_indices]
-    val_patches = patches[val_indices]
-    test_patches = patches[test_indices]
+    # Process in batches to reduce memory usage
+    # First, create empty arrays to hold the data
+    if n_samples > 0:
+        patch_shape = patches[0].shape
+
+        # Create arrays with proper shapes but use efficient memory allocation
+        train_patches = np.zeros((n_train,) + patch_shape, dtype=patches.dtype)
+        val_patches = np.zeros((n_val,) + patch_shape, dtype=patches.dtype)
+        test_patches = np.zeros((n_test,) + patch_shape, dtype=patches.dtype)
+
+        # Determine batch size based on available memory (adjust as needed)
+        batch_size = 1000  # Start with a reasonable batch size
+
+        # Copy training data in batches
+        for i in range(0, n_train, batch_size):
+            end_idx = min(i + batch_size, n_train)
+            batch_indices = train_indices[i:end_idx]
+            train_patches[i:end_idx] = patches[batch_indices]
+            # Force garbage collection periodically
+            if i % (batch_size * 10) == 0:
+                gc.collect()
+
+        # Copy validation data in batches
+        for i in range(0, n_val, batch_size):
+            end_idx = min(i + batch_size, n_val)
+            batch_indices = val_indices[i:end_idx]
+            val_patches[i:end_idx] = patches[batch_indices]
+            # Force garbage collection periodically
+            if i % (batch_size * 10) == 0:
+                gc.collect()
+
+        # Copy test data in batches
+        for i in range(0, n_test, batch_size):
+            end_idx = min(i + batch_size, n_test)
+            batch_indices = test_indices[i:end_idx]
+            test_patches[i:end_idx] = patches[batch_indices]
+            # Force garbage collection periodically
+            if i % (batch_size * 10) == 0:
+                gc.collect()
+    else:
+        # Handle edge case of empty array
+        train_patches = patches[train_indices]
+        val_patches = patches[val_indices]
+        test_patches = patches[test_indices]
 
     # Add split information to metadata
     split_metadata = metadata.copy()
@@ -883,10 +1001,12 @@ def process_dataset(
         with h5py.File(file_list[0], "r") as f:
             patch_shape = f["patches"].shape[1:]
 
+        # Chunk size for reading and writing
+        chunk_size = 1000  # Adjust based on available memory
+
         # Create dataset with chunks
         with h5py.File(output_file, "w") as out_f:
             # Create extensible dataset
-            chunk_size = min(1000, total_count)
             patches_dset = out_f.create_dataset(
                 "patches",
                 shape=(0,) + patch_shape,
@@ -910,74 +1030,111 @@ def process_dataset(
                         for attr_name, attr_value in first_f[group_name].attrs.items():
                             group.attrs[attr_name] = attr_value
 
-            # Add patches from each file
+            # Add patches from each file in chunks
             start_idx = 0
             for i, file_path in enumerate(
                 tqdm(file_list, desc=f"Merging {set_name} files")
             ):
                 with h5py.File(file_path, "r") as in_f:
-                    file_patches = in_f["patches"][:]
-                    num_file_patches = len(file_patches)
+                    num_file_patches = in_f["patches"].shape[0]
+                    for chunk_start in range(0, num_file_patches, chunk_size):
+                        chunk_end = min(chunk_start + chunk_size, num_file_patches)
+                        file_patches_chunk = in_f["patches"][chunk_start:chunk_end]
 
-                    # Resize dataset and copy patches
-                    patches_dset.resize(start_idx + num_file_patches, axis=0)
-                    patches_dset[start_idx : start_idx + num_file_patches] = (
-                        file_patches
+                        # Resize dataset and copy patches
+                        num_chunk_patches = len(file_patches_chunk)
+                        patches_dset.resize(start_idx + num_chunk_patches, axis=0)
+                        patches_dset[start_idx : start_idx + num_chunk_patches] = (
+                            file_patches_chunk
+                        )
+
+                        # Update start index
+                        start_idx += num_chunk_patches
+
+                        del file_patches_chunk
+                        gc.collect()  # Important to free memory after each chunk
+
+                # Collect short names of all images
+                image_short_names = []
+                for file_path in file_list:
+                    with h5py.File(file_path, "r") as in_f:
+                        if "short_name" in in_f.attrs:
+                            short_name = in_f.attrs["short_name"]
+                            if short_name not in image_short_names:
+                                image_short_names.append(short_name)
+
+                # Calculate statistics for a subset of data (10%)
+                stats_data_percent = 10
+                log.info(
+                    f"Calculating statistics using {stats_data_percent}% of the data..."
+                )
+                # Make sure we don't exceed the dataset size (actual range is 0 to total_count-1)
+                sample_size = max(
+                    1, min(total_count, int(total_count * stats_data_percent / 100))
+                )
+
+                # Use sequential indices instead of random sampling to avoid potential h5py fancy indexing issues
+                # This is more memory efficient and avoids out of range errors
+                max_idx = total_count - 1
+                step = max(1, max_idx // sample_size)
+
+                # Generate evenly spaced indices
+                indices = np.arange(0, max_idx, step)[:sample_size]
+
+                # Read sample data in chunks
+                sample_data = []
+                for chunk_start in range(0, len(indices), chunk_size):
+                    chunk_end = min(chunk_start + chunk_size, len(indices))
+                    sample_indices = indices[chunk_start:chunk_end]
+                    # Read one index at a time to avoid fancy indexing issues with h5py
+                    chunk_data = []
+                    for idx in sample_indices:
+                        chunk_data.append(patches_dset[idx : idx + 1])
+                    if chunk_data:
+                        sample_data.append(np.concatenate(chunk_data, axis=0))
+
+                if sample_data:
+                    sample_data = np.concatenate(sample_data, axis=0)
+                else:
+                    # Fallback if we couldn't get any samples
+                    log.warning(
+                        "Could not sample data for statistics. Using first 10 elements."
                     )
+                    sample_size = min(10, total_count)
+                    sample_data = patches_dset[:sample_size]
 
-                    # Update start index
-                    start_idx += num_file_patches
+                # Calculate statistics for real and imaginary parts
+                real_data = sample_data[..., 0]
+                imag_data = sample_data[..., 1]
 
-            # Collect short names of all images
-            image_short_names = []
-            for file_path in file_list:
-                with h5py.File(file_path, "r") as in_f:
-                    if "short_name" in in_f.attrs:
-                        short_name = in_f.attrs["short_name"]
-                        if short_name not in image_short_names:
-                            image_short_names.append(short_name)
+                # Update final metadata
+                out_f.attrs["creation_date"] = str(datetime.now())
+                out_f.attrs["processing_duration"] = str(datetime.now() - start_time)
+                out_f.attrs["preserve_threshold"] = (
+                    "None" if preserve_threshold is None else preserve_threshold
+                )
+                out_f.attrs["norm_mode"] = "None" if norm_mode is None else norm_mode
+                out_f.attrs["norm_minmax_val"] = norm_minmax_val
+                out_f.attrs["total_patches"] = total_count
+                out_f.attrs["patch_size"] = patch_size
+                out_f.attrs["images_short_names"] = "/".join(image_short_names)
+                out_f.attrs["train_size"] = total_train
+                out_f.attrs["val_size"] = total_val
+                out_f.attrs["test_size"] = total_test
+                out_f.attrs["stats_data_percent"] = stats_data_percent
 
-            # Calculate statistics for a subset of data (10%)
-            stats_data_percent = 10
-            log.info(
-                f"Calculating statistics using {stats_data_percent}% of the data..."
-            )
-            sample_size = max(1, int(total_count * stats_data_percent / 100))
-            indices = np.random.choice(total_count, sample_size, replace=False)
-            sample_data = patches_dset[indices]
+                # Add statistics for real and imaginary parts
+                out_f.attrs["min_real"] = float(np.min(real_data))
+                out_f.attrs["max_real"] = float(np.max(real_data))
+                out_f.attrs["mean_real"] = float(np.mean(real_data))
+                out_f.attrs["p5_real"] = float(np.percentile(real_data, 5))
+                out_f.attrs["p95_real"] = float(np.percentile(real_data, 95))
 
-            # Calculate statistics for real and imaginary parts
-            real_data = sample_data[..., 0]
-            imag_data = sample_data[..., 1]
-
-            # Update final metadata
-            out_f.attrs["creation_date"] = str(datetime.now())
-            out_f.attrs["processing_duration"] = str(datetime.now() - start_time)
-            out_f.attrs["preserve_threshold"] = (
-                "None" if preserve_threshold is None else preserve_threshold
-            )
-            out_f.attrs["norm_mode"] = "None" if norm_mode is None else norm_mode
-            out_f.attrs["norm_minmax_val"] = norm_minmax_val
-            out_f.attrs["total_patches"] = total_count
-            out_f.attrs["patch_size"] = patch_size
-            out_f.attrs["images_short_names"] = "/".join(image_short_names)
-            out_f.attrs["train_size"] = total_train
-            out_f.attrs["val_size"] = total_val
-            out_f.attrs["test_size"] = total_test
-            out_f.attrs["stats_data_percent"] = stats_data_percent
-
-            # Add statistics for real and imaginary parts
-            out_f.attrs["min_real"] = float(np.min(real_data))
-            out_f.attrs["max_real"] = float(np.max(real_data))
-            out_f.attrs["mean_real"] = float(np.mean(real_data))
-            out_f.attrs["p5_real"] = float(np.percentile(real_data, 5))
-            out_f.attrs["p95_real"] = float(np.percentile(real_data, 95))
-
-            out_f.attrs["min_imag"] = float(np.min(imag_data))
-            out_f.attrs["max_imag"] = float(np.max(imag_data))
-            out_f.attrs["mean_imag"] = float(np.mean(imag_data))
-            out_f.attrs["p5_imag"] = float(np.percentile(imag_data, 5))
-            out_f.attrs["p95_imag"] = float(np.percentile(imag_data, 95))
+                out_f.attrs["min_imag"] = float(np.min(imag_data))
+                out_f.attrs["max_imag"] = float(np.max(imag_data))
+                out_f.attrs["mean_imag"] = float(np.mean(imag_data))
+                out_f.attrs["p5_imag"] = float(np.percentile(imag_data, 5))
+                out_f.attrs["p95_imag"] = float(np.percentile(imag_data, 95))
 
         return output_file
 
