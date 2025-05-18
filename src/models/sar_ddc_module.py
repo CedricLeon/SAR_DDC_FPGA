@@ -81,7 +81,7 @@ class SARDDCModule(lightning.LightningModule):
                 self.net,
                 log="all",  # Track both gradients and parameters
                 log_freq=100,  # Log every 100 batches
-                # log_graph=False,  # Disable logging model graph
+                log_graph=False,  # Disable logging model graph
             )
 
     def on_train_end(self):
@@ -328,7 +328,7 @@ class SARDDCModule(lightning.LightningModule):
         """Log training, validation, or test metrics."""
         mse_value = out_criterion["mse"].item()
         ssim_value = out_criterion["ssim"].item()
-        ms_ssim_value = out_criterion["ms_ssim_loss"].item()
+        ms_ssim_value = out_criterion["ms_ssim"].item()
         psnr_value_1 = calculate_psnr_1(mse_value)
         psnr_value_max = calculate_psnr_max(mse_value, torch.max(input).item())
         bpp_value = out_criterion["bpp_loss"].item()

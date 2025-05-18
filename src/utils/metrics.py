@@ -20,6 +20,7 @@ class UnitaryRDLoss(nn.Module):
         super().__init__()
         if metric not in ["mse", "ssim", "ms_ssim"]:
             raise NotImplementedError(f"{metric} is not supported!")
+        self.metric = metric
 
         self.lmbda = lmbda
 
@@ -38,14 +39,14 @@ class UnitaryRDLoss(nn.Module):
         )
         out["mse"] = self.mse(output["x_hat"], target)
         out["ssim"] = self.ssim(output["x_hat"], target)
-        out["ms_ssim_loss"] = self.ms_ssim(output["x_hat"], target)
+        out["ms_ssim"] = self.ms_ssim(output["x_hat"], target)
 
         if self.metric == "mse":
             distortion = out["mse"]
         elif self.metric == "ssim":
             distortion = 1 - out["ssim"]
         else:
-            distortion = 1 - out["ms_ssim_loss"]
+            distortion = 1 - out["ms_ssim"]
 
         out["loss"] = self.lmbda * distortion + out["bpp_loss"]
         return out
