@@ -1,8 +1,0 @@
-defaults:
-  - default.yaml # Include default callbacks
-
-# Add our custom SAR visualization callback
-sar_visualization:
-  _target_: src.callbacks.sar_logging_callback.SARVisualizationCallback
-  log_every_n_epochs: 5 
-  max_samples: 4

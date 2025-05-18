@@ -1,0 +1,8 @@
+log_reconstruction:
+  _target_: src.callbacks.sar_logging_callback.LogReconstructionCallback
+  log_every_n_epochs: 10
+  num_images: 3
+  cmap: "gray" # "gray", "viridis", or "jet", etc.
+  add_residuals: False # When true, adds a third column with the difference between the original and the reconstruction
+  verbose: False # Stdout print of statistics
+  # intensity: False # if true, add another column representing the intensity of the image

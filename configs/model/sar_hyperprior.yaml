@@ -1,8 +1,36 @@
 _target_: src.models.sar_ddc_module.SARDDCModule
 
-lambda_: 0.01  # Rate-distortion tradeoff parameter
-learning_rate: 1e-4
+net:
+  _target_: src.models.components.sar_hyperprior.ResidualScaleHyperprior
+  nb_channels_main: 128  # Number of channels for main transform
+  # No need to specify th number of channel of the hyperprior, by the model architecture it has to be twice the number of channels of the main transform
 
-model_kwargs:
-  N: 128  # Number of channels for main transform
-  M: 256  # Number of channels for hyperprior
+criterion:
+  _target_: src.utils.metrics.UnitaryRDLoss #compressai.losses.RateDistortionLoss
+  metric: "mse" # default, but "ms-ssim" also supported
+  lmbda: 0.05  # List of interesting values: 0.01,0.03,0.05,0.1,0.15,0.2,0.3,0.5,0.9
+
+net_optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 0.0001          # Default: 0.001, compressai: 0.0001
+  weight_decay: 0.0   # Default: 0.0
+
+aux_optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 0.0001          # Default: 0.001, compressai: 0.0001
+  weight_decay: 0.0   # Default: 0.0
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+  _partial_: true
+  mode: min
+  factor: 0.1         # Default: 0.1, compressai: 0.5
+  patience: 5         # Default: 10, compressai: 20
+  threshold: 1e-3     # Default: 1e-4
+
+gradient_clip_norm: 1.0 # https://github.com/ali-zafari/TBTC/blob/master/lit_model.py
+compile: False          # compile model for faster training with pytorch 2.0
+
+anomalies_log_dir: ${paths.output_dir}/anomalies

@@ -5,6 +5,7 @@ This module contains dataset classes for handling SAR images in both CoSAR forma
 and pre-processed HDF5 format with proper deterministic behavior.
 """
 
+import warnings
 from pathlib import Path
 
 import h5py
@@ -19,27 +20,32 @@ class TSXSSCDataset(Dataset):
     by the TSX_dataset_creation.py script.
     """
 
-    def __init__(self, hdf5_path: Path, transform=None):
+    def __init__(
+        self,
+        hdf5_path: Path,
+        log_mode: str = "natural",
+        must_normalize: float | None = None,
+        transform=None,
+    ):
         """Initialize the dataset.
 
         Args:
-            hdf5_file: Path to the HDF5 file containing pre-processed patches
+            hdf5_path: Path to the HDF5 file containing pre-processed patches
+            log_mode: logarithmic base of the loaded data, either "db": Transformed with 10*log10() or "natural": Transformed with log(). Default: "natural".
+            must_normalize: Min-max normalization used for the data. None means the data is already normalized, while any other percent indicates the percentiles that should be used in place of min and max values, e.g., 1 <=> norm_x = (x - p1) / (p99 - p1). In particular, 0 implies the traditionnal min-max normalization. Default: None.
             transform: Optional transform to apply to samples (default: None)
         """
         super().__init__()
         self.hdf5_path = hdf5_path
+        self.log_mode = log_mode
+        self.must_normalize = must_normalize
         self.transform = transform
 
-        # Open the HDF5 file
-        # We don't keep it open to avoid issues with multiprocessing
-        # Just check that it exists and get the number of patches
         if not self.hdf5_path.exists():
             raise FileNotFoundError(f"HDF5 file not found: {self.hdf5_path}")
 
         with h5py.File(self.hdf5_path, "r") as f:
             self.num_patches = f["patches"].shape[0]
-
-            # Store dataset attributes for normalization
             self.attrs = dict(f.attrs)
 
     def __len__(self):
@@ -58,41 +64,31 @@ class TSXSSCDataset(Dataset):
         Returns:
             Dictionary containing the patch data
         """
-        # Get the patch from HDF5 file
         with h5py.File(self.hdf5_path, "r") as f:
-            # HDF5 patches are stored as [N, H, W, 2] with real and imaginary parts
             patch = f["patches"][idx]
+            real = patch[:, :, 0]
+            imag = patch[:, :, 1]
 
-        # Extract real and imaginary components (squared from processing)
-        real_part = patch[:, :, 0]
-        imag_part = patch[:, :, 1]
+            if self.must_normalize is not None:
+                # @TODO: implement support for unnormalized data
+                warnings.warn(
+                    f"Unnormalized data is not supported. TSXSSCDataset was instantiated with {self.must_normalize=} and {self.log_mode=}."
+                )
+                # # Apply normalization
+                # real = normalize_sar(real)
+                # imag = normalize_sar(imag)
 
-        # Calculate intensity (sum of real and imaginary parts)
-        # intensity = real_part + imag_part
+            if self.transform:
+                warnings.warn(
+                    "Transforms are not supported yet. TSXSSCDataset was instantiated with {self.transform}."
+                )
+                # sample = self.transform(sample)
 
-        # Apply normalization
-        from src.utils.sar_utils import normalize_sar
+            # Convert to tensors and add channel dimension
+            real_tensor = torch.from_numpy(real).float().unsqueeze(0)
+            imag_tensor = torch.from_numpy(imag).float().unsqueeze(0)
 
-        real_norm = normalize_sar(real_part)
-        imag_norm = normalize_sar(imag_part)
-        # intensity_norm = normalize_sar(intensity)
-
-        # Convert to tensors and add channel dimension
-        real_tensor = torch.from_numpy(real_norm).float().unsqueeze(0)
-        imag_tensor = torch.from_numpy(imag_norm).float().unsqueeze(0)
-        # intensity_tensor = torch.from_numpy(intensity_norm).float().unsqueeze(0)
-
-        # Create sample dictionary
-        sample = {
-            "real": real_tensor,
-            "imag": imag_tensor,
-            # "intensity": intensity_tensor,  # @TODO to remove, it should not be used
-            # "hdf5_path": self.hdf5_path,
-            # "patch_idx": idx,
-        }
-
-        # Apply transforms if any
-        if self.transform:
-            sample = self.transform(sample)
-
-        return sample
+            return {
+                "real": real_tensor,
+                "imag": imag_tensor,
+            }

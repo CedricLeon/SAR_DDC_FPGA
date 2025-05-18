@@ -5,15 +5,24 @@ This module handles the training and testing logic for joint despeckling
 and compression of SAR images using a Noise2Noise approach.
 """
 
+import datetime
+import os
+from typing import Any, Dict, Tuple
+
+import lightning
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn.functional as F
-from lightning import LightningModule
-from torchmetrics.functional.image import structural_similarity_index_measure
+import wandb
 
-from src.models.components.compression_models.sar_hyperprior import SARHyperprior
+from src.utils.metrics import (
+    calculate_psnr_1,
+    calculate_psnr_max,
+)
 
 
-class SARDDCModule(LightningModule):
+class SARDDCModule(lightning.LightningModule):
     """Lightning Module for SAR Despeckling and Data Compression.
 
     This module implements the training and testing logic for joint
@@ -22,78 +31,67 @@ class SARDDCModule(LightningModule):
 
     def __init__(
         self,
-        lambda_=0.01,
-        learning_rate=1e-4,
-        model_kwargs=None,
+        net: torch.nn.Module,
+        criterion: torch.nn.Module,
+        net_optimizer: torch.optim.Optimizer,
+        aux_optimizer: torch.optim.Optimizer,
+        scheduler: torch.optim.lr_scheduler,
+        gradient_clip_norm: float = 1.0,
+        compile: bool = False,
+        anomalies_log_dir: str = "anomalies",  # Directory for low PSNR logs
     ):
         """Initialize the Lightning Module.
 
         Args:
-            lambda_: Rate-distortion tradeoff parameter (default: 0.01)
-            learning_rate: Learning rate for optimizer (default: 1e-4)
-            model_kwargs: Additional model parameters (default: None)
+            net: Neural network module
+            criterion: Loss criterion
+            net_optimizer: Main optimizer for network parameters
+            aux_optimizer: Auxiliary optimizer for quantiles
+            scheduler: Learning rate scheduler
+            gradient_clip_norm: Maximum gradient norm for clipping (default: 1.0)
+            compile: Whether to compile the model (default: False)
+            anomalies_log_dir: Directory to save anomalies (default: anomalies)
         """
         super().__init__()
 
-        # Save hyperparameters to be accessible via self.hparams
-        self.save_hyperparameters()
+        # Save hyperparameters to be accessible via self.hparams (ignore nn.Modules)
+        self.save_hyperparameters(ignore=["criterion", "net"], logger=False)
 
-        # Initialize model with default or provided parameters
-        model_params = model_kwargs or {}
-        self.model = SARHyperprior(**model_params)
+        # Hydra recursive instantiation.
+        self.net = net
+        self.criterion = criterion
+
+        # Activate manual optimization, because we have two optimizers.
+        self.automatic_optimization = False
+
+        # Set up directory for low PSNR logs
+        self.low_psnr_count = 0
+        self.psnr_ano_threshold = 5.0
+        os.makedirs(self.hparams.anomalies_log_dir, exist_ok=True)
 
     def on_fit_start(self):
         """Called at the beginning of fit."""
-        # Here _rng was set using thew seed but I suspect it's useless because done with lightning.seed_everything
+        # # Initialize tracking dictionaries for monitoring
+        # self.weight_norms_history = {}
+        # self.gradient_norms_history = {}
 
-    def calculate_bpp(self, likelihoods, input_shape):
-        """Calculate bits per pixel.
+        # Set up wandb watch to monitor parameters and gradients
+        if isinstance(self.trainer.logger, lightning.pytorch.loggers.wandb.WandbLogger):
+            self.trainer.logger.watch(
+                self.net,
+                log="all",  # Track both gradients and parameters
+                log_freq=100,  # Log every 100 batches
+                # log_graph=False,  # Disable logging model graph
+            )
 
-        Args:
-            likelihoods: Dictionary of likelihoods from model output
-            input_shape: Shape of the input tensor
+    def on_train_end(self):
+        # Remove the hooks added by watch() to the model
+        if isinstance(self.trainer.logger, lightning.pytorch.loggers.wandb.WandbLogger):
+            wandb.unwatch(self.net)
 
-        Returns:
-            Bits per pixel value as a tensor
-        """
-        num_pixels = input_shape[0] * input_shape[2] * input_shape[3]
-        bpp = 0
-
-        for likelihood in likelihoods.values():
-            bpp += torch.sum(torch.log2(likelihood)) / (-num_pixels)
-
-        return bpp
-
-    def calculate_psnr(self, x, x_hat):
-        """Calculate Peak Signal-to-Noise Ratio.
-
-        Args:
-            x: Original image
-            x_hat: Reconstructed image
-
-        Returns:
-            PSNR value as a tensor
-        """
-        mse = torch.mean((x - x_hat) ** 2)
-        if mse == 0:
-            return torch.tensor(float("inf"))
-        max_val = 1.0
-        return 10 * torch.log10(max_val**2 / mse)
-
-    def calculate_ssim(self, x, x_hat):
-        """Calculate Structural Similarity Index Measure.
-
-        Args:
-            x: Original image
-            x_hat: Reconstructed image
-
-        Returns:
-            SSIM value as a tensor
-        """
-        return structural_similarity_index_measure(x_hat, x)
-
-    def training_step(self, batch, batch_idx):
-        """Training step using Noise2Noise approach."""
+    def _random_switch_Re_Im(
+        self, batch: Dict[str, torch.Tensor]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Get real and imaginary parts (already squared and normalized)
         real_squared, imag_squared = batch["real"], batch["imag"]
 
@@ -103,115 +101,414 @@ class SARDDCModule(LightningModule):
         else:
             input_data, target_data = imag_squared, real_squared
 
+        return input_data, target_data
+
+    def forward(self, x: torch.Tensor):
+        """Forward pass through the network."""
+        return self.net(x)
+
+    def _model_forward(
+        self, input: torch.Tensor, target: torch.Tensor
+    ) -> Tuple[Dict[str, Any], torch.Tensor]:
+        output = self.forward(input)
+        out_criterion = self.criterion(output, target)
+        return out_criterion, output["x_hat"]
+
+    def _log_anomalies(
+        self,
+        prefix: str,
+        input: torch.Tensor,
+        target: torch.Tensor,
+        reconstruction: torch.Tensor,
+        trigger: Tuple[str, float],
+        additional_info: Dict = None,
+    ) -> None:
+        """Log and visualize current metrics and batch statistics.
+
+        Args:
+            prefix: Log prefix (train/valid/test)
+            input: Input tensor
+            target: Target tensor
+            reconstruction: Reconstructed output
+            trigger: Tuple with the metric and its value that triggered the logging
+            additional_info: Additional information to include in the log
+        """
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.low_psnr_count += 1
+
+        # Create log directory with timestamp
+        log_dir = os.path.join(
+            self.hparams.anomalies_log_dir,
+            f"{prefix}_ano{self.low_psnr_count}_e{self.current_epoch}_step{self.global_step}_{trigger[0]}:{trigger[1]:.2f}dB",
+        )
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Create a general information file
+        with open(os.path.join(log_dir, "info.txt"), "w") as f:
+            f.write(
+                f"===== LOW {trigger[0].upper()} DETECTED: {trigger[1]:.2f} dB (threshold: {self.psnr_ano_threshold:.2f} dB) =====\n\n"
+            )
+            f.write(f"Time: {timestamp}\n")
+            f.write(f"Epoch: {self.current_epoch}\n")
+            f.write(f"Global step: {self.global_step}\n\n")
+
+            # Write additional information if provided
+            if additional_info:
+                f.write("Additional Metrics:\n")
+                for key, value in additional_info.items():
+                    if isinstance(value, float):
+                        f.write(f"  {key}: {value:.6f}\n")
+                    else:
+                        f.write(f"  {key}: {value}\n")
+                f.write("\n")
+
+            # Write batch statistics
+            f.write("Batch Statistics:\n")
+            batch_size = input.shape[0] if input.ndim > 3 else 1  # Use torch shape
+            f.write(f"  Batch size: {batch_size}\n")
+
+            # Write overall statistics for the entire batch
+            f.write("\nOverall Statistics:\n")
+            f.write("Input:\n")
+            f.write(f"  Shape: {tuple(input.shape)}\n")  # Cast to tuple for printing
+            f.write(
+                f"  Mean: {torch.mean(input.float()).item():.6f}\n"
+            )  # Convert to float before mean
+            f.write(f"  Std: {torch.std(input.float()).item():.6f}\n")
+            f.write(f"  Min: {torch.min(input).item():.6f}\n")
+            f.write(f"  Max: {torch.max(input).item():.6f}\n")
+            f.write(f"  NaN count: {torch.isnan(input.float()).sum().item()}\n")
+            f.write(f"  Inf count: {torch.isinf(input.float()).sum().item()}\n\n")
+
+            f.write("Target:\n")
+            f.write(f"  Shape: {tuple(target.shape)}\n")  # Cast to tuple for printing
+            f.write(f"  Mean: {torch.mean(target.float()).item():.6f}\n")
+            f.write(f"  Std: {torch.std(target.float()).item():.6f}\n")
+            f.write(f"  Min: {torch.min(target).item():.6f}\n")
+            f.write(f"  Max: {torch.max(target).item():.6f}\n")
+            f.write(f"  NaN count: {torch.isnan(target.float()).sum().item()}\n")
+            f.write(f"  Inf count: {torch.isinf(target.float()).sum().item()}\n\n")
+
+            f.write("Reconstruction:\n")
+            f.write(
+                f"  Shape: {tuple(reconstruction.shape)}\n"
+            )  # Cast to tuple for printing
+            f.write(f"  Mean: {torch.mean(reconstruction.float()).item():.6f}\n")
+            f.write(f"  Std: {torch.std(reconstruction.float()).item():.6f}\n")
+            f.write(f"  Min: {torch.min(reconstruction).item():.6f}\n")
+            f.write(f"  Max: {torch.max(reconstruction).item():.6f}\n")
+            f.write(
+                f"  NaN count: {torch.isnan(reconstruction.float()).sum().item()}\n"
+            )
+            f.write(
+                f"  Inf count: {torch.isinf(reconstruction.float()).sum().item()}\n\n"
+            )
+
+            # Write statistics for each sample in the batch
+            num_samples = min(16, batch_size)
+            num_vis_samples = min(4, batch_size)
+            f.write("\nPer-Sample Statistics:\n")
+            for i in range(num_samples):
+                f.write(f"\nSample {i + 1}:\n")
+                if input.ndim > 3:
+                    sample_input = input[i].squeeze()
+                    sample_target = target[i].squeeze()
+                    sample_recon = reconstruction[i].squeeze()
+                else:
+                    sample_input = input.squeeze()
+                    sample_target = target.squeeze()
+                    sample_recon = reconstruction.squeeze()
+
+                f.write("  Input:\n")
+                f.write(f"    Mean: {torch.mean(sample_input.float()).item():.6f}\n")
+                f.write(f"    Std: {torch.std(sample_input.float()).item():.6f}\n")
+                f.write(f"    Min: {torch.min(sample_input).item():.6f}\n")
+                f.write(f"    Max: {torch.max(sample_input).item():.6f}\n")
+                f.write(
+                    f"    NaN count: {torch.isnan(sample_input.float()).sum().item()}\n"
+                )
+                f.write(
+                    f"    Inf count: {torch.isinf(sample_input.float()).sum().item()}\n"
+                )
+
+                f.write("  Target:\n")
+                f.write(f"    Mean: {torch.mean(sample_target.float()).item():.6f}\n")
+                f.write(f"    Std: {torch.std(sample_target.float()).item():.6f}\n")
+                f.write(f"    Min: {torch.min(sample_target).item():.6f}\n")
+                f.write(f"    Max: {torch.max(sample_target).item():.6f}\n")
+                f.write(
+                    f"    NaN count: {torch.isnan(sample_target.float()).sum().item()}\n"
+                )
+                f.write(
+                    f"    Inf count: {torch.isinf(sample_target.float()).sum().item()}\n"
+                )
+
+                f.write("  Reconstruction:\n")
+                f.write(f"    Mean: {torch.mean(sample_recon.float()).item():.6f}\n")
+                f.write(f"    Std: {torch.std(sample_recon.float()).item():.6f}\n")
+                f.write(f"    Min: {torch.min(sample_recon).item():.6f}\n")
+                f.write(f"    Max: {torch.max(sample_recon).item():.6f}\n")
+                f.write(
+                    f"    NaN count: {torch.isnan(sample_recon.float()).sum().item()}\n"
+                )
+                f.write(
+                    f"    Inf count: {torch.isinf(sample_recon.float()).sum().item()}\n"
+                )
+
+                # Calculate sample PSNR using torch.nn.functional.mse_loss and calculate_psnr_1
+                sample_mse = F.mse_loss(
+                    sample_recon.float(), sample_target.float()
+                ).item()
+                sample_psnr = calculate_psnr_1(sample_mse)
+                f.write(f"  MSE: {sample_mse:.6f}\n")
+                f.write(f"  PSNR: {sample_psnr:.2f} dB\n")
+
+                # Visualize the first few samples
+                if i < num_vis_samples:
+                    # Convert back to numpy only for visualization
+                    sample_input = sample_input.detach().cpu().numpy()
+                    sample_target = sample_target.detach().cpu().numpy()
+                    sample_recon = sample_recon.detach().cpu().numpy()
+
+                    fig, axs = plt.subplots(2, 3, figsize=(15, 10))
+                    fig.suptitle(
+                        f"Low PSNR Sample {i + 1} - PSNR: {sample_psnr:.2f} dB (threshold: {self.psnr_ano_threshold:.2f} dB)",
+                        fontsize=16,
+                    )
+
+                    # Plot original data
+                    axs[0, 0].imshow(sample_input, cmap="gray")
+                    axs[0, 0].set_title("Input")
+                    axs[0, 0].axis("off")
+
+                    axs[0, 1].imshow(sample_target, cmap="gray")
+                    axs[0, 1].set_title("Target")
+                    axs[0, 1].axis("off")
+
+                    axs[0, 2].imshow(sample_recon, cmap="gray")
+                    axs[0, 2].set_title("Reconstruction")
+                    axs[0, 2].axis("off")
+
+                    # Plot differences and error map
+                    diff_input_target = np.abs(sample_input - sample_target)
+                    axs[1, 0].imshow(diff_input_target, cmap="hot")
+                    axs[1, 0].set_title("Input-Target Difference")
+                    axs[1, 0].axis("off")
+
+                    diff_recon_target = np.abs(sample_recon - sample_target)
+                    axs[1, 1].imshow(diff_recon_target, cmap="hot")
+                    axs[1, 1].set_title("Recon-Target Difference")
+                    axs[1, 1].axis("off")
+
+                    # Square error map (for better visualization of errors)
+                    error_map = (sample_recon - sample_target) ** 2
+                    axs[1, 2].imshow(error_map, cmap="hot")
+                    axs[1, 2].set_title("Squared Error Map")
+                    axs[1, 2].axis("off")
+
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(log_dir, f"sample_{i + 1}.png"), dpi=150)
+                    plt.close(fig)
+
+        # Log to console
+        print(
+            f"WARNING: Low {trigger[0].upper()} ({trigger[1]:.2f} dB) detected at epoch {self.current_epoch}, step {self.global_step}"
+        )
+        print(f"Statistics saved to {log_dir}")
+
+    def _log_metrics(
+        self,
+        prefix: str,
+        out_criterion: Dict[str, Any],
+        aux_loss: float,
+        input: torch.Tensor,
+        reconstructions: torch.Tensor,
+        target: torch.Tensor,
+    ) -> None:
+        """Log training, validation, or test metrics."""
+        mse_value = out_criterion["mse_loss"].item()
+        psnr_value_1 = calculate_psnr_1(mse_value)
+        psnr_value_max = calculate_psnr_max(mse_value, torch.max(input).item())
+        bpp_value = out_criterion["bpp_loss"].item()
+
+        # Enhanced metrics logging
+        log_info = {
+            f"{prefix}/aux": aux_loss,
+            f"{prefix}/loss": out_criterion["loss"].item(),
+            f"{prefix}/mse": mse_value,
+            f"{prefix}/bpp": bpp_value,
+            f"{prefix}/psnr_1": psnr_value_1,
+            f"{prefix}/psnr_max": psnr_value_max,  # Both metrics are very similar
+            # Track how much each loss contributes to total loss = R + lmbda * D
+            f"{prefix}/mse_percent": (
+                self.criterion.lmbda * mse_value / (out_criterion["loss"].item() + 1e-8)
+            )
+            * 100,
+            f"{prefix}/bpp_percent": (bpp_value / (out_criterion["loss"].item() + 1e-8))
+            * 100,
+        }
+
+        # Configure per prefix (e.g. train/valid/test) logging **kwargs.
+        on_step, on_epoch, prog_bar, sync_dist = None, None, False, True
+        if prefix == "train":
+            on_step, on_epoch, prog_bar, sync_dist = True, False, False, True
+        elif prefix == "valid":
+            on_step, on_epoch, prog_bar, sync_dist = False, True, True, True
+        elif prefix == "test":
+            on_step, on_epoch, prog_bar, sync_dist = False, True, False, True
+
+        self.log_dict(
+            log_info,
+            sync_dist=sync_dist,
+            on_step=on_step,
+            on_epoch=on_epoch,
+            prog_bar=prog_bar,
+        )
+
+        # Log anomalies (low PSNR)
+        if self.current_epoch > 0 and psnr_value_1 < self.psnr_ano_threshold:
+            additional_info = {
+                "bpp": bpp_value,
+                "mse": mse_value,
+                "loss": out_criterion["loss"].item(),
+            }
+            self._log_anomalies(
+                prefix,
+                input,
+                target,
+                reconstructions,
+                ("PSNR", psnr_value_1),
+                additional_info,
+            )
+
+    def training_step(self, batch, batch_idx):
+        """Training step using Noise2Noise approach.
+        Because we have two optimizers, we need to manually optimize.
+        During training, we randomly switch between real and imaginary parts."""
+        # Get the optimizers as a list to handle properly
+        optimizers = self.optimizers()
+        if not isinstance(optimizers, list):
+            optimizers = list(optimizers)
+
+        net_optimizer = optimizers[0]
+        aux_optimizer = optimizers[1]
+
+        net_optimizer.zero_grad()
+        aux_optimizer.zero_grad()
+
         # Forward pass
-        output = self.model(input_data)
-        x_hat = output["x_hat"]
-        likelihoods = output["likelihoods"]
+        input, target = self._random_switch_Re_Im(batch)
 
-        # Calculate rate (bits per pixel)
-        bpp = self.calculate_bpp(likelihoods, input_data.shape)
+        # Verify input and target sanity before forward pass
+        if torch.isnan(input).any() or torch.isinf(input).any():
+            self.log("train/nan_inf_inputs", 1.0, on_step=True)
+            print(f"WARNING: NaN or Inf detected in inputs at step {self.global_step}")
 
-        # Calculate distortion (MSE between output and target)
-        mse = F.mse_loss(x_hat, target_data)
+        if torch.isnan(target).any() or torch.isinf(target).any():
+            self.log("train/nan_inf_targets", 1.0, on_step=True)
+            print(f"WARNING: NaN or Inf detected in targets at step {self.global_step}")
 
-        # Rate-distortion loss
-        loss = self.hparams.lambda_ * mse + bpp
+        out_criterion, reconstructions = self._model_forward(input, target)
+
+        # Check for NaN or Inf in loss or reconstructions
+        if torch.isnan(out_criterion["loss"]) or torch.isinf(out_criterion["loss"]):
+            self.log("train/nan_inf_loss", 1.0, on_step=True)
+            print(f"WARNING: NaN or Inf detected in loss at step {self.global_step}")
+
+        # Backward pass for the main loss
+        self.manual_backward(out_criterion["loss"])
+        if self.hparams.gradient_clip_norm > 0.0:  # Prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(
+                self.net.parameters(), self.hparams.gradient_clip_norm
+            )
+        net_optimizer.step()
+
+        # Auxiliary loss
+        aux_loss = self.net.aux_loss()
+        self.manual_backward(aux_loss)
+        aux_optimizer.step()
 
         # Log metrics
-        self.log("train/loss", loss)
-        self.log("train/mse", mse)
-        self.log("train/bpp", bpp)
-        self.log("train/psnr", self.calculate_psnr(target_data, x_hat))
-
-        return loss
+        self._log_metrics(
+            "train", out_criterion, aux_loss.item(), input, reconstructions, target
+        )
 
     def validation_step(self, batch, batch_idx):
         """Validation step with optimized processing of both real and imaginary parts."""
-        # Get real and imaginary parts (already squared and normalized)
-        real_squared, imag_squared = batch["real"], batch["imag"]
-
-        # Process real part
-        real_output = self.model(real_squared)
-        real_x_hat = real_output["x_hat"]
-        real_likelihoods = real_output["likelihoods"]
-
-        # Process imaginary part
-        imag_output = self.model(imag_squared)
-        imag_x_hat = imag_output["x_hat"]
-        imag_likelihoods = imag_output["likelihoods"]
-
-        # Calculate rate (bits per pixel) for both parts
-        real_bpp = self.calculate_bpp(real_likelihoods, real_squared.shape)
-        imag_bpp = self.calculate_bpp(imag_likelihoods, imag_squared.shape)
-        total_bpp = real_bpp + imag_bpp
-
-        # Calculate distortion (MSE)
-        real_mse = F.mse_loss(
-            real_x_hat, imag_squared
-        )  # Cross-validation (Noise2Noise style)
-        imag_mse = F.mse_loss(
-            imag_x_hat, real_squared
-        )  # Cross-validation (Noise2Noise style)
-        avg_mse = (real_mse + imag_mse) / 2
-
-        # Calculate validation loss
-        val_loss = self.hparams.lambda_ * avg_mse + total_bpp
-
-        # Log metrics
-        self.log("val/loss", val_loss)
-        self.log("val/mse", avg_mse)
-        self.log("val/bpp", total_bpp)
-        self.log("val/psnr", 10 * torch.log10(1.0 / avg_mse))
-
-        return val_loss
+        input, target = self._random_switch_Re_Im(batch)
+        out_criterion, reconstructions = self._model_forward(input, target)
+        aux_loss = self.net.aux_loss()
+        self._log_metrics(
+            "valid", out_criterion, aux_loss.item(), input, reconstructions, target
+        )
 
     def test_step(self, batch, batch_idx):
         """Test step with optimized processing of both real and imaginary parts."""
-        # Get real and imaginary parts (already squared and normalized)
-        real_squared, imag_squared = batch["real"], batch["imag"]
+        input, target = self._random_switch_Re_Im(batch)
+        out_criterion, reconstructions = self._model_forward(input, target)
+        aux_loss = self.net.aux_loss()
+        self._log_metrics(
+            "test", out_criterion, aux_loss.item(), input, reconstructions, target
+        )
 
-        # Process real part directly through analysis transform
-        real_output = self.model(real_squared, training=False)
-        real_y_hat = real_output["y_hat"]
-        real_x_hat = real_output["x_hat"]
-        real_likelihoods = real_output["likelihoods"]
-
-        # Process imaginary part directly through analysis transform
-        imag_output = self.model(imag_squared, training=False)
-        imag_y_hat = imag_output["y_hat"]
-        imag_x_hat = imag_output["x_hat"]
-        imag_likelihoods = imag_output["likelihoods"]
-
-        # Calculate rate (bits per pixel)
-        real_bpp = self.calculate_bpp(real_likelihoods, real_squared.shape)
-        imag_bpp = self.calculate_bpp(imag_likelihoods, imag_squared.shape)
-        total_bpp = real_bpp + imag_bpp
-
-        # Average to get reflectivity estimate (despeckled result)
-        reflectivity = (real_x_hat + imag_x_hat) / 2
-
-        # WHy were these quality metrics computed on the intensity?
-        # if intensity is not None:
-        #     # Calculate PSNR between predicted reflectivity and original intensity
-        #     psnr = self.calculate_psnr(intensity, reflectivity)
-        #     self.log("test/psnr", psnr)
-
-        #     # Calculate SSIM between predicted reflectivity and original intensity
-        #     ssim = self.calculate_ssim(intensity, reflectivity)
-        #     self.log("test/ssim", ssim)
-
-        # Log rate metrics
-        self.log("test/bpp", total_bpp)
-        self.log("test/real_bpp", real_bpp)
-        self.log("test/imag_bpp", imag_bpp)
-
-        return {
-            "reflectivity": reflectivity,
-            "bpp": total_bpp,
-            # "psnr": psnr if intensity is not None else None,
-            # "ssim": ssim if intensity is not None else None,
-        }
+    def on_validation_epoch_end(self) -> None:
+        """Update LR scheduler based on validation loss."""
+        lr_scheduler = self.lr_schedulers()
+        if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            lr_scheduler.step(self.trainer.callback_metrics["valid/loss"])
 
     def configure_optimizers(self):
-        """Configure optimizers."""
-        return torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
+        """Choose what optimizers and learning-rate schedulers to use in your optimization.
+        Normally you'd need one. But in the case of GANs or similar, you might have multiple.
+
+        Returns:
+            A dict containing the configured optimizers and learning-rate schedulers to be used for training.
+        """
+        main_params = [
+            param
+            for name, param in self.net.named_parameters()
+            if param.requires_grad and not name.endswith(".quantiles")
+        ]
+        aux_params = [
+            param
+            for name, param in self.net.named_parameters()
+            if param.requires_grad and name.endswith(".quantiles")
+        ]
+
+        # Validation: Ensure no parameter overlap and all parameters are accounted for
+        all_params = set(
+            param for _, param in self.net.named_parameters() if param.requires_grad
+        )
+        assert not set(main_params) & set(aux_params), (
+            "Intersection found in main and auxiliary parameters"
+        )
+        assert set(main_params) | set(aux_params) == all_params, (
+            "Union of main and auxiliary parameters does not match all model parameters"
+        )
+
+        # Instantiate optimizers from the configuration
+        net_optimizer = self.hparams.net_optimizer(params=main_params)
+        aux_optimizer = self.hparams.aux_optimizer(params=aux_params)
+
+        # Configure the scheduler if provided
+        if self.hparams.scheduler:
+            lr_scheduler = self.hparams.scheduler(optimizer=net_optimizer)
+            return [
+                {
+                    "optimizer": net_optimizer,
+                    "lr_scheduler": {
+                        "scheduler": lr_scheduler,
+                        "name": "net_lr",  # "name" keywords are for the LearningRateMonitor callback
+                        # "monitor": "valid/loss", # Unnecessary, because manual_optimization
+                        # "interval": "epoch",
+                        # "frequency": 1,
+                    },
+                },
+                {"optimizer": aux_optimizer},
+            ]
+
+        return [{"optimizer": net_optimizer}, {"optimizer": aux_optimizer}]
+
+
+if __name__ == "__main__":
+    _ = SARDDCModule(None, None, None, None, None)

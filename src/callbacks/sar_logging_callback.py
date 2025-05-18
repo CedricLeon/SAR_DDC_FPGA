@@ -5,17 +5,15 @@ This module implements a callback for logging SAR images, despeckling results,
 and metrics to Weights & Biases during training.
 """
 
+import warnings
 from typing import Any, Dict
 
 import matplotlib.pyplot as plt
 import torch
-import wandb
 from lightning import Callback, LightningModule, Trainer
 
-from src.utils.sar_utils import calculate_equivalent_number_of_looks, visualize_sar
 
-
-class SARVisualizationCallback(Callback):
+class LogReconstructionCallback(Callback):
     """Callback for logging SAR images and despeckling results.
 
     This callback visualizes:
@@ -25,16 +23,29 @@ class SARVisualizationCallback(Callback):
     - Rate metrics
     """
 
-    def __init__(self, log_every_n_epochs: int = 5, max_samples: int = 4):
+    def __init__(
+        self,
+        log_every_n_epochs: int,
+        num_images: int,
+        cmap: str = "gray",
+        add_residuals: bool = False,
+        verbose: bool = False,
+    ):
         """Initialize the callback.
 
         Args:
-            log_every_n_epochs: Log frequency in epochs (default: 5)
-            max_samples: Maximum number of samples to log (default: 4)
+            log_every_n_epochs: Log frequency in epochs
+            num_images: Number of images to log
+            cmap: Colormap for visualization
+            add_residuals: Whether to add difference between orginal and reconstruction as an additional column
+            verbose: Whether to log statistics on stdout
         """
         super().__init__()
         self.log_every_n_epochs = log_every_n_epochs
-        self.max_samples = max_samples
+        self.num_images = num_images
+        self.cmap = cmap
+        self.add_residuals = add_residuals
+        self.verbose = verbose
 
     def on_validation_batch_end(
         self,
@@ -46,125 +57,64 @@ class SARVisualizationCallback(Callback):
         dataloader_idx: int = 0,
     ):
         """Log SAR images and despeckling results on validation batch end."""
-        # Only log on specified epochs and for the first batch
+        # 0. Only log on specified epochs and for the first batch
         if (trainer.current_epoch % self.log_every_n_epochs != 0) or batch_idx > 0:
             return
 
-        # Get real and imaginary parts and intensity from batch
-        real_squared = batch["real"]
-        imag_squared = batch["imag"]
-        intensity = real_squared + imag_squared
-
-        # Limit the number of samples to log
-        n_samples = min(real_squared.size(0), self.max_samples)
-
-        # Process real part
-        real_output = pl_module.model(real_squared[:n_samples], training=False)
-        real_x_hat = real_output["x_hat"]
-
-        # Process imaginary part
-        imag_output = pl_module.model(imag_squared[:n_samples], training=False)
-        imag_x_hat = imag_output["x_hat"]
-
-        # Average to get reflectivity estimate
-        reflectivity = (real_x_hat + imag_x_hat) / 2
-
-        # Calculate rate
-        real_bpp = pl_module.calculate_bpp(
-            real_output["likelihoods"], real_squared[:n_samples].shape
-        )
-        imag_bpp = pl_module.calculate_bpp(
-            imag_output["likelihoods"], imag_squared[:n_samples].shape
-        )
-        total_bpp = real_bpp + imag_bpp
-
-        # Log images to wandb
-        if isinstance(trainer.logger, list):
-            for logger in trainer.logger:
-                if (
-                    hasattr(logger, "experiment")
-                    and logger.__class__.__name__ == "WandbLogger"
-                ):
-                    self._log_to_wandb(
-                        logger.experiment,
-                        real_squared[:n_samples],
-                        imag_squared[:n_samples],
-                        reflectivity,
-                        intensity[:n_samples] if intensity is not None else None,
-                        real_bpp,
-                        imag_bpp,
-                        total_bpp,
-                        trainer.current_epoch,
-                    )
-        elif (
-            hasattr(trainer.logger, "experiment")
-            and trainer.logger.__class__.__name__ == "WandbLogger"
-        ):
-            self._log_to_wandb(
-                trainer.logger.experiment,
-                real_squared[:n_samples],
-                imag_squared[:n_samples],
-                reflectivity,
-                intensity[:n_samples] if intensity is not None else None,
-                real_bpp,
-                imag_bpp,
-                total_bpp,
-                trainer.current_epoch,
+        # 1. Check if the batch has at least num_images samples
+        batch_size = batch["real"].shape[0]
+        if batch_size < self.num_images:
+            self.num_images = batch_size
+            warnings.warn(
+                f"Number of images to log ({self.num_images}) is larger than the batch size ({batch_size}).",
+                UserWarning,
             )
 
-    def _log_to_wandb(
-        self,
-        experiment,
-        real_squared,
-        imag_squared,
-        reflectivity,
-        intensity,
-        real_bpp,
-        imag_bpp,
-        total_bpp,
-        epoch,
-    ):
-        """Log results to Weights & Biases."""
-        images = []
-        captions = []
+        # 2. Forward pass and metrics calculation
+        real = batch["real"][: self.num_images]
+        imag = batch["imag"][: self.num_images]
+        out_criterion, real_output = pl_module._model_forward(real, imag)
 
-        # Loop through each sample
-        for i in range(real_squared.size(0)):
-            # Extract single sample
-            real_sample = real_squared[i]
-            imag_sample = imag_squared[i]
-            reflectivity_sample = reflectivity[i]
-            intensity_sample = intensity[i] if intensity is not None else None
-
-            # Create visualization figure
-            fig = visualize_sar(
-                real_sample, imag_sample, intensity_sample, reflectivity_sample
+        if self.verbose:
+            print("@TODO: Add verbose logging")
+            print(
+                f"Real shape: {real.shape}, Imag shape: {imag.shape}, Real output shape: {real_output.shape}."
             )
+            print(f"Out criterion: {out_criterion}")
 
-            # Add to lists
-            images.append(wandb.Image(fig))
-
-            # Generate caption with rate information
-            caption = f"Real bpp: {real_bpp:.4f}, Imag bpp: {imag_bpp:.4f}, Total: {total_bpp:.4f}"
-            captions.append(caption)
-
-            # Close figure to free memory
-            plt.close(fig)
-
-            # Calculate ENL if intensity is available
-            if intensity_sample is not None:
-                enl_metrics = calculate_equivalent_number_of_looks(
-                    reflectivity_sample, intensity_sample
-                )
-                experiment.log(
-                    {
-                        f"ENL/sample_{i}/original": enl_metrics["enl_original"],
-                        f"ENL/sample_{i}/despeckled": enl_metrics["enl_despeckled"],
-                        f"ENL/sample_{i}/improvement": enl_metrics["improvement"],
-                    }
-                )
-
-        # Log all images with captions
-        experiment.log(
-            {f"val_images/epoch_{epoch}": images, "captions": captions, "epoch": epoch}
+        # 3. Create a new figure with num_images rows and 2 columns (3 if add_residuals)
+        ncols = 2 if not self.add_residuals else 3
+        fig, axs = plt.subplots(
+            self.num_images, ncols, figsize=(5 * ncols, 5 * self.num_images)
         )
+
+        real = torch.squeeze(real).cpu().numpy()
+        real_output = torch.squeeze(real_output).cpu().numpy()
+
+        for i in range(self.num_images):
+            # Plot original real part
+            im1 = axs[i, 0].imshow(real[i], cmap=self.cmap)
+            axs[i, 0].set_title("Original Real")
+            axs[i, 0].axis("off")
+            fig.colorbar(im1, ax=axs[i, 0], shrink=0.7)
+
+            # Plot reconstructed real part
+            im2 = axs[i, 1].imshow(real_output[i], cmap=self.cmap)
+            axs[i, 1].set_title("Reconstructed Real")
+            axs[i, 1].axis("off")
+            fig.colorbar(im2, ax=axs[i, 1], shrink=0.7)
+
+            # Plot residuals if enabled
+            if self.add_residuals:
+                im3 = axs[i, 2].imshow(abs(real[i] - real_output[i]), cmap=self.cmap)
+                axs[i, 2].set_title("Residual")
+                axs[i, 2].axis("off")
+                fig.colorbar(im3, ax=axs[i, 2], shrink=0.7)
+
+        fig.suptitle(
+            f"epoch {trainer.current_epoch}: Loss={out_criterion['loss']:.4f}, MSE={out_criterion['mse_loss']:.4f}, BPP={out_criterion['bpp_loss']:.4f}"
+        )
+        plt.tight_layout()
+        pl_module.logger.experiment.log({"callback_reconstruction": fig})
+        # Close the figure to avoid memory leaks
+        plt.close(fig)

@@ -6,42 +6,37 @@
 defaults:
   - override /data: tsx_ssc.yaml
   - override /model: sar_hyperprior.yaml
-  - override /callbacks: sar_visualization.yaml  # Use our custom callback
-  - override /logger: wandb.yaml  # use Weights & Biases logger
-  - override /trainer: gpu.yaml  # use GPU for training if available
+  - override /callbacks: tsx_ddc.yaml
+  - override /logger: wandb.yaml
+  - override /trainer: gpu.yaml
   - override /hydra: default.yaml
 
-# ----- Copilot stuff -----
-# # name of the run determines folder name in logs
-# name: "sar_ddc"
-# # Training parameters
-# train: True
-# val: True
-# test: True
-# ckpt_path: null
-# # Metric for model checkpointing and early stopping
-# monitor: "val/loss"
-# mode: "min"
-# optimized_metric: "val/loss"
-# # Ray tune hyperparameter search
-# tune: False
+data:
+  hdf5_dir: ${paths.data_dir}processed_hdf5/randomsplit5_pres60_norm1natclip
+  log_mode: "natural"
+  must_normalize: null # 0 <=> true min-max, 1 <=> min-max with 1% and 99% percentiles, etc.
+  batch_size: 16
+  num_workers: 11
 
-# The task name determines the logs path, by convention use <task>/<dataset>/<model>
-task_name: train/sar_ddc/hyperprior
+model:
+  criterion:
+    lmbda: 1000
 
-# Configuration for callbacks
+  net_optimizer:
+    lr: 1e-5 # Got infinite loss with 0.001
+
 callbacks:
-  model_checkpoint:
-    monitor: "val/psnr"  # Monitor PSNR instead of accuracy
-    mode: "max"          # Higher PSNR is better
+  log_reconstruction:
+    log_every_n_epochs: 2
+    num_images: 3
+    add_residuals: True
+    verbose: False
   early_stopping:
-    monitor: "val/psnr"  # Monitor PSNR instead of accuracy
-    mode: "max"          # Higher PSNR is better
-    patience: 10         # More patience for real-world image tasks
+    verbose: True
 
 trainer:
   min_epochs: 1
-  max_epochs: 2
+  max_epochs: 15
 
 logger:
   wandb:
@@ -50,6 +45,9 @@ logger:
     # tags: ${tags}
     # name: ${name}
 
-
+# The task name determines the logs path, by convention use <task>/<dataset>/<model>
+task_name: train/sar_ddc/hyperprior
 tags: ["TSX_SSC", "hyperprior"]
 seed: 42
+# Flatten the lmbda value because W&B custom chart expressions do not support nested dicts
+lambda: ${model.criterion.lmbda}

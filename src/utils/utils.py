@@ -11,6 +11,21 @@ from src.utils import pylogger, rich_utils
 log = pylogger.RankedLogger(__name__, rank_zero_only=True)
 
 
+def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
+    """Generate a descriptive run name based on important parameters.
+
+    :param cfg: The configuration dictionary
+    :return: A formatted run name string
+    """
+    lmbda = cfg.model.criterion.get("lmbda", None)
+    lr = cfg.model.net_optimizer.get("lr", None)
+    data_norm = cfg.data.get("hdf5_dir", None)
+    if data_norm is not None:
+        data_norm = data_norm.split("/")[-1].split("_")[-1]
+
+    return f"ReSHyp_ʎ{lmbda}_lr{lr}_data{data_norm}"
+
+
 @rank_zero_only
 def early_wandb_initialization(cfg: Dict[str, Any]) -> None:
     """Manual initialization of the W&B run. Extra logic is called is the run is set offline, see wandb_osh.
@@ -25,7 +40,7 @@ def early_wandb_initialization(cfg: Dict[str, Any]) -> None:
         import wandb_osh
 
         # Add a Lightning callback triggering the sync after each epoch
-        # Adding it this way makes it invisible for the user, but it won't appear in the HYDRA config (it will be printed in the logs though)
+        # Adding it this way makes it invisible for the user: it won't appear in the HYDRA config (it will be printed in the logs though)
         with omegaconf.open_dict(cfg):
             cfg.callbacks.wandb_osh = {
                 "_target_": "wandb_osh.lightning_hooks.TriggerWandbSyncLightningCallback"
@@ -37,13 +52,22 @@ def early_wandb_initialization(cfg: Dict[str, Any]) -> None:
         # Suppress logging messages (e.g., warnings about the syncing not being fast enough)
         wandb_osh.set_log_level("ERROR")  # for wandb_osh.__version__ >= 1.2.0
 
+    run_name = (
+        make_a_nice_run_name(cfg)
+        if cfg.logger.wandb.get("name", None) is None
+        else cfg.logger.wandb.get("name")
+    )
     # Manual cast of the config from a DictConfig to a regular dict (should be supported by W&B by now)
-    wandb.config = omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+    config_dict = omegaconf.OmegaConf.to_container(
+        cfg, resolve=True, throw_on_missing=True
+    )
+
     wandb.init(
         entity=cfg.logger.wandb.entity,
         project=cfg.logger.wandb.project,
         dir=cfg.logger.wandb.save_dir,
-        # name=make_a_nice_run_name(cfg), @TODO: implement make_a_nice_run_name
+        config=config_dict,
+        name=run_name,
         tags=cfg.tags,
         mode="offline" if cfg.logger.wandb.offline else "online",
         settings=wandb.Settings(start_method="thread"),
@@ -136,7 +160,9 @@ def task_wrapper(task_func: Callable) -> Callable:
     return wrap
 
 
-def get_metric_value(metric_dict: Dict[str, Any], metric_name: Optional[str]) -> Optional[float]:
+def get_metric_value(
+    metric_dict: Dict[str, Any], metric_name: Optional[str]
+) -> Optional[float]:
     """Safely retrieves value of the metric logged in LightningModule.
 
     :param metric_dict: A dict containing metric values.
