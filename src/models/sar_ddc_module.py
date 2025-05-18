@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
+import wandb
 
 from src.utils.metrics import (
     calculate_psnr_1,
@@ -86,7 +87,7 @@ class SARDDCModule(lightning.LightningModule):
     def on_train_end(self):
         # Remove the hooks added by watch() to the model
         if isinstance(self.trainer.logger, lightning.pytorch.loggers.wandb.WandbLogger):
-            self.trainer.logger.unwatch(self.net)
+            wandb.unwatch(self.net)
 
     def _random_switch_Re_Im(
         self, batch: Dict[str, torch.Tensor]
@@ -347,29 +348,6 @@ class SARDDCModule(lightning.LightningModule):
             * 100,
         }
 
-        # # Manual tracking of weight and gradients
-        # if prefix == "train" and self.global_step % 50 == 0:
-        #     # Track weight norms
-        #     for name, param in self.net.named_parameters():
-        #         if param.requires_grad:
-        #             norm = param.data.norm().item()
-        #             log_info[f"{prefix}/weight_norm/{name}"] = norm
-
-        #             # Track history for weight monitoring
-        #             if name not in self.weight_norms_history:
-        #                 self.weight_norms_history[name] = []
-        #             self.weight_norms_history[name].append(norm)
-
-        #             # If we have gradient, track it too
-        #             if param.grad is not None:
-        #                 grad_norm = param.grad.data.norm().item()
-        #                 log_info[f"{prefix}/grad_norm/{name}"] = grad_norm
-
-        #                 # Track gradient history
-        #                 if name not in self.gradient_norms_history:
-        #                     self.gradient_norms_history[name] = []
-        #                 self.gradient_norms_history[name].append(grad_norm)
-
         # Configure per prefix (e.g. train/valid/test) logging **kwargs.
         on_step, on_epoch, prog_bar, sync_dist = None, None, False, True
         if prefix == "train":
@@ -431,15 +409,6 @@ class SARDDCModule(lightning.LightningModule):
             print(f"WARNING: NaN or Inf detected in targets at step {self.global_step}")
 
         out_criterion, reconstructions = self._model_forward(input, target)
-
-        # Monitor gradient norms for debugging
-        if self.global_step % 100 == 0:  # Don't compute this every step to save time
-            param_norm = 0
-            for p in self.net.parameters():
-                if p.grad is not None:
-                    param_norm += p.grad.data.norm(2).item() ** 2
-            param_norm = param_norm**0.5
-            self.log("train/grad_norm", param_norm, on_step=True, on_epoch=False)
 
         # Check for NaN or Inf in loss or reconstructions
         if torch.isnan(out_criterion["loss"]) or torch.isinf(out_criterion["loss"]):
