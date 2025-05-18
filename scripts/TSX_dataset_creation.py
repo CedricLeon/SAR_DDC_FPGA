@@ -18,7 +18,7 @@ Basic usage:
 
 Optional arguments:
     --preserve-threshold THRESHOLD  # Enable scatterer preservation with threshold in dB
-    --norm-mode {db,natural}        # Enable normalization with specified log mode
+    --norm-mode {db,nat}            # Enable normalization with specified log mode
     --norm-minmax PERCENT           # Percentile for min-max normalization (1, 5, 10, etc.)
     --patch-size SIZE               # Size of extracted patches (default: 256)
     --max-files N                   # Process only N files
@@ -78,14 +78,14 @@ def compute_statistics(data):
     }
 
 
-def norm_minmax(x, min, max):
-    return (x - min) / (max - min)
+def norm_minmax(x, min, max, clip):
+    x_norm = (x - min) / (max - min)
+    return np.clip(x_norm, 0, 1) if clip else x_norm
 
 
 def preserve_point_like_scatterers(real2, imag2, threshold_db=60):
     """
     Preserve point-like scatterers in TSX image above a certain threshold.
-    Memory-optimized version with in-place operations where possible.
 
     Args:
         real2: Squared real part of SAR image
@@ -95,50 +95,31 @@ def preserve_point_like_scatterers(real2, imag2, threshold_db=60):
     Returns:
         Tuple of (preserved_patch, scatterer_mask) where preserved_patch is the processed image
     """
-    # Check if we need to make a copy of the input arrays or can work in-place
     real2_proc = real2.copy()
     imag2_proc = imag2.copy()
 
-    # Compute intensity directly without intermediate arrays where possible
     intensity = real2 + imag2
-
-    # Convert to dB (this operation requires a new array anyway)
     intensity_db = convert_to_db(intensity)
-
-    # Create mask for pixels above threshold
     scatterer_mask = intensity_db > threshold_db
 
-    # Free memory we no longer need
-    del intensity_db
+    # Value = sqrt(intensity/2), which gives half the power to each component
+    scatterer_value = np.sqrt(intensity[scatterer_mask] / 2)
+    real2_proc[scatterer_mask] = scatterer_value
+    imag2_proc[scatterer_mask] = scatterer_value
 
-    # Only process if there are any scatterers above threshold
-    if np.any(scatterer_mask):
-        # For these pixels, assign the same value to both real and imaginary parts
-        # Value = sqrt(intensity/2), which gives half the power to each component
-        scatterer_value = np.sqrt(intensity[scatterer_mask] / 2)
-        real2_proc[scatterer_mask] = scatterer_value
-        imag2_proc[scatterer_mask] = scatterer_value
-
-    # Stack into final output format
-    preserved_patch = np.stack((real2_proc, imag2_proc), axis=2)
-
-    # Free more memory
-    del intensity, real2_proc, imag2_proc
-    gc.collect()
-
-    # Return expected format for compatibility with existing code
-    return preserved_patch, scatterer_mask
+    return np.stack((real2_proc, imag2_proc), axis=2), scatterer_mask
 
 
-def normalize_data(data, norm_mode="db", norm_minmax_val=0, verbose=False):
+def normalize_data(data, norm_mode="db", norm_minmax_val=0, clip=False, verbose=False):
     """
     Memory-optimized normalization using log transformation and min-max scaling.
     Processes data in batches to reduce memory usage.
 
     Args:
         data: Input data with shape [N, H, W, 2]
-        norm_mode: "db" or "natural" for log mode
+        norm_mode: "db" or "nat" for log mode
         norm_minmax_val: Percentile value for min-max normalization (0 for full min-max, other values for percentiles)
+        clip: Whether to clip values to [0, 1] after normalization
         verbose: Whether to print statistics
 
     Returns:
@@ -168,11 +149,11 @@ def normalize_data(data, norm_mode="db", norm_minmax_val=0, verbose=False):
         sample_imag_log = convert_to_db(sample_imag)
         if verbose:
             log.info("      Applied dB (10*log10) transformation")
-    elif norm_mode == "natural":
+    elif norm_mode == "nat":
         sample_real_log = np.log(sample_real + np.spacing(1))
         sample_imag_log = np.log(sample_imag + np.spacing(1))
         if verbose:
-            log.info("      Applied natural log transformation")
+            log.info("      Applied natural (nat) log transformation")
     else:
         raise ValueError(f"Invalid normalization mode: {norm_mode}")
 
@@ -231,7 +212,7 @@ def normalize_data(data, norm_mode="db", norm_minmax_val=0, verbose=False):
 
         # In-place normalization for real component
         normalized_data[start_idx:end_idx, ..., 0] = norm_minmax(
-            real_log, min_real, max_real
+            real_log, min_real, max_real, clip
         )
 
         # Free memory
@@ -246,7 +227,7 @@ def normalize_data(data, norm_mode="db", norm_minmax_val=0, verbose=False):
 
         # In-place normalization for imag component
         normalized_data[start_idx:end_idx, ..., 1] = norm_minmax(
-            imag_log, min_imag, max_imag
+            imag_log, min_imag, max_imag, clip
         )
 
         # Free memory
@@ -262,6 +243,7 @@ def preprocess_tsx_image(
     preserve_threshold=None,
     norm_mode=None,
     norm_minmax_val=0,
+    clip=False,
     verbose=False,
 ):
     """
@@ -271,7 +253,7 @@ def preprocess_tsx_image(
         filepath: Path to the CoSAR image file
         patch_size: Size of patches to extract
         preserve_threshold: Threshold for preserving scatterers (None to disable)
-        norm_mode: Normalization mode (None, "db", or "natural")
+        norm_mode: Normalization mode (None, "db", or "nat")
         norm_minmax_val: Percentile for min-max normalization
         verbose: Whether to print detailed statistics
         log: Logger object
@@ -375,10 +357,9 @@ def preprocess_tsx_image(
         scatterer_masks_list = []
 
         for patch in squared_patches:
-            real_proc, imag_proc, scatterer_mask = preserve_point_like_scatterers(
+            preserved_patch, scatterer_mask = preserve_point_like_scatterers(
                 patch[:, :, 0], patch[:, :, 1], threshold_db=preserve_threshold
             )
-            preserved_patch = np.stack((real_proc, imag_proc), axis=2)
             preserved_patches_list.append(preserved_patch)
             scatterer_masks_list.append(scatterer_mask)
 
@@ -420,6 +401,7 @@ def preprocess_tsx_image(
             preserved_patches,
             norm_mode=norm_mode,
             norm_minmax_val=norm_minmax_val,
+            clip=clip,
             verbose=verbose,
         )
         norm_stats_real = compute_statistics(normalized_patches[..., 0])
@@ -589,9 +571,7 @@ def plot_hist(data, ax, title, intensity=False, is_squared=True, data_percent=10
     ax.axvline(p95, color="orange", linestyle=":", label=f"95%: {p95:.4f}")
 
     # Set labels and legend
-    ax.set_title(
-        f"{title} ({data_percent}% of data) - min: {min_val:.4f}, max: {max_val:.4f}"
-    )
+    ax.set_title(f"{title} - min: {min_val:.4f}, max: {max_val:.4f}")
     ax.set_xlabel("Intensity (dB)" if intensity else "Value")
     ax.set_ylabel("Frequency")
     ax.legend(fontsize="small")
@@ -811,8 +791,8 @@ def split_patches(patches, metadata, train_frac=0.8, val_frac=0.1):
 
 
 def process_dataset(
-    input_dir,
-    output_dir,
+    input_dir: Path,
+    output_dir: Path,
     max_files=None,
     patch_size=256,
     train_frac=0.8,
@@ -820,6 +800,7 @@ def process_dataset(
     preserve_threshold=None,
     norm_mode=None,
     norm_minmax_val=0,
+    clip=False,
     verbose=False,
 ):
     """
@@ -833,7 +814,7 @@ def process_dataset(
         train_frac: Fraction of data for training
         val_frac: Fraction of data for validation
         preserve_threshold: Threshold for preserving scatterers (None to disable)
-        norm_mode: Normalization mode (None, "db", or "natural")
+        norm_mode: Normalization mode (None, "db", or "nat")
         norm_minmax_val: Percentile for min-max normalization
         verbose: Whether to print detailed statistics
         log: Logger object
@@ -848,7 +829,7 @@ def process_dataset(
     os.makedirs(output_dir, exist_ok=True)
 
     # Find .cos files
-    input_path = Path(input_dir)
+    input_path = input_dir
     cos_files = list(input_path.glob("*.cos"))
 
     if len(cos_files) == 0:
@@ -866,7 +847,7 @@ def process_dataset(
         log.info(f"Processing only the first {max_files} files")
 
     # Create temporary directory for patches
-    output_path = Path(output_dir)
+    output_path = output_dir
     patches_dir = output_path / "tmp_patches"
     os.makedirs(patches_dir, exist_ok=True)
 
@@ -889,6 +870,7 @@ def process_dataset(
             preserve_threshold=preserve_threshold,
             norm_mode=norm_mode,
             norm_minmax_val=norm_minmax_val,
+            clip=clip,
             verbose=verbose,
         )
         # Add additional metadata to results
@@ -1065,9 +1047,9 @@ def process_dataset(
 
                 # Calculate statistics for a subset of data (10%)
                 stats_data_percent = 10
-                log.info(
-                    f"Calculating statistics using {stats_data_percent}% of the data..."
-                )
+                # log.info(
+                #     f"Calculating statistics using {stats_data_percent}% of the data..."
+                # )
                 # Make sure we don't exceed the dataset size (actual range is 0 to total_count-1)
                 sample_size = max(
                     1, min(total_count, int(total_count * stats_data_percent / 100))
@@ -1194,7 +1176,10 @@ def main():
         "--input-dir", type=str, required=True, help="Directory containing .cos files"
     )
     parser.add_argument(
-        "--output-dir", type=str, required=True, help="Directory to save HDF5 files"
+        "--output-dir",
+        type=str,
+        required=True,
+        help="Parent directory to save the different datasets",
     )
     parser.add_argument(
         "--patch-size",
@@ -1235,15 +1220,20 @@ def main():
     parser.add_argument(
         "--norm-mode",
         type=str,
-        choices=["db", "natural"],
+        choices=["db", "nat"],
         default=None,
-        help="Normalization mode: 'db' or 'natural' (default: None -> no normalization is done)",
+        help="Normalization mode: 'db' or 'nat' (natural) (default: None -> no normalization is done)",
     )
     parser.add_argument(
         "--norm-minmax",
         type=int,
         default=0,
         help="Percentiles used in place of min and max in the normalization: 0, 1, 5, or 10 (default: 0 -> normal min and max values used)",
+    )
+    parser.add_argument(
+        "--clip",
+        action="store_true",
+        help="Whether to clip the data to the range [0, 1] after normalization. Disabled is --norm-minmax is 0 (data already between 0 and 1). (default: False)",
     )
     parser.add_argument(
         "--verbose",
@@ -1292,6 +1282,12 @@ def main():
             f"Adjusted fractions: train={args.train_frac:.2f}, "
             f"val={args.val_frac:.2f}, test={1 - args.train_frac - args.val_frac:.2f}"
         )
+    if args.clip and args.norm_minmax == 0:
+        log.warning(
+            "Clipping is enabled, but norm_minmax is set to 0. "
+            "Clipping will be disabled."
+        )
+        args.clip = False
 
     # Print configuration
     log.info(f"{Colors.YELLOW}TSX Dataset Creation - Configuration:{Colors.RESET}")
@@ -1311,10 +1307,25 @@ def main():
     if args.norm_mode is not None:
         log.info(f"  Normalization mode: {args.norm_mode}")
         log.info(f"  Min-max normalization percentile: {args.norm_minmax}%")
+        log.info(f"  Clipping [0,1]: {'Enabled' if args.clip else 'Disabled'}")
     else:
         log.info("  Normalization: Disabled")
     log.info(f"  Verbose mode: {'Enabled' if args.verbose else 'Disabled'}")
     log.info("")
+
+    # Build dataset name
+    pres_name = (
+        "nopres"
+        if args.preserve_threshold is None
+        else f"pres{int(args.preserve_threshold)}"
+    )
+    norm_name = (
+        "nonorm"
+        if args.norm_mode is None
+        else f"norm{args.norm_minmax}{args.norm_mode}"
+    )
+    norm_name += "clip" if args.clip else ""
+    dataset_name = f"randomsplit{args.max_files}_{pres_name}_{norm_name}"
 
     # Set seeds for reproducibility
     np.random.seed(args.seed)
@@ -1323,11 +1334,14 @@ def main():
 
     # Process the dataset
     start_time = datetime.now()
-    log.info(f"Starting dataset creation at {start_time}")
+    log.info(
+        f"Starting the creation of the dataset {dataset_name} at {start_time}",
+        Colors.YELLOW,
+    )
 
     success = process_dataset(
-        input_dir=args.input_dir,
-        output_dir=args.output_dir,
+        input_dir=Path(args.input_dir),
+        output_dir=Path(args.output_dir) / dataset_name,
         max_files=args.max_files,
         patch_size=args.patch_size,
         train_frac=args.train_frac,
@@ -1335,6 +1349,7 @@ def main():
         preserve_threshold=args.preserve_threshold,
         norm_mode=args.norm_mode,
         norm_minmax_val=args.norm_minmax,
+        clip=args.clip,
         verbose=args.verbose,
     )
 
