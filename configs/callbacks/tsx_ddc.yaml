@@ -31,4 +31,4 @@ model_summary:
   max_depth: 3
 
 learning_rate_monitor:
-  logging_interval: "step"
+  logging_interval: "epoch"

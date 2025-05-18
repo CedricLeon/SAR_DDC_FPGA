@@ -27,7 +27,8 @@ scheduler:
   _partial_: true
   mode: min
   factor: 0.1         # Default: 0.1, compressai: 0.5
-  patience: 10        # Default: 10, compressai: 20
+  patience: 5         # Default: 10, compressai: 20
+  threshold: 1e-3     # Default: 1e-4
 
 gradient_clip_norm: 1.0 # https://github.com/ali-zafari/TBTC/blob/master/lit_model.py
 compile: False          # compile model for faster training with pytorch 2.0
