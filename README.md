@@ -13,6 +13,7 @@ This project implements the solution presented by Amao-Oliva et al. [1] availabl
 
 ## TODOs
 *I'll use this section as a TODO list, including ideas for future projects.*
+- [ ] "NWML" warning, see [NVML is the NVIDIA Management Library and is used on NVIDIA GPUs](https://discuss.pytorch.org/t/cant-initialize-nvml-error-with-rvc-project/194206)
 
 ### Repo features
 - [ ] Make a smaller dataset (2 images, in random_split, for easier testing through epochs)
