@@ -326,7 +326,9 @@ class SARDDCModule(lightning.LightningModule):
         target: torch.Tensor,
     ) -> None:
         """Log training, validation, or test metrics."""
-        mse_value = out_criterion["mse_loss"].item()
+        mse_value = out_criterion["mse"].item()
+        ssim_value = out_criterion["ssim"].item()
+        ms_ssim_value = out_criterion["ms_ssim_loss"].item()
         psnr_value_1 = calculate_psnr_1(mse_value)
         psnr_value_max = calculate_psnr_max(mse_value, torch.max(input).item())
         bpp_value = out_criterion["bpp_loss"].item()
@@ -336,6 +338,8 @@ class SARDDCModule(lightning.LightningModule):
             f"{prefix}/aux": aux_loss,
             f"{prefix}/loss": out_criterion["loss"].item(),
             f"{prefix}/mse": mse_value,
+            f"{prefix}/ssim": ssim_value,
+            f"{prefix}/ms_ssim": ms_ssim_value,
             f"{prefix}/bpp": bpp_value,
             f"{prefix}/psnr_1": psnr_value_1,
             f"{prefix}/psnr_max": psnr_value_max,  # Both metrics are very similar
@@ -370,6 +374,8 @@ class SARDDCModule(lightning.LightningModule):
             additional_info = {
                 "bpp": bpp_value,
                 "mse": mse_value,
+                "ssim": ssim_value,
+                "ms_ssim": ms_ssim_value,
                 "loss": out_criterion["loss"].item(),
             }
             self._log_anomalies(

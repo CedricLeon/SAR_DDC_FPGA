@@ -112,7 +112,7 @@ class LogReconstructionCallback(Callback):
                 fig.colorbar(im3, ax=axs[i, 2], shrink=0.7)
 
         fig.suptitle(
-            f"epoch {trainer.current_epoch}: Loss={out_criterion['loss']:.4f}, MSE={out_criterion['mse_loss']:.4f}, BPP={out_criterion['bpp_loss']:.4f}"
+            f"epoch {trainer.current_epoch}: Loss={out_criterion['loss']:.4f}, MSE={out_criterion['mse']:.4f}, SSIM={out_criterion['ssim']}, MS-SSIM={out_criterion['ms_ssim']} , BPP={out_criterion['bpp']:.4f}"
         )
         plt.tight_layout()
         pl_module.logger.experiment.log({"callback_reconstruction": fig})
