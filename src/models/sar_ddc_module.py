@@ -68,7 +68,7 @@ class SARDDCModule(lightning.LightningModule):
 
         # Set up directory for low PSNR logs
         self.low_psnr_count = 0
-        self.psnr_ano_threshold = 5.0
+        self.psnr_ano_threshold = 0.0
         os.makedirs(self.hparams.anomalies_log_dir, exist_ok=True)
 
     def on_fit_start(self):
@@ -370,7 +370,7 @@ class SARDDCModule(lightning.LightningModule):
         # Get the optimizers as a list to handle properly
         optimizers = self.optimizers()
         if not isinstance(optimizers, list):
-            optimizers = list(optimizers)
+            optimizers = [optimizers]
 
         net_optimizer = optimizers[0]
         aux_optimizer = optimizers[1]
@@ -490,7 +490,3 @@ class SARDDCModule(lightning.LightningModule):
             ]
 
         return [{"optimizer": net_optimizer}, {"optimizer": aux_optimizer}]
-
-
-if __name__ == "__main__":
-    _ = SARDDCModule(None, None, None, None, None)
