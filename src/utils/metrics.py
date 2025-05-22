@@ -6,6 +6,7 @@ from compressai.registry import register_criterion
 from torch import Tensor, nn
 from torchmetrics.image import (
     MultiScaleStructuralSimilarityIndexMeasure,
+    PeakSignalNoiseRatio,
     StructuralSimilarityIndexMeasure,
 )
 
@@ -26,19 +27,22 @@ class UnitaryRDLoss(nn.Module):
         self.lmbda = lmbda
 
         self.mse = nn.MSELoss()
-        self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
-        self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=1.0)
+        self.psnr = PeakSignalNoiseRatio(data_range=(0.0, 1.0))
+        self.ssim = StructuralSimilarityIndexMeasure(data_range=(0.0, 1.0))
+        self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=(0.0, 1.0))
 
     def forward(self, output: Dict[str, Tensor], target: Tensor) -> Dict[str, Tensor]:
         N, _, H, W = target.size()
         out = {}
         num_pixels = N * H * W
 
+        # Average of the estimated number of bits needed to encode each pixel
         out["bpp_loss"] = sum(
             (torch.log(likelihoods).sum() / (-math.log(2) * num_pixels))
             for likelihoods in output["likelihoods"].values()
         )
         out["mse"] = self.mse(output["x_hat"], target)
+        out["psnr"] = self.psnr(output["x_hat"], target)
         out["ssim"] = self.ssim(output["x_hat"], target)
         out["ms_ssim"] = self.ms_ssim(output["x_hat"], target)
 
