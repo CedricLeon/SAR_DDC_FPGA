@@ -5,11 +5,14 @@ This module implements a scale hyperprior architecture for SAR image compression
 and despeckling based on CompressAI framework.
 """
 
+from typing import Dict, Tuple
+
 import torch
 import torch.nn as nn
 from compressai.entropy_models import EntropyBottleneck, GaussianConditional
 from compressai.layers import GDN
 from compressai.models import CompressionModel
+from torch import Tensor
 
 
 # Helper functions for convolution and transposed convolution layers
@@ -122,7 +125,7 @@ class ResidualScaleHyperprior(CompressionModel):
             deconv(M, M, kernel_size=3, stride=2),
         )
 
-    def scale_hyperprior(self, y):
+    def scale_hyperprior(self, y: Tensor) -> Tuple[Tensor, Tensor]:
         """Apply hyperprior to get scales and likelihoods."""
         z = torch.abs(y)
         z = self.h_a(z)
@@ -131,7 +134,7 @@ class ResidualScaleHyperprior(CompressionModel):
 
         return scales, z_likelihoods
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Dict[str, Tensor | Dict[str, Tensor]]:
         """Forward pass through the model.
 
         Args:
@@ -200,7 +203,7 @@ class ResidualScaleHyperprior(CompressionModel):
         x_hat = self.g_s(y_hat)
         return {"x_hat": x_hat}
 
-    def aux_loss(self):
+    def aux_loss(self) -> Tensor:
         """
         Return the EntropyBottleneck's auxiliary loss for training.
         """
