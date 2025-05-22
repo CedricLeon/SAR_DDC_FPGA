@@ -20,7 +20,8 @@ data:
 
 model:
   criterion:
-    lmbda: 1000
+    metric: "merlin" # "mse" or "ssim" or "ms_ssim"
+    lmbda: 2000
 
   net_optimizer:
     lr: 1e-5 # Got infinite loss with 0.001
@@ -36,7 +37,7 @@ callbacks:
 
 trainer:
   min_epochs: 1
-  max_epochs: 15
+  max_epochs: 20
 
 logger:
   wandb:

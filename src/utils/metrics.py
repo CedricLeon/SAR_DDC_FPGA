@@ -20,7 +20,7 @@ class UnitaryRDLoss(nn.Module):
 
     def __init__(self, lmbda: float, metric: str = "mse"):
         super().__init__()
-        if metric not in ["mse", "ssim", "ms_ssim"]:
+        if metric not in ["merlin", "mse", "ssim", "ms_ssim"]:
             raise NotImplementedError(f"{metric} is not supported!")
         self.metric = metric
 
@@ -46,14 +46,21 @@ class UnitaryRDLoss(nn.Module):
         out["ssim"] = self.ssim(output["x_hat"], target)
         out["ms_ssim"] = self.ms_ssim(output["x_hat"], target)
 
-        if self.metric == "mse":
-            distortion = out["mse"]
+        if self.metric == "merlin":
+            # sum over pixel k  0.5*output[k] + exp(input[k] − output[k])
+            out["distortion"] = torch.mean(
+                0.5 * output["x_hat"] + torch.exp(target - output["x_hat"])
+            )
+        elif self.metric == "mse":
+            out["distortion"] = out["mse"]
         elif self.metric == "ssim":
-            distortion = 1 - out["ssim"]
+            out["distortion"] = 1 - out["ssim"]
+        elif self.metric == "ms-ssim":
+            out["distortion"] = 1 - out["ms_ssim"]
         else:
-            distortion = 1 - out["ms_ssim"]
+            raise NotImplementedError(f"{self.metric} is not supported!")
 
-        out["loss"] = self.lmbda * distortion + out["bpp_loss"]
+        out["loss"] = self.lmbda * out["distortion"] + out["bpp_loss"]
         return out
 
 
