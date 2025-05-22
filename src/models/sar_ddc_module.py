@@ -15,6 +15,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import wandb
+from pytorch_lightning.loggers import WandbLogger
 
 from src.utils.metrics import (
     calculate_psnr_1,
@@ -76,7 +77,7 @@ class SARDDCModule(lightning.LightningModule):
         # self.gradient_norms_history = {}
 
         # Set up wandb watch to monitor parameters and gradients
-        if isinstance(self.trainer.logger, lightning.pytorch.loggers.wandb.WandbLogger):
+        if isinstance(self.trainer.logger, WandbLogger):
             self.trainer.logger.watch(
                 self.net,
                 log="all",  # Track both gradients and parameters
@@ -86,7 +87,7 @@ class SARDDCModule(lightning.LightningModule):
 
     def on_train_end(self):
         # Remove the hooks added by watch() to the model
-        if isinstance(self.trainer.logger, lightning.pytorch.loggers.wandb.WandbLogger):
+        if isinstance(self.trainer.logger, WandbLogger):
             wandb.unwatch(self.net)
 
     def _random_switch_Re_Im(
