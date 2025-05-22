@@ -7,7 +7,7 @@ and compression of SAR images using a Noise2Noise approach.
 
 import datetime
 import os
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import lightning
 import matplotlib.pyplot as plt
@@ -16,6 +16,7 @@ import torch
 import torch.nn.functional as F
 import wandb
 from pytorch_lightning.loggers import WandbLogger
+from torch import Tensor
 
 from src.utils.metrics import (
     calculate_psnr_1,
@@ -36,7 +37,7 @@ class SARDDCModule(lightning.LightningModule):
         criterion: torch.nn.Module,
         net_optimizer: torch.optim.Optimizer,
         aux_optimizer: torch.optim.Optimizer,
-        scheduler: torch.optim.lr_scheduler,
+        scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
         gradient_clip_norm: float = 1.0,
         compile: bool = False,
         anomalies_log_dir: str = "anomalies",  # Directory for low PSNR logs
@@ -90,9 +91,7 @@ class SARDDCModule(lightning.LightningModule):
         if isinstance(self.trainer.logger, WandbLogger):
             wandb.unwatch(self.net)
 
-    def _random_switch_Re_Im(
-        self, batch: Dict[str, torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _random_switch_Re_Im(self, batch: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         # Get real and imaginary parts (already squared and normalized)
         real_squared, imag_squared = batch["real"], batch["imag"]
 
@@ -104,13 +103,13 @@ class SARDDCModule(lightning.LightningModule):
 
         return input_data, target_data
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: Tensor):
         """Forward pass through the network."""
         return self.net(x)
 
     def _model_forward(
-        self, input: torch.Tensor, target: torch.Tensor
-    ) -> Tuple[Dict[str, Any], torch.Tensor]:
+        self, input: Tensor, target: Tensor
+    ) -> Tuple[Dict[str, Any], Tensor]:
         output = self.forward(input)
         out_criterion = self.criterion(output, target)
         return out_criterion, output["x_hat"]
@@ -118,11 +117,11 @@ class SARDDCModule(lightning.LightningModule):
     def _log_anomalies(
         self,
         prefix: str,
-        input: torch.Tensor,
-        target: torch.Tensor,
-        reconstruction: torch.Tensor,
+        input: Tensor,
+        target: Tensor,
+        reconstruction: Tensor,
         trigger: Tuple[str, float],
-        additional_info: Dict = None,
+        additional_info: Dict | None = None,
     ) -> None:
         """Log and visualize current metrics and batch statistics.
 
@@ -322,9 +321,9 @@ class SARDDCModule(lightning.LightningModule):
         prefix: str,
         out_criterion: Dict[str, Any],
         aux_loss: float,
-        input: torch.Tensor,
-        reconstructions: torch.Tensor,
-        target: torch.Tensor,
+        input: Tensor,
+        reconstructions: Tensor,
+        target: Tensor,
     ) -> None:
         """Log training, validation, or test metrics."""
         mse_value = out_criterion["mse"].item()
