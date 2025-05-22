@@ -172,37 +172,33 @@ class SARDDCModule(lightning.LightningModule):
             f.write("Input:\n")
             f.write(f"  Shape: {tuple(input.shape)}\n")  # Cast to tuple for printing
             f.write(
-                f"  Mean: {torch.mean(input.float()).item():.6f}\n"
+                f"  Mean: {torch.mean(input).item():.6f}\n"
             )  # Convert to float before mean
-            f.write(f"  Std: {torch.std(input.float()).item():.6f}\n")
+            f.write(f"  Std: {torch.std(input).item():.6f}\n")
             f.write(f"  Min: {torch.min(input).item():.6f}\n")
             f.write(f"  Max: {torch.max(input).item():.6f}\n")
-            f.write(f"  NaN count: {torch.isnan(input.float()).sum().item()}\n")
-            f.write(f"  Inf count: {torch.isinf(input.float()).sum().item()}\n\n")
+            f.write(f"  NaN count: {torch.isnan(input).sum().item()}\n")
+            f.write(f"  Inf count: {torch.isinf(input).sum().item()}\n\n")
 
             f.write("Target:\n")
             f.write(f"  Shape: {tuple(target.shape)}\n")  # Cast to tuple for printing
-            f.write(f"  Mean: {torch.mean(target.float()).item():.6f}\n")
-            f.write(f"  Std: {torch.std(target.float()).item():.6f}\n")
+            f.write(f"  Mean: {torch.mean(target).item():.6f}\n")
+            f.write(f"  Std: {torch.std(target).item():.6f}\n")
             f.write(f"  Min: {torch.min(target).item():.6f}\n")
             f.write(f"  Max: {torch.max(target).item():.6f}\n")
-            f.write(f"  NaN count: {torch.isnan(target.float()).sum().item()}\n")
-            f.write(f"  Inf count: {torch.isinf(target.float()).sum().item()}\n\n")
+            f.write(f"  NaN count: {torch.isnan(target).sum().item()}\n")
+            f.write(f"  Inf count: {torch.isinf(target).sum().item()}\n\n")
 
             f.write("Reconstruction:\n")
             f.write(
                 f"  Shape: {tuple(reconstruction.shape)}\n"
             )  # Cast to tuple for printing
-            f.write(f"  Mean: {torch.mean(reconstruction.float()).item():.6f}\n")
-            f.write(f"  Std: {torch.std(reconstruction.float()).item():.6f}\n")
+            f.write(f"  Mean: {torch.mean(reconstruction).item():.6f}\n")
+            f.write(f"  Std: {torch.std(reconstruction).item():.6f}\n")
             f.write(f"  Min: {torch.min(reconstruction).item():.6f}\n")
             f.write(f"  Max: {torch.max(reconstruction).item():.6f}\n")
-            f.write(
-                f"  NaN count: {torch.isnan(reconstruction.float()).sum().item()}\n"
-            )
-            f.write(
-                f"  Inf count: {torch.isinf(reconstruction.float()).sum().item()}\n\n"
-            )
+            f.write(f"  NaN count: {torch.isnan(reconstruction).sum().item()}\n")
+            f.write(f"  Inf count: {torch.isinf(reconstruction).sum().item()}\n\n")
 
             # Write statistics for each sample in the batch
             num_samples = min(16, batch_size)
@@ -220,48 +216,34 @@ class SARDDCModule(lightning.LightningModule):
                     sample_recon = reconstruction.squeeze()
 
                 f.write("  Input:\n")
-                f.write(f"    Mean: {torch.mean(sample_input.float()).item():.6f}\n")
-                f.write(f"    Std: {torch.std(sample_input.float()).item():.6f}\n")
+                f.write(f"    Mean: {torch.mean(sample_input).item():.6f}\n")
+                f.write(f"    Std: {torch.std(sample_input).item():.6f}\n")
                 f.write(f"    Min: {torch.min(sample_input).item():.6f}\n")
                 f.write(f"    Max: {torch.max(sample_input).item():.6f}\n")
-                f.write(
-                    f"    NaN count: {torch.isnan(sample_input.float()).sum().item()}\n"
-                )
-                f.write(
-                    f"    Inf count: {torch.isinf(sample_input.float()).sum().item()}\n"
-                )
+                f.write(f"    NaN count: {torch.isnan(sample_input).sum().item()}\n")
+                f.write(f"    Inf count: {torch.isinf(sample_input).sum().item()}\n")
 
                 f.write("  Target:\n")
-                f.write(f"    Mean: {torch.mean(sample_target.float()).item():.6f}\n")
-                f.write(f"    Std: {torch.std(sample_target.float()).item():.6f}\n")
+                f.write(f"    Mean: {torch.mean(sample_target).item():.6f}\n")
+                f.write(f"    Std: {torch.std(sample_target).item():.6f}\n")
                 f.write(f"    Min: {torch.min(sample_target).item():.6f}\n")
                 f.write(f"    Max: {torch.max(sample_target).item():.6f}\n")
-                f.write(
-                    f"    NaN count: {torch.isnan(sample_target.float()).sum().item()}\n"
-                )
-                f.write(
-                    f"    Inf count: {torch.isinf(sample_target.float()).sum().item()}\n"
-                )
+                f.write(f"    NaN count: {torch.isnan(sample_target).sum().item()}\n")
+                f.write(f"    Inf count: {torch.isinf(sample_target).sum().item()}\n")
 
                 f.write("  Reconstruction:\n")
-                f.write(f"    Mean: {torch.mean(sample_recon.float()).item():.6f}\n")
-                f.write(f"    Std: {torch.std(sample_recon.float()).item():.6f}\n")
+                f.write(f"    Mean: {torch.mean(sample_recon).item():.6f}\n")
+                f.write(f"    Std: {torch.std(sample_recon).item():.6f}\n")
                 f.write(f"    Min: {torch.min(sample_recon).item():.6f}\n")
                 f.write(f"    Max: {torch.max(sample_recon).item():.6f}\n")
-                f.write(
-                    f"    NaN count: {torch.isnan(sample_recon.float()).sum().item()}\n"
-                )
-                f.write(
-                    f"    Inf count: {torch.isinf(sample_recon.float()).sum().item()}\n"
-                )
+                f.write(f"    NaN count: {torch.isnan(sample_recon).sum().item()}\n")
+                f.write(f"    Inf count: {torch.isinf(sample_recon).sum().item()}\n")
 
                 # Calculate sample PSNR using torch.nn.functional.mse_loss and calculate_psnr_1
-                sample_mse = F.mse_loss(
-                    sample_recon.float(), sample_target.float()
-                ).item()
+                sample_mse = F.mse_loss(sample_recon, sample_target)
                 sample_psnr = calculate_psnr_1(sample_mse)
-                f.write(f"  MSE: {sample_mse:.6f}\n")
-                f.write(f"  PSNR: {sample_psnr:.2f} dB\n")
+                f.write(f"  MSE: {sample_mse.item():.6f}\n")
+                f.write(f"  PSNR: {sample_psnr.item():.2f} dB\n")
 
                 # Visualize the first few samples
                 if i < num_vis_samples:
@@ -272,7 +254,7 @@ class SARDDCModule(lightning.LightningModule):
 
                     fig, axs = plt.subplots(2, 3, figsize=(15, 10))
                     fig.suptitle(
-                        f"Low PSNR Sample {i + 1} - PSNR: {sample_psnr:.2f} dB (threshold: {self.psnr_ano_threshold:.2f} dB)",
+                        f"Low PSNR Sample {i + 1} - PSNR: {sample_psnr.item():.2f} dB (threshold: {self.psnr_ano_threshold:.2f} dB)",
                         fontsize=16,
                     )
 
@@ -326,30 +308,24 @@ class SARDDCModule(lightning.LightningModule):
         target: Tensor,
     ) -> None:
         """Log training, validation, or test metrics."""
-        mse_value = out_criterion["mse"].item()
-        ssim_value = out_criterion["ssim"].item()
-        ms_ssim_value = out_criterion["ms_ssim"].item()
-        psnr_value_1 = calculate_psnr_1(mse_value)
+
+        mse_value = out_criterion["mse"]
+        psnr_value_1 = calculate_psnr_1(mse_value).item()
         psnr_value_max = calculate_psnr_max(mse_value, torch.max(input).item())
-        bpp_value = out_criterion["bpp_loss"].item()
 
         # Enhanced metrics logging
         log_info = {
-            f"{prefix}/aux": aux_loss,
-            f"{prefix}/loss": out_criterion["loss"].item(),
-            f"{prefix}/mse": mse_value,
-            f"{prefix}/ssim": ssim_value,
-            f"{prefix}/ms_ssim": ms_ssim_value,
-            f"{prefix}/bpp": bpp_value,
-            f"{prefix}/psnr_1": psnr_value_1,
-            f"{prefix}/psnr_max": psnr_value_max,  # Both metrics are very similar
             # Track how much each loss contributes to total loss = R + lmbda * D
-            f"{prefix}/mse_percent": (
-                self.criterion.lmbda * mse_value / (out_criterion["loss"].item() + 1e-8)
-            )
-            * 100,
-            f"{prefix}/bpp_percent": (bpp_value / (out_criterion["loss"].item() + 1e-8))
-            * 100,
+            f"{prefix}/loss": out_criterion["loss"].item(),
+            f"{prefix}/distortion": out_criterion["distortion"].item(),
+            f"{prefix}/bpp": out_criterion["bpp_loss"].item(),
+            f"{prefix}/mse": mse_value.item(),
+            f"{prefix}/ssim": out_criterion["ssim"].item(),
+            f"{prefix}/ms_ssim": out_criterion["ms_ssim"].item(),
+            f"{prefix}/psnr_1": psnr_value_1,
+            f"{prefix}/psnr_lightning": out_criterion["psnr"].item(),
+            f"{prefix}/psnr_max": psnr_value_max,  # Both metrics are very similar
+            f"{prefix}/aux": aux_loss,
         }
 
         # Configure per prefix (e.g. train/valid/test) logging **kwargs.
@@ -372,10 +348,10 @@ class SARDDCModule(lightning.LightningModule):
         # Log anomalies (low PSNR)
         if self.current_epoch > 0 and psnr_value_1 < self.psnr_ano_threshold:
             additional_info = {
-                "bpp": bpp_value,
-                "mse": mse_value,
-                "ssim": ssim_value,
-                "ms_ssim": ms_ssim_value,
+                "bpp": out_criterion["bpp_loss"].item(),
+                "mse": mse_value.item(),
+                "ssim": out_criterion["ssim"].item(),
+                "ms_ssim": out_criterion["ms_ssim"].item(),
                 "loss": out_criterion["loss"].item(),
             }
             self._log_anomalies(
