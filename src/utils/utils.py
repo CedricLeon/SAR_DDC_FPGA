@@ -18,12 +18,13 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
     :return: A formatted run name string
     """
     lmbda = cfg.model.criterion.get("lmbda", None)
+    metric = cfg.model.criterion.get("metric", None)
     lr = cfg.model.net_optimizer.get("lr", None)
     data_norm = cfg.data.get("hdf5_dir", None)
     if data_norm is not None:
         data_norm = data_norm.split("/")[-1].split("_")[-1]
 
-    return f"ReSHyp_ʎ{lmbda}_lr{lr}_data{data_norm}"
+    return f"ReSHyp_{metric}ʎ{lmbda}_lr{lr}_data{data_norm}"
 
 
 @rank_zero_only
