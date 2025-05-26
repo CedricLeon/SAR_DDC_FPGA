@@ -48,8 +48,8 @@ from src.utils.MERLIN_sar_utils import cos2mat, symetrisation_patch_test
 from src.utils.pylogger import RankedLogger
 from src.utils.sar_utils import (
     convert_to_db,
-    extract_filepath_short_name,
     extract_patches,
+    preserve_point_like_scatterers,
 )
 
 
@@ -60,6 +60,11 @@ class Colors:
     GREEN = "\033[32m"
     BLUE = "\033[34m"
     RESET = "\033[0m"
+
+
+def norm_minmax(x, min: float, max: float, clip: bool):
+    x_norm = (x - min) / (max - min)
+    return np.clip(x_norm, 0, 1) if clip else x_norm
 
 
 def compute_statistics(data):
@@ -78,42 +83,30 @@ def compute_statistics(data):
     }
 
 
-def norm_minmax(x, min, max, clip):
-    x_norm = (x - min) / (max - min)
-    return np.clip(x_norm, 0, 1) if clip else x_norm
-
-
-def preserve_point_like_scatterers(real2, imag2, threshold_db=60):
-    """
-    Preserve point-like scatterers in TSX image above a certain threshold.
+def extract_filepath_short_name(file_path):
+    """Extract a short name from file path, typically the city name.
 
     Args:
-        real2: Squared real part of SAR image
-        imag2: Squared imaginary part of SAR image
-        threshold_db: Threshold in dB for scatterer preservation
+        file_path: Path to the file
 
     Returns:
-        Tuple of (preserved_patch, scatterer_mask) where preserved_patch is the processed image
+        Short name extracted from file path
     """
-    real2_proc = real2.copy()
-    imag2_proc = imag2.copy()
+    filename = os.path.basename(str(file_path))
 
-    intensity = real2 + imag2
-    intensity_db = convert_to_db(intensity)
-    scatterer_mask = intensity_db > threshold_db
-
-    # Value = sqrt(intensity/2), which gives half the power to each component
-    scatterer_value = np.sqrt(intensity[scatterer_mask] / 2)
-    real2_proc[scatterer_mask] = scatterer_value
-    imag2_proc[scatterer_mask] = scatterer_value
-
-    return np.stack((real2_proc, imag2_proc), axis=2), scatterer_mask
+    # Most filenames start with the city name
+    parts = filename.split("_")
+    if parts and len(parts) > 0:
+        return parts[0]  # Usually the city name
+    else:
+        return filename[:10]  # Fall back to first 10 chars
 
 
 def normalize_data(data, norm_mode="db", norm_minmax_val=0, clip=False, verbose=False):
     """
-    Memory-optimized normalization using log transformation and min-max scaling.
+    Normalization using log transformation and min-max scaling.
     Processes data in batches to reduce memory usage.
+    The logarithm base, min and max values, and clipping options can be specified.
 
     Args:
         data: Input data with shape [N, H, W, 2]
@@ -125,6 +118,10 @@ def normalize_data(data, norm_mode="db", norm_minmax_val=0, clip=False, verbose=
     Returns:
         Normalized data
     """
+    assert data.ndim == 4 or data.ndim == 3, (
+        "Data must be 3D [H, W, 2] or 4D [N, H, W, 2] array"
+    )
+    assert data.shape[-1] == 2, "Data must have 2 channels."
     # Compute batch size based on data shape and available memory
     # Start with a batch size that's around 1/4 of the total data or max 1000 patches
     batch_size = min(1000, max(1, len(data) // 4))
@@ -247,7 +244,134 @@ def preprocess_tsx_image(
     verbose=False,
 ):
     """
-    Full preprocessing pipeline for a single CoSAR image.
+    Full preprocessing pipeline for a single CoSAR image:
+    1. Load images from .cos files
+    2. Symmetrize image
+    3. Square real and imaginary parts
+    4. Optionally preserve point-like scatterers
+    5. Optionally normalize data
+    6. Extract patches
+
+    Args:
+        filepath: Path to the CoSAR image file
+        patch_size: Size of patches to extract
+        preserve_threshold: Threshold for preserving scatterers (None to disable)
+        norm_mode: Normalization mode (None, "db", or "nat")
+        norm_minmax_val: Percentile for min-max normalization
+        verbose: Whether to print detailed statistics
+        log: Logger object
+
+    Returns:
+        Dictionary with processed data at different stages
+    """
+    short_name = extract_filepath_short_name(filepath)
+
+    # 1. Load TSX data
+    log.info(f"  1. Loading TSX data from {short_name}...")
+    tsx_data = cos2mat(str(filepath))
+    if tsx_data is None:
+        raise ValueError(f"Failed to load {short_name}")
+
+    # 2. Apply symmetrization to whole image
+    log.info("  2. Applying symmetrization to the whole image...")
+    # Reshape to match MERLIN's expected format: [h, w, 2] -> real and imag_part [1, h, w, 1]
+    real = tsx_data[:, :, 0]
+    imag = tsx_data[:, :, 1]
+    real_reshaped = real.reshape(1, *real.shape, 1)
+    imag_reshaped = imag.reshape(1, *imag.shape, 1)
+    real_sym, imag_sym = symetrisation_patch_test(real_reshaped, imag_reshaped)
+    # Reshape back to [h, w, 2] format
+    real_sym = real_sym[0, :, :, 0]
+    imag_sym = imag_sym[0, :, :, 0]
+    tsx_data_symmetrized = np.stack((real_sym, imag_sym), axis=2)
+
+    # 3. Square all values
+    log.info("  3. Squaring the image...")
+    tsx_data_squared = np.square(tsx_data_symmetrized)
+
+    # 4. Preserve scatterers (optional)
+    tsx_data_preserved = tsx_data_squared
+    scatterer_mask = None
+
+    if preserve_threshold is not None:
+        log.info(
+            f"  4. Preserving point-like scatterers above {preserve_threshold} dB..."
+        )
+        tsx_data_preserved, scatterer_mask = preserve_point_like_scatterers(
+            tsx_data_squared,
+            threshold_db=preserve_threshold,
+        )
+
+        # Count preserved scatterers
+        _, nb_scatterer_preserved = np.unique(scatterer_mask, return_counts=True)
+        log.info(
+            f"          {Colors.GREEN}Strong scatterers preserved = {nb_scatterer_preserved[1]} (or {nb_scatterer_preserved[1] / nb_scatterer_preserved[0] * 100:.6f}%).{Colors.RESET}"
+        )
+    else:
+        log.info("  4. Scatterer preservation disabled, skipping...")
+
+    # 5. Normalize data (optional)
+    tsx_data_normalized = tsx_data_preserved
+    norm_stats = None
+
+    if norm_mode is not None:
+        log.info(
+            f"  5. Normalizing data using {norm_mode} log mode with {norm_minmax_val}% range..."
+        )
+        tsx_data_normalized = normalize_data(
+            tsx_data_preserved,
+            norm_mode=norm_mode,
+            norm_minmax_val=norm_minmax_val,
+            clip=clip,
+            verbose=verbose,
+        )
+        norm_stats_real = compute_statistics(tsx_data_normalized[..., 0])
+        norm_stats_imag = compute_statistics(tsx_data_normalized[..., 1])
+        # Combine the statistics for real and imaginary parts
+        norm_stats = {
+            "real": norm_stats_real,
+            "imag": norm_stats_imag,
+        }
+    else:
+        log.info("  5. Normalization disabled, skipping...")
+
+    # 6. Extract patches
+    log.info(f"  6. Extracting patches of size {patch_size}x{patch_size}...")
+    tsx_patches = extract_patches(tsx_data_normalized, patch_size, stride=patch_size)
+
+    if len(tsx_patches) == 0:
+        raise ValueError(f"No patches could be extracted from {short_name}")
+
+    # Return the results at different stages of the pipeline
+    return {
+        "original_data": tsx_data,
+        "symmetrized": tsx_data_symmetrized,
+        "squared": tsx_data_squared,
+        "preserved": tsx_data_preserved,
+        "scatterer_mask": scatterer_mask,
+        "normalized": tsx_data_normalized,
+        "norm_stats": norm_stats,
+        "final_patches": tsx_patches,
+    }
+
+
+def preprocess_tsx_patches(
+    filepath,
+    patch_size=256,
+    preserve_threshold=None,
+    norm_mode=None,
+    norm_minmax_val=0,
+    clip=False,
+    verbose=False,
+):
+    """
+    Full preprocessing pipeline for a single CoSAR image:
+    1. Load images from .cos files
+    2. Extract patches
+    3. Symmetrize patches
+    4. Square real and imaginary parts
+    5. Optionally preserve point-like scatterers
+    6. Optionally normalize data
 
     Args:
         filepath: Path to the CoSAR image file
@@ -432,12 +556,12 @@ def preprocess_tsx_image(
     # Return the results at different stages of the pipeline
     result = {
         "original_data": tsx_data,
-        "original_patches": original_patches,
-        "symmetrized_patches": symmetrized_patches,
-        "squared_patches": squared_patches,
-        "preserved_patches": preserved_patches,
-        "scatterer_masks": scatterer_masks,
-        "normalized_patches": normalized_patches,
+        "original": original_patches,
+        "symmetrized": symmetrized_patches,
+        "squared": squared_patches,
+        "preserved": preserved_patches,
+        "scatterer_mask": scatterer_masks,
+        "normalized": normalized_patches,
         "norm_stats": norm_stats,
     }
 
@@ -466,10 +590,9 @@ def plot_processing_histograms(results, output_path, title_prefix=""):
     """
     # Determine which stages are available in the results
     has_preserved = (
-        results["preserved_patches"] is not None
-        and results["scatterer_masks"] is not None
+        results["preserved"] is not None and results["scatterer_mask"] is not None
     )
-    has_normalized = results["normalized_patches"] is not None
+    has_normalized = results["normalized"] is not None
 
     # Create figure with subplots
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
@@ -477,28 +600,28 @@ def plot_processing_histograms(results, output_path, title_prefix=""):
 
     # Plot all histograms
     plot_hist(
-        results["original_patches"],
+        results["original_data"],
         axes[0, 0],
         "Original Patches (Intensity [dB])",
         intensity=True,
         is_squared=False,
     )
     plot_hist(
-        results["symmetrized_patches"],
+        results["symmetrized"],
         axes[0, 1],
         "Symmetrized Patches (Intensity [dB])",
         intensity=True,
         is_squared=False,
     )
     plot_hist(
-        results["squared_patches"],
+        results["squared"],
         axes[0, 2],
         "Squared Patches (Intensity [dB])",
         intensity=True,
     )
     if has_preserved:
         plot_hist(
-            results["preserved_patches"],
+            results["preserved"],
             axes[1, 0],
             f"Preserved Patches (>{results.get('preserve_threshold', 0)} dB, Intensity [dB])",
             intensity=True,
@@ -509,12 +632,12 @@ def plot_processing_histograms(results, output_path, title_prefix=""):
     # Plot normalized patches if available
     if has_normalized:
         plot_hist(
-            results["normalized_patches"][..., 0].flatten(),
+            results["normalized"][..., 0].flatten(),
             axes[1, 1],
             f"Real Norm ({results['norm_mode']} at {results['norm_minmax_val']}%)",
         )
         plot_hist(
-            results["normalized_patches"][..., 1].flatten(),
+            results["normalized"][..., 1].flatten(),
             axes[1, 2],
             f"Imag Norm ({results['norm_mode']} at {results['norm_minmax_val']}%)",
         )
@@ -537,8 +660,8 @@ def plot_hist(data, ax, title, intensity=False, is_squared=True, data_percent=10
     data = data[indices]
 
     if intensity:
-        assert len(data.shape) == 4, (
-            f"Data must be [N,h,w,2] for intensity histogram, but {data.shape}"
+        assert (len(data.shape) == 4) or (len(data.shape) == 3), (
+            f"Data must be [N,h,w,2] or [h,w,2] for intensity histogram, but {data.shape}"
         )
         assert data.shape[-1] == 2, (
             f"Data must have 2 channels (real and imag), but {data.shape}"
@@ -1243,34 +1366,56 @@ def main():
 
     args = parser.parse_args()
 
+    # Build dataset name
+    pres_name = (
+        "nopres"
+        if args.preserve_threshold is None
+        else f"pres{int(args.preserve_threshold)}"
+    )
+    norm_name = (
+        "nonorm"
+        if args.norm_mode is None
+        else f"norm{args.norm_minmax}{args.norm_mode}"
+    )
+    norm_name += "clip" if args.clip else ""
+    dataset_name = f"randomsplit{args.max_files}im_{pres_name}_{norm_name}"
+
     # Setup logging
     # 1. Configure rank_zero_only
     from lightning_utilities.core.rank_zero import rank_zero_only
 
     rank_zero_only.rank = 0  # Set rank for single-process script
-    # 2. Create output directory
+
+    # 2. Create output directory if it doesn't exist
     os.makedirs(args.output_dir, exist_ok=True)
-    # 3. Setup logging to file and console
+
+    # 3. Setup root logger first
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
+
     # 4. Clear any existing handlers
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
+
     # 5. File handler
-    file_handler = logging.FileHandler(
-        os.path.join(args.output_dir, "dataset_creation.log")
-    )
+    log_file_path = os.path.join(args.output_dir, dataset_name, "dataset_creation.log")
+    file_handler = logging.FileHandler(log_file_path)
     file_format = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     file_handler.setFormatter(file_format)
     logger.addHandler(file_handler)
+
     # 6. Console handler
     console_handler = logging.StreamHandler()
     console_format = logging.Formatter("%(message)s")
     console_handler.setFormatter(console_format)
     logger.addHandler(console_handler)
-    # 7. Initialize RankedLogger
+
+    # 7. Create RankedLogger AFTER setting up root logger
     global log
     log = RankedLogger(__name__, rank_zero_only=True)
+
+    # 8. Log that we've setup logging
+    log.info(f"Logging configured. Log file: {log_file_path}")
 
     # Validate arguments
     if args.train_frac + args.val_frac > 1.0:
@@ -1312,20 +1457,6 @@ def main():
         log.info("  Normalization: Disabled")
     log.info(f"  Verbose mode: {'Enabled' if args.verbose else 'Disabled'}")
     log.info("")
-
-    # Build dataset name
-    pres_name = (
-        "nopres"
-        if args.preserve_threshold is None
-        else f"pres{int(args.preserve_threshold)}"
-    )
-    norm_name = (
-        "nonorm"
-        if args.norm_mode is None
-        else f"norm{args.norm_minmax}{args.norm_mode}"
-    )
-    norm_name += "clip" if args.clip else ""
-    dataset_name = f"randomsplit{args.max_files}_{pres_name}_{norm_name}"
 
     # Set seeds for reproducibility
     np.random.seed(args.seed)
