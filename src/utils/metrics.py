@@ -45,12 +45,16 @@ class UnitaryRDLoss(nn.Module):
         out["psnr"] = self.psnr(output["x_hat"], target)
         out["ssim"] = self.ssim(output["x_hat"], target)
         out["ms_ssim"] = self.ms_ssim(output["x_hat"], target)
+        # # sum over pixel k  0.5*output[k] + exp(input[k] − output[k])
+        # out["merlin"] = torch.mean(
+        #     0.5 * output["x_hat"] + torch.exp(target - output["x_hat"])
+        # )
+        out["merlin"] = torch.sum(
+            0.5 * output["x_hat"] + torch.exp(target - output["x_hat"])
+        )
 
         if self.metric == "merlin":
-            # sum over pixel k  0.5*output[k] + exp(input[k] − output[k])
-            out["distortion"] = torch.mean(
-                0.5 * output["x_hat"] + torch.exp(target - output["x_hat"])
-            )
+            out["distortion"] = out["merlin"]
         elif self.metric == "mse":
             out["distortion"] = out["mse"]
         elif self.metric == "ssim":
