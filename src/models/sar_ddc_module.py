@@ -20,7 +20,6 @@ from torch import Tensor
 
 from src.utils.metrics import (
     calculate_psnr_1,
-    calculate_psnr_max,
 )
 
 
@@ -310,8 +309,6 @@ class SARDDCModule(lightning.LightningModule):
         """Log training, validation, or test metrics."""
 
         mse_value = out_criterion["mse"]
-        psnr_value_1 = calculate_psnr_1(mse_value).item()
-        psnr_value_max = calculate_psnr_max(mse_value, torch.max(input).item())
 
         # Enhanced metrics logging
         log_info = {
@@ -322,9 +319,8 @@ class SARDDCModule(lightning.LightningModule):
             f"{prefix}/mse": mse_value.item(),
             f"{prefix}/ssim": out_criterion["ssim"].item(),
             f"{prefix}/ms_ssim": out_criterion["ms_ssim"].item(),
-            f"{prefix}/psnr_1": psnr_value_1,
+            f"{prefix}/merlin": out_criterion["merlin"].item(),
             f"{prefix}/psnr_lightning": out_criterion["psnr"].item(),
-            f"{prefix}/psnr_max": psnr_value_max,  # Both metrics are very similar
             f"{prefix}/aux": aux_loss,
         }
 
@@ -345,23 +341,23 @@ class SARDDCModule(lightning.LightningModule):
             prog_bar=prog_bar,
         )
 
-        # Log anomalies (low PSNR)
-        if self.current_epoch > 0 and psnr_value_1 < self.psnr_ano_threshold:
-            additional_info = {
-                "bpp": out_criterion["bpp_loss"].item(),
-                "mse": mse_value.item(),
-                "ssim": out_criterion["ssim"].item(),
-                "ms_ssim": out_criterion["ms_ssim"].item(),
-                "loss": out_criterion["loss"].item(),
-            }
-            self._log_anomalies(
-                prefix,
-                input,
-                target,
-                reconstructions,
-                ("PSNR", psnr_value_1),
-                additional_info,
-            )
+        # # Log anomalies (low PSNR)
+        # if self.current_epoch > 0 and psnr_value_1 < self.psnr_ano_threshold:
+        #     additional_info = {
+        #         "bpp": out_criterion["bpp_loss"].item(),
+        #         "mse": mse_value.item(),
+        #         "ssim": out_criterion["ssim"].item(),
+        #         "ms_ssim": out_criterion["ms_ssim"].item(),
+        #         "loss": out_criterion["loss"].item(),
+        #     }
+        #     self._log_anomalies(
+        #         prefix,
+        #         input,
+        #         target,
+        #         reconstructions,
+        #         ("PSNR", out_criterion["psnr"].item()),
+        #         additional_info,
+        #     )
 
     def training_step(self, batch, batch_idx):
         """Training step using Noise2Noise approach.
@@ -380,22 +376,7 @@ class SARDDCModule(lightning.LightningModule):
 
         # Forward pass
         input, target = self._random_switch_Re_Im(batch)
-
-        # Verify input and target sanity before forward pass
-        if torch.isnan(input).any() or torch.isinf(input).any():
-            self.log("train/nan_inf_inputs", 1.0, on_step=True)
-            print(f"WARNING: NaN or Inf detected in inputs at step {self.global_step}")
-
-        if torch.isnan(target).any() or torch.isinf(target).any():
-            self.log("train/nan_inf_targets", 1.0, on_step=True)
-            print(f"WARNING: NaN or Inf detected in targets at step {self.global_step}")
-
         out_criterion, reconstructions = self._model_forward(input, target)
-
-        # Check for NaN or Inf in loss or reconstructions
-        if torch.isnan(out_criterion["loss"]) or torch.isinf(out_criterion["loss"]):
-            self.log("train/nan_inf_loss", 1.0, on_step=True)
-            print(f"WARNING: NaN or Inf detected in loss at step {self.global_step}")
 
         # Backward pass for the main loss
         self.manual_backward(out_criterion["loss"])
