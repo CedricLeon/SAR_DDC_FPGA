@@ -102,7 +102,7 @@ class RunningStatistics:
 
             print("  Percentiles:")
             for p, v in zip(percentiles, values):
-                print(f"    {p:3d}%: {v:.4f}")
+                print(f"    {p:3d}%: {v}")
 
         # Return basic stats as a dict for convenience
         return {
@@ -114,7 +114,7 @@ class RunningStatistics:
         }
 
 
-def process_sar_image(filepath, stats_real, stats_imag, stats_whole):
+def process_sar_image(filepath, stast_inten):
     """Process a single SAR image and update statistics."""
     print(f"Processing {filepath.name}...")
 
@@ -135,15 +135,17 @@ def process_sar_image(filepath, stats_real, stats_imag, stats_whole):
     sar_data = np.square(sar_data)
 
     # Apply log transformation
-    sar_data = np.log(sar_data + np.spacing(1))
+    intensity = sar_data[:, :, 0] + sar_data[:, :, 1]
+    inten_log = np.log(intensity + np.spacing(1))
 
-    # Update statistics
-    stats_real.update(sar_data[:, :, 0])
-    stats_imag.update(sar_data[:, :, 1])
-    stats_whole.update(sar_data)
+    # # Update statistics
+    # stats_real.update(sar_data[:, :, 0])
+    # stats_imag.update(sar_data[:, :, 1])
+    # stats_whole.update(sar_data)
+    stast_inten.update(inten_log)
 
     # Free memory
-    del sar_data
+    del sar_data, intensity
     gc.collect()
 
     return True
@@ -227,51 +229,40 @@ def main():
     print(f"Found {len(cos_files)} .cos files in {data_dir}")
 
     # Create statistics trackers
-    stats_real = RunningStatistics("Real Component (log-squared)")
-    stats_imag = RunningStatistics("Imaginary Component (log-squared)")
-    stats = RunningStatistics("Whole image (log-squared)")
+    # stats_real = RunningStatistics("Real Component (log-squared)")
+    # stats_imag = RunningStatistics("Imaginary Component (log-squared)")
+    # stats = RunningStatistics("Whole image (log-squared)")
+    stats_inten = RunningStatistics("Intensity (log)")
 
     # Process each image
     for file_path in cos_files:
-        process_sar_image(file_path, stats_real, stats_imag, stats)
+        process_sar_image(file_path, stats_inten)
 
     # Generate reports
-    print("\n=== REAL COMPONENT STATISTICS ===")
-    stats_real.report()
+    print("\n=== INTENSITY STATISTICS ===")
+    stats_inten.report()
 
-    print("\n=== IMAGINARY COMPONENT STATISTICS ===")
-    stats_imag.report()
-
-    print("\n=== WHOLE STATISTICS ===")
-    stats.report()
-
-    # Plot histograms
+    # Plot histogram
     plot_histogram(
-        stats_real,
-        "Log-squared Real Component Distribution",
-        output_dir / "real_histogram.png",
-    )
-    plot_histogram(
-        stats_imag,
-        "Log-squared Imaginary Component Distribution",
-        output_dir / "imag_histogram.png",
-    )
-    plot_histogram(
-        stats, "Log-squared Whole Distribution", output_dir / "whole_histogram.png"
+        stats_inten,
+        "Log-transformed Intensity Distribution",
+        output_dir / "intensity_histogram.png",
     )
 
     # Print final conclusion
-    print("\nDataset Analysis Complete")
-    print(f"  - Mean: {stats.mean}")
-    print(f"  - Std: {stats.std}")
     print(
-        f"  - Range: [{stats.percentile(1)}, {stats.percentile(99)}] (1st-99th percentile)"
+        "\nDataset Analysis Complete. Summary of the Intensity (log(Re^2 + Im^2)) Statistics:"
+    )
+    print(f"  - Mean: {stats_inten.mean}")
+    print(f"  - Std: {stats_inten.std}")
+    print(
+        f"  - Range: [{stats_inten.percentile(1)}, {stats_inten.percentile(99)}] (1st-99th percentile)"
     )
     print(
-        f"  - Range: [{stats.percentile(10)}, {stats.percentile(90)}] (10th-90th percentile)"
+        f"  - Range: [{stats_inten.percentile(10)}, {stats_inten.percentile(90)}] (10th-90th percentile)"
     )
     print(
-        f"The analyzed dataset contains values from {stats.min_val} to {stats.max_val}"
+        f"The analyzed dataset contains values from {stats_inten.min_val} to {stats_inten.max_val}"
     )
 
 
