@@ -49,6 +49,7 @@ from src.utils.pylogger import RankedLogger
 from src.utils.sar_utils import (
     convert_to_db,
     extract_patches,
+    normalize_image,
     preserve_point_like_scatterers,
 )
 
@@ -134,62 +135,45 @@ def normalize_data(data, norm_mode="db", norm_minmax_val=0, clip=False, verbose=
     # Use either 20% of the data or 1000 patches, whichever is smaller
     sample_size = min(1000, max(1, int(len(data) * 0.2)))
     sample_indices = np.random.choice(len(data), sample_size, replace=False)
-    sample_data = data[sample_indices]
-
-    # Extract real and imaginary components from sample
-    sample_real = sample_data[..., 0]
-    sample_imag = sample_data[..., 1]
+    sample = data[sample_indices]
 
     # Compute log-transform on sample
     if norm_mode == "db":
-        sample_real_log = convert_to_db(sample_real)
-        sample_imag_log = convert_to_db(sample_imag)
+        sample_log = convert_to_db(sample)
         if verbose:
             log.info("      Applied dB (10*log10) transformation")
     elif norm_mode == "nat":
-        sample_real_log = np.log(sample_real + np.spacing(1))
-        sample_imag_log = np.log(sample_imag + np.spacing(1))
+        sample_log = np.log(sample + np.spacing(1))
         if verbose:
             log.info("      Applied natural (nat) log transformation")
     else:
         raise ValueError(f"Invalid normalization mode: {norm_mode}")
 
     # Compute statistics from sample
-    stats = {
-        "real": compute_statistics(sample_real_log),
-        "imag": compute_statistics(sample_imag_log),
-    }
+    stats = compute_statistics(sample_log)
 
     # Free sample memory
-    del sample_data, sample_real, sample_imag, sample_real_log, sample_imag_log
-    gc.collect()
+    del sample, sample_log
 
     # Determine min-max values based on percentile
     if norm_minmax_val == 0:
         # Use actual min and max
-        min_real, max_real = stats["real"]["min"], stats["real"]["max"]
-        min_imag, max_imag = stats["imag"]["min"], stats["imag"]["max"]
+        min_value, max_value = stats["min"], stats["max"]
 
         if verbose:
             log.info("      Using full min-max range for normalization")
-            log.info(f"         Real channel: min={min_real:.4f}, max={max_real:.4f}")
-            log.info(f"         Imag channel: min={min_imag:.4f}, max={max_imag:.4f}")
+            log.info(f"         min={min_value:.4f}, max={max_value:.4f}")
     else:
         # Use percentiles
-        min_real = stats["real"][f"p{norm_minmax_val}"]
-        max_real = stats["real"][f"p{100 - norm_minmax_val}"]
-        min_imag = stats["imag"][f"p{norm_minmax_val}"]
-        max_imag = stats["imag"][f"p{100 - norm_minmax_val}"]
+        min_value = stats[f"p{norm_minmax_val}"]
+        max_value = stats[f"p{100 - norm_minmax_val}"]
 
         if verbose:
             log.info(
                 f"      Using {norm_minmax_val}-{100 - norm_minmax_val} percentile range for normalization"
             )
             log.info(
-                f"          Real channel: p{norm_minmax_val}={min_real:.4f}, p{100 - norm_minmax_val}={max_real:.4f}"
-            )
-            log.info(
-                f"          Imag channel: p{norm_minmax_val}={min_imag:.4f}, p{100 - norm_minmax_val}={max_imag:.4f}"
+                f"          p{norm_minmax_val}={min_value:.4f}, p{100 - norm_minmax_val}={max_value:.4f}"
             )
 
     # Second pass: process in batches
@@ -201,35 +185,18 @@ def normalize_data(data, norm_mode="db", norm_minmax_val=0, clip=False, verbose=
         batch = data[start_idx:end_idx]
 
         # Process real component
-        real_batch = batch[..., 0]
         if norm_mode == "db":
-            real_log = convert_to_db(real_batch)
+            batch_log = convert_to_db(batch)
         else:
-            real_log = np.log(real_batch + np.spacing(1))
+            batch_log = np.log(batch + np.spacing(1))
 
         # In-place normalization for real component
-        normalized_data[start_idx:end_idx, ..., 0] = norm_minmax(
-            real_log, min_real, max_real, clip
+        normalized_data[start_idx:end_idx, ...] = norm_minmax(
+            batch_log, min_value, max_value, clip
         )
 
         # Free memory
-        del real_batch, real_log
-
-        # Process imag component
-        imag_batch = batch[..., 1]
-        if norm_mode == "db":
-            imag_log = convert_to_db(imag_batch)
-        else:
-            imag_log = np.log(imag_batch + np.spacing(1))
-
-        # In-place normalization for imag component
-        normalized_data[start_idx:end_idx, ..., 1] = norm_minmax(
-            imag_log, min_imag, max_imag, clip
-        )
-
-        # Free memory
-        del imag_batch, imag_log, batch
-        gc.collect()
+        del batch, batch_log
 
     return normalized_data
 
@@ -287,7 +254,7 @@ def preprocess_tsx_image(
 
     # 3. Square all values
     log.info("  3. Squaring the image...")
-    tsx_data_squared = np.square(tsx_data_symmetrized)
+    tsx_data_squared = np.square(abs(tsx_data_symmetrized))
 
     # 4. Preserve scatterers (optional)
     tsx_data_preserved = tsx_data_squared
@@ -315,16 +282,23 @@ def preprocess_tsx_image(
     norm_stats = None
 
     if norm_mode is not None:
+        percentiles = (norm_minmax_val, 100 - norm_minmax_val)
         log.info(
-            f"  5. Normalizing data using {norm_mode} log mode with {norm_minmax_val}% range..."
+            f"  5. Normalizing data using {norm_mode} log mode with {percentiles[0]}-{percentiles[1]}% range..."
         )
-        tsx_data_normalized = normalize_data(
+        tsx_data_normalized = normalize_image(
             tsx_data_preserved,
-            norm_mode=norm_mode,
-            norm_minmax_val=norm_minmax_val,
+            log_base=norm_mode,
+            percentiles=percentiles,
             clip=clip,
-            verbose=verbose,
         )
+        # tsx_data_normalized = normalize_data(
+        #     tsx_data_preserved,
+        #     norm_mode=norm_mode,
+        #     norm_minmax_val=norm_minmax_val,
+        #     clip=clip,
+        #     verbose=verbose,
+        # )
         norm_stats_real = compute_statistics(tsx_data_normalized[..., 0])
         norm_stats_imag = compute_statistics(tsx_data_normalized[..., 1])
         # Combine the statistics for real and imaginary parts
@@ -996,6 +970,7 @@ def process_dataset(
             clip=clip,
             verbose=verbose,
         )
+        # patches =  preprocess_TSX_image
         # Add additional metadata to results
         results["preserve_threshold"] = preserve_threshold
         results["norm_mode"] = norm_mode
@@ -1386,9 +1361,6 @@ def main():
 
     rank_zero_only.rank = 0  # Set rank for single-process script
 
-    # 2. Create output directory if it doesn't exist
-    os.makedirs(args.output_dir, exist_ok=True)
-
     # 3. Setup root logger first
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
@@ -1398,7 +1370,9 @@ def main():
         logger.removeHandler(handler)
 
     # 5. File handler
-    log_file_path = os.path.join(args.output_dir, dataset_name, "dataset_creation.log")
+    log_dir = os.path.join(args.output_dir, dataset_name)
+    os.makedirs(log_dir, exist_ok=True)
+    log_file_path = os.path.join(log_dir, "dataset_creation.log")
     file_handler = logging.FileHandler(log_file_path)
     file_format = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     file_handler.setFormatter(file_format)
