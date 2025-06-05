@@ -16,10 +16,10 @@ This project implements the solution presented by Amao-Oliva et al. [1] availabl
 - [ ] "NWML" warning, see [NVML is the NVIDIA Management Library and is used on NVIDIA GPUs](https://discuss.pytorch.org/t/cant-initialize-nvml-error-with-rvc-project/194206)
 
 ### Repo features
-- [ ] Make a smaller dataset (2 images, in random_split, for easier testing through epochs)
+- [x] Make a smaller dataset (2 images, in random_split, for easier testing through epochs)
 - [ ] Spatial_split dataset
 - More metrics:
-  - [ ] SSIM and MS-SSIM if patch_size > 176 (See [this discusssion](https://github.com/francois-rozet/piqa/discussions/11))
+  - [x] SSIM and MS-SSIM if patch_size > 176 (See [this discusssion](https://github.com/francois-rozet/piqa/discussions/11))
   - [ ] Despeckling metrics: ENL = $\frac{\mu^2}{\sigma^2}$ over the image
 
 ### Long-term Experiments/Upgrades
@@ -33,13 +33,20 @@ In addition, the despeckling task is inspired from MERLIN's self-supervised trai
 TerraSAR-x StripMap (SM) SSC (Single Look Slant Range Complex) images downloaded from [ESA's platform](https://earth.esa.int/eogateway/catalog/terrasar-x-esa-archive).
 > Submitting a form is required to access the data (2 days max delay).
 
+#### Pre-processing
+`script/TSX_dataset_creation.py` creates `hdf5` datasets more convenient for training that re-processing and patchifying the entire TSX SSC images everytime.
+In particular, each .cos file present in `data/TSX_cos_files/` is open, images are patchified, symmetrized, strong scatterers are preserved, normalized, and the whole set of resulting patches is split in training/validation/test datasets.
 The data is pre-processed into train/val/test HDF5 files using the `script/TSX_dataset_creation.py`. This script has many options, use `--help` for details.
-I'll try to follow the dataset naming conventions below: `<split_type><nb_images>_<preservation_threshold>_<normalization_percentiles><log_mode>.hdf5`, where:
+
+#### Datasets naming
+I'll try to follow the dataset naming conventions below: `<split_type><nb_images>_<preservation>_<normalization>.hdf5`, where:
 - `split_type` is how the patches where split ("randomsplit" or "spatialsplit")
 - `nb_images` corresponds to the number of `.cos` files used for the dataset (typically 5)
-- `preservation_threshold` indicates if strong point-like scatterers were preserved following (@TODO add equation in [[Math.md]]) and the threshold, for example "nopres" or "pres60dB".
-- `normalization_percentiles` indicates if min-max normalization was performed on the patches, and which percentiles were used as "min" and "max". For example, "nonorm" or "norm1".
-- `log_mode` the logarithmic base was used in the normalization, either "db" (`np.log10()`) or "nat" (natural: `np.log()`)
+- `preservation` indicates if strong point-like scatterers were preserved following (@TODO add equation in [[Math.md]]) and the threshold, for example "nopres" or "pres60dB".
+- `normalization` consists of `norm<normalization_percentiles><log_mode><clipped>`
+  - `normalization_percentiles` indicates if min-max normalization was performed on the patches, and which percentiles were used as "min" and "max". For example, "nonorm" or "norm1".
+  - `log_mode` the logarithmic base was used in the normalization, either "db" (`np.log10()`) or "nat" (natural: `np.log()`)
+  - `clipped` is "clip" or "" depending if the data was clipped to [0,1] or not. If `normalization_percentiles=0` clipping is deactivated by default, as after a minmax normalization the data lies already in [0,1]
 Examples:
 - "randomsplit5_pres60dB_norm5db" was processed with preservation of scatterers with signals above 60dB, the patches were placed in log10 base before being "min-maxed" with p5 and p95 (i.e., value 0 corresponds to p5 and value 1 to p95)
 - "randomsplit5_nopres_norm0nat" was processed without scatterer preservation but with normalization to natural logarithm and traditional min-max (0 means 0%)
