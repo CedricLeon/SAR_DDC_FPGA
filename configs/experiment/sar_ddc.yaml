@@ -12,7 +12,7 @@ defaults:
   - override /hydra: default.yaml
 
 data:
-  hdf5_dir: ${paths.data_dir}processed_hdf5/randomsplit5_pres60_norm1natclip
+  hdf5_dir: ${paths.data_dir}processed_hdf5/randomsplit2im_pres60_norm10nat
   log_mode: "natural"
   must_normalize: null # 0 <=> true min-max, 1 <=> min-max with 1% and 99% percentiles, etc.
   batch_size: 16
@@ -21,17 +21,18 @@ data:
 model:
   criterion:
     metric: "merlin" # "mse" or "ssim" or "ms_ssim"
-    lmbda: 2000
+    lmbda: 1
 
   net_optimizer:
     lr: 1e-5 # Got infinite loss with 0.001
 
 callbacks:
-  log_reconstruction:
-    log_every_n_epochs: 2
+  log_val_patch:
+    patch_dir: ${data.hdf5_dir}
+  log_val_batch_plot:
+    log_every_n_epochs: 1
     num_images: 3
     add_residuals: True
-    verbose: False
   early_stopping:
     verbose: True
 

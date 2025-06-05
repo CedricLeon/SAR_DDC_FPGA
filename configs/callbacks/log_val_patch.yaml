@@ -1,0 +1,5 @@
+log_val_patch:
+  _target_: src.callbacks.sar_logging_callback.LogValidationPatch
+  patch_dir: null # Location of the patch, to be set after overwriting data.hdf5_dir (in experiment config)
+  log_every_n_epochs: 1
+  add_residuals: False # When true, adds a third column with the difference between the original and the reconstruction

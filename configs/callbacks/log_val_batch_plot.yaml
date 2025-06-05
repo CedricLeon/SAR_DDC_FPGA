@@ -1,0 +1,6 @@
+log_val_batch_plot:
+  _target_: src.callbacks.sar_logging_callback.LogValidationBatchPlot
+  log_every_n_epochs: 10
+  num_images: 3
+  cmap: "gray"
+  add_residuals: False # When true, adds a third column with the difference between the original and the reconstruction

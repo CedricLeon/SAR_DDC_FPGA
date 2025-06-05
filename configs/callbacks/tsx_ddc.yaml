@@ -3,15 +3,20 @@ defaults:
   - model_summary
   - rich_progress_bar
   - learning_rate_monitor
-  - log_reconstruction
+  - log_val_batch_plot
+  - log_val_patch
   - early_stopping
   - _self_
 
 # Configuration for callbacks
-log_reconstruction:
-  log_every_n_epochs: 1
+log_val_batch_plot:
+  log_every_n_epochs: 5
   num_images: 2
-  verbose: True
+
+log_val_patch:
+  patch_dir: ${data.hdf5_dir}
+  log_every_n_epochs: 1
+  add_residuals: True
 
 model_checkpoint:
   dirpath: ${paths.output_dir}/checkpoints
