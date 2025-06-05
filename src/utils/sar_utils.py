@@ -7,11 +7,12 @@ This module provides utility functions for SAR data handling:
 - Visualization functions for SAR images
 """
 
-import os
+import struct
+from pathlib import Path
+from typing import Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
-import torch
+from scipy import signal
 
 # Quick ANSI color code shortcuts
 r = "\033[31m"
@@ -20,417 +21,297 @@ g = "\033[32m"
 b = "\033[34m"
 e = "\033[0m"
 
-# Constants for normalization from the log intensity of "random_split" (Genoa/Roma/Warsaw/Cologne/Hamburg), 30/04/2025
-M = 50.32925033569336  # 95th percentile or 54.32472229003906 (99th)
-m = 28.17565727233887  # 5th percentile or 20.96910095214844 (1st)
+# These percentiles are the statistics of the intensity image in log-scale of the whole dataset. See scripts/compute_dataset_stats.py and data/analysis/dataset_all_stats.log
+PERCENTILES = {
+    "p1": 5.0998743307292065,
+    "p5": 6.76272625759834,
+    "p10": 7.5093313731365825,
+    "p25": 8.58166854680157,
+    "p50": 9.592196081062,
+    "p75": 10.47517273375431,
+    "p90": 11.218084495319967,
+    "p95": 11.667549457990336,
+    "p99": 12.611018051940837,
+}
 
 
-#################### Normalization functions ####################
-# np.spacing(1) is similar to using 1e-10 (to avoid log(0))
-def normalize_minmax_log_natural(x):
-    """Normalize input to natural log space, and then to the range [0, 1] using min-max scaling."""
-    return ((np.log(x + np.spacing(1)) - m) / (M - m)).astype("float32")
-
-
-def denormalize_minmax_log_natural(x):
-    """Denormalize input from the range [0, 1] and natural log space."""
-    return np.exp((x * (M - m)) + m).astype("float32")
-
-
-def normalize_minmax_log10(x):
-    """Normalize input to decibel (10 * log10) space, and then to the range [0, 1] using min-max scaling."""
-    return ((convert_to_db(x) - m) / (M - m)).astype("float32")
-
-
-def denormalize_minmax_log10(x):
-    """Denormalize input from the range [0, 1] and decibel (10 * log10) space."""
-    return convert_from_db((x * (M - m)) + m).astype("float32")
-
-
-def convert_to_db(x):
+def convert_to_db(x: np.ndarray):
     """Convert input to decibels (dB)."""
-    return 10 * np.log10(x + np.spacing(1))
+    return 10 * np.log10(
+        x + np.spacing(1)
+    )  # np.spacing(1) is similar to using 1e-10 (to avoid log(0))
 
 
-def convert_from_db(x):
+def convert_from_db(x: np.ndarray):
     """Convert input from decibels (dB) to linear scale."""
     return pow(10, x / 10)
 
 
-def extract_filepath_short_name(file_path):
-    """Extract a short name from file path, typically the city name.
+def load_cosar(path: Path, verbose: bool = True) -> np.ndarray | None:
+    """Convert a CoSAR image to a numpy array. Function from MERLIN (originally named `cos2mat`) 'improved' with Copilot.
 
     Args:
-        file_path: Path to the file
+        path (Path): Path to the .cos file.
+        verbose (bool): Print additional information during loading. Default is True.
 
     Returns:
-        Short name extracted from file path
+        The image as a numpy array with dimensions [nlines, ncolumns, 2], where [:,:,0] is real part and [:,:,1] is imaginary part. None if the file could not be open.
     """
-    filename = os.path.basename(str(file_path))
+    try:
+        fin = open(path, "rb")
+    except IOError:
+        print(f"{path}: it is a not openable file")
+        print("Failed to call cos2mat")
+        return None
 
-    # Most filenames start with the city name
-    parts = filename.split("_")
-    if parts and len(parts) > 0:
-        return parts[0]  # Usually the city name
+    # Read header information
+    ibib = struct.unpack(">i", fin.read(4))[0]
+    irsri = struct.unpack(">i", fin.read(4))[0]
+    irs = struct.unpack(">i", fin.read(4))[0]
+    ias = struct.unpack(">i", fin.read(4))[0]
+    ibi = struct.unpack(">i", fin.read(4))[0]
+    irtnb = struct.unpack(">i", fin.read(4))[0]
+    itnl = struct.unpack(">i", fin.read(4))[0]
+
+    nlig = struct.unpack(">i", fin.read(4))[0]
+    ncoltot = int(irtnb / 4)
+    ncol = ncoltot - 2
+    nlig = ias
+
+    if verbose:
+        print(
+            f"                Reading image in CoSAR format. ncolumns={ncol} nlines={nlig}"
+        )
+
+    # Reset file position and skip headers
+    fin.seek(0)
+    for _ in range(4):  # Skip 4 header lines
+        firm = fin.read(4 * ncoltot)
+
+    # Read image data
+    imgcxs = np.empty([nlig, ncol], dtype=np.complex64)
+
+    for iut in range(nlig):
+        firm = fin.read(4 * ncoltot)
+        if len(firm) < 4 * ncoltot:  # Check if we've reached EOF
+            print(f"Warning: Reached EOF at line {iut}/{nlig}")
+            break
+
+        imgligne = np.ndarray(2 * ncoltot, ">h", firm)
+        imgcxs[iut, :] = (
+            imgligne[4 : 2 * ncoltot : 2] + 1j * imgligne[5 : 2 * ncoltot : 2]
+        )
+
+    fin.close()
+
+    # Extract real and imaginary parts
+    real_part = np.real(imgcxs)
+    imag_part = np.imag(imgcxs)
+
+    if verbose:
+        print(
+            f"                Successfully loaded image with shape: {real_part.shape} ([:,:,0] real and [:,:,1] imaginary)."
+        )
+    return np.stack((real_part, imag_part), axis=2)
+
+
+def symmetrize(image: np.ndarray) -> np.ndarray:
+    """
+    Symmetrize the real and imaginary parts of the image and assure it's zero Doppled centered.
+    Original function from MERLIN (called `symetrisation_patch_test`).
+    Added logic to support my data format.
+    Args:
+        image: Input image with shape [H, W, 2] (real and imaginary parts)
+    Returns:
+        The symmetrized image with shape [H, W, 2]
+    """
+    # Reshape to match MERLIN's expected format: [h, w, 2] -> real and imag_part [1, h, w, 1]
+    real = image[:, :, 0]
+    imag = image[:, :, 1]
+    real_part = real.reshape(1, *real.shape, 1)
+    imag_part = imag.reshape(1, *imag.shape, 1)
+
+    ################################## MERLIN SYMETRIZATION ##################################
+    S = np.fft.fftshift(np.fft.fft2(real_part[0, :, :, 0] + 1j * imag_part[0, :, :, 0]))
+    p = np.zeros((S.shape[0]))  # azimut (ncol)
+    for i in range(S.shape[0]):
+        p[i] = np.mean(np.abs(S[i, :]))
+    sp = p[::-1]
+    c = np.real(np.fft.ifft(np.fft.fft(p) * np.conjugate(np.fft.fft(sp))))
+    d1 = np.unravel_index(c.argmax(), p.shape[0])
+    d1 = d1[0]
+    shift_az_1 = int(round(-(d1 - 1) / 2)) % p.shape[0] + int(p.shape[0] / 2)
+    p2_1 = np.roll(p, shift_az_1)
+    shift_az_2 = int(round(-(d1 - 1 - p.shape[0]) / 2)) % p.shape[0] + int(
+        p.shape[0] / 2
+    )
+    p2_2 = np.roll(p, shift_az_2)
+    window = signal.windows.gaussian(p.shape[0], std=0.2 * p.shape[0])
+    test_1 = np.sum(window * p2_1)
+    test_2 = np.sum(window * p2_2)
+    # make sure the spectrum is symetrized and zero-Doppler centered
+    if test_1 >= test_2:
+        p2 = p2_1
+        shift_az = shift_az_1 / p.shape[0]
     else:
-        return filename[:10]  # Fall back to first 10 chars
+        p2 = p2_2
+        shift_az = shift_az_2 / p.shape[0]
+    S2 = np.roll(S, int(shift_az * p.shape[0]), axis=0)
+
+    q = np.zeros((S.shape[1]))  # range (nlin)
+    for j in range(S.shape[1]):
+        q[j] = np.mean(np.abs(S[:, j]))
+    sq = q[::-1]
+    # correlation
+    cq = np.real(np.fft.ifft(np.fft.fft(q) * np.conjugate(np.fft.fft(sq))))
+    d2 = np.unravel_index(cq.argmax(), q.shape[0])
+    d2 = d2[0]
+    shift_range_1 = int(round(-(d2 - 1) / 2)) % q.shape[0] + int(q.shape[0] / 2)
+    q2_1 = np.roll(q, shift_range_1)
+    shift_range_2 = int(round(-(d2 - 1 - q.shape[0]) / 2)) % q.shape[0] + int(
+        q.shape[0] / 2
+    )
+    q2_2 = np.roll(q, shift_range_2)
+    window_r = signal.windows.gaussian(q.shape[0], std=0.2 * q.shape[0])
+    test_1 = np.sum(window_r * q2_1)
+    test_2 = np.sum(window_r * q2_2)
+    if test_1 >= test_2:
+        q2 = q2_1
+        shift_range = shift_range_1 / q.shape[0]
+    else:
+        q2 = q2_2
+        shift_range = shift_range_2 / q.shape[0]
+
+    Sf = np.roll(S2, int(shift_range * q.shape[0]), axis=1)
+    ima2 = np.fft.ifft2(np.fft.ifftshift(Sf))
+    # ima2 = ima2.reshape(1, np.size(ima2, 0), np.size(ima2, 1), 1)
+    ####################################################################
+    # Reshape back to [h, w, 2] format
+    return np.stack((np.real(ima2), np.imag(ima2)), axis=2)
 
 
-def extract_patches(data, patch_size, stride=None):
-    """Extract patches of size patch_size from the input data.
+def preserve_point_like_scatterers(
+    image2: np.ndarray, threshold_db: float = 60.0
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Preserve point-like scatterers in a TSX image. For pixels whose intensity is above a certain threshold,
+    equally distribute their intensity between real and imaginary parts.
 
     Args:
-        data: Input data array (2D or 3D)
-        patch_size: Size of patches to extract (patch_size x patch_size)
-        stride: Stride for extraction (default: patch_size for no overlap)
+        image2: Squared SAR image
+        threshold_db: Threshold in dB for scatterer preservation
 
     Returns:
-        List of extracted patches
+        Tuple of (preserved_patch, scatterer_mask) where preserved_patch is the processed image
     """
+    real2_proc = image2[..., 0].copy()
+    imag2_proc = image2[..., 1].copy()
+
+    intensity = image2[..., 0] + image2[..., 1]
+    intensity_db = convert_to_db(intensity)
+    scatterer_mask = intensity_db > threshold_db
+
+    # Value = sqrt(intensity/2), which gives half the power to each component
+    scatterer_value = np.sqrt(intensity[scatterer_mask] / 2)
+    real2_proc[scatterer_mask] = scatterer_value
+    imag2_proc[scatterer_mask] = scatterer_value
+
+    return np.stack((real2_proc, imag2_proc), axis=2), scatterer_mask
+
+
+def normalize_image(
+    im: np.ndarray,
+    log_base: str = "nat",
+    percentiles: Tuple[int, int] = (10, 90),
+    clip: bool = False,
+) -> np.ndarray:
+    """
+    Normalize a 3D image using log transformation and min-max scaling.
+    Args:
+        im: Input image with shape [H, W, 2]
+        log_base: The logarithm base for the normalized image. "nat" for natural base or "db" for base 10. Default is "nat".
+        percentiles: Tuple of percentiles for min-max normalization, (min_percentile, max_percentile). Default is (10, 90).
+        clip: Whether to clip values to [0, 1] after normalization. Default is False.
+    Returns:
+        Normalized image
+    """
+    assert im.ndim == 3, "Data must be 3D [H, W, 2]."
+    assert im.shape[-1] == 2, "Data must have 2 channels."
+    assert len(percentiles) == 2, "Percentiles must be a tuple of length 2."
+    assert percentiles[0] < percentiles[1], "Percentiles must be in increasing order."
+
+    # Bring to log base
+    if log_base == "nat":
+        im_log = np.log(im + np.spacing(1))
+    elif log_base == "db":
+        im_log = convert_to_db(im)
+    else:
+        raise NotImplementedError(f"Normalization mode {log_base} not implemented.")
+
+    # MinMax normalization
+    # Percentiles are of the intensity image log-scale
+    print(
+        f"Using percentiles: {percentiles} with values {PERCENTILES[f'p{percentiles[0]}']}, {PERCENTILES[f'p{percentiles[1]}']}"
+    )
+    min_value = PERCENTILES[f"p{percentiles[0]}"]
+    max_value = PERCENTILES[f"p{percentiles[1]}"]
+    im_norm = (im_log - min_value) / (max_value - min_value)
+    return np.clip(im_norm, 0, 1) if clip else im_norm
+
+
+def extract_patches(
+    image: np.ndarray, patch_size: int, stride: int | None = None
+) -> np.ndarray:
+    """Extract patches of size patch_size from the input image.
+
+    Args:
+        image: Input image [H, W, 2]
+        patch_size: Size of patches to extract (patch_size x patch_size)
+        stride: Stride for extraction. Default: patch_size for no overlap
+
+    Returns:
+        An ndarray of patches [num_patches, patch_size, patch_size, 2]
+    """
+    assert image.ndim == 3, "Image must be 3D [H, W, 2]."
     if stride is None:
         stride = patch_size  # Default: no overlap
 
     patches = []
-
-    # Check if we're dealing with 3D data (real+imag channels)
-    if len(data.shape) == 3:
-        h, w, _ = data.shape
-        for i in range(0, h - patch_size + 1, stride):
-            for j in range(0, w - patch_size + 1, stride):
-                patch = data[i : i + patch_size, j : j + patch_size, :]
-                if patch.shape[:2] == (patch_size, patch_size):
-                    patches.append(patch)
-        return np.array(patches)
-    else:  # 2D data (intensity only)
-        h, w = data.shape
-        for i in range(0, h - patch_size + 1, stride):
-            for j in range(0, w - patch_size + 1, stride):
-                patch = data[i : i + patch_size, j : j + patch_size]
-                if patch.shape == (patch_size, patch_size):
-                    patches.append(patch)
-        return np.array(patches)
+    h, w, _ = image.shape
+    for i in range(0, h - patch_size + 1, stride):
+        for j in range(0, w - patch_size + 1, stride):
+            patch = image[i : i + patch_size, j : j + patch_size, :]
+            if patch.shape[:2] == (patch_size, patch_size):
+                patches.append(patch)
+    return np.array(patches)
 
 
-def print_sar_statistics(name, data, with_intensity=True, indent=""):
-    """Print statistics of some SAR data, 1D to 4D. Statististics are computed over all elements in the array, regardless of dimensionality.
-
-    Args:
-        name: Name of the data
-        data: SAR data, 1D, 2D (assumed to be Intensity), 3D [h, w, 2] (assumed Real + Imaginary), or 4D [N, h, w, 2]
+def preprocess_TSX_image(
+    path: Path,
+    preserve_threshold: float,
+    log_base: str | None,
+    percentiles: Tuple[int, int],
+    clip: bool,
+    patch_size: int,
+) -> np.ndarray:
     """
-
-    def print_statistics_obj(obj, general_indent, obj_name=None):
-        indent = general_indent + "    " + obj_name + ": " if obj_name else "    "
-        print(
-            f"{indent}mean = {r}{np.mean(obj):.3f}{e}, std = {r}{np.std(obj):.3f}{e}, min = {r}{np.min(obj):.3f}{e}, max = {r}{np.max(obj):.3f}{e}"
-        )
-
-    print(f"{indent}Statistics for {b}{name}{e} {data.shape}:")
-    if len(data.shape) == 1:
-        print_statistics_obj(data, indent)
-    elif len(data.shape) == 2:
-        print_statistics_obj(data, indent, "Intensity")
-    elif len(data.shape) == 3:
-        print_statistics_obj(data[:, :, 0], indent, "Real")
-        print_statistics_obj(data[:, :, 1], indent, "Imaginary")
-        if with_intensity:
-            print_statistics_obj(
-                data[:, :, 0] ** 2 + data[:, :, 1] ** 2, indent, "Intensity"
-            )
-    elif len(data.shape) == 4:
-        # Compute the statistics across the batch dimension
-        print_statistics_obj(data[:, :, :, 0], indent, "Real")
-        print_statistics_obj(data[:, :, :, 1], indent, "Imaginary")
-        if with_intensity:
-            print_statistics_obj(
-                data[:, :, :, 0] ** 2 + data[:, :, :, 1] ** 2, indent, "Intensity"
-            )
-    else:
-        print(
-            f"{indent}{y}Warning unsupported format: {name} has above 4 dimensions, {r}{data.shape}{e}"
-        )
-
-
-def visualize_sar(
-    real_part,
-    imag_part,
-    intensity=None,
-    reflectivity=None,
-    figsize=(12, 10),
-    log_scale=True,
-):
-    """Visualize SAR data components.
-
-    Args:
-        real_part: Real part of SAR image
-        imag_part: Imaginary part of SAR image
-        intensity: Original intensity (optional)
-        reflectivity: Reconstructed reflectivity (optional)
-        figsize: Figure size (default: (12, 10))
-        log_scale: Whether to use log scale (default: True)
-
-    Returns:
-        matplotlib figure
+    Preprocessing pipeline for a TSX CoSAR image.
+    Loads, symmetrizes, squares, and normalizes the image.
+    Returns all the patches of the image. (@TODO: patches smaller than patch_size x patch_size are discarded)
     """
-    # Convert to numpy arrays
-    if isinstance(real_part, torch.Tensor):
-        real_part = real_part.detach().cpu().numpy()
-    if isinstance(imag_part, torch.Tensor):
-        imag_part = imag_part.detach().cpu().numpy()
-    if isinstance(intensity, torch.Tensor) and intensity is not None:
-        intensity = intensity.detach().cpu().numpy()
-    if isinstance(reflectivity, torch.Tensor) and reflectivity is not None:
-        reflectivity = reflectivity.detach().cpu().numpy()
+    image = load_cosar(path)
+    if image is None:
+        raise ValueError(f"Failed to load {path}")
 
-    # Remove singleton dimensions
-    if real_part.ndim > 2 and real_part.shape[0] == 1:
-        real_part = real_part[0]
-    if imag_part.ndim > 2 and imag_part.shape[0] == 1:
-        imag_part = imag_part[0]
-    if intensity is not None and intensity.ndim > 2 and intensity.shape[0] == 1:
-        intensity = intensity[0]
-    if (
-        reflectivity is not None
-        and reflectivity.ndim > 2
-        and reflectivity.shape[0] == 1
-    ):
-        reflectivity = reflectivity[0]
+    # Assure real and imag parts are i.i.d. (MERLIN requirement)
+    image = symmetrize(image)
+    # [H, W, 2]
+    image = np.square(abs(image))
 
-    # Calculate power if not provided
-    if intensity is None:
-        intensity = real_part**2 + imag_part**2
+    if preserve_threshold is not None:
+        image, _ = preserve_point_like_scatterers(image, preserve_threshold)
 
-    # Count number of subplots needed
-    n_plots = 3 if reflectivity is None else 4
+    if log_base is not None:
+        image = normalize_image(image, log_base, percentiles, clip)
 
-    # Create figure with subplots
-    fig, axs = plt.subplots(1, n_plots, figsize=figsize)
-
-    # Plot real part
-    axs[0].imshow(real_part, cmap="gray")
-    axs[0].set_title("Real Part")
-    axs[0].axis("off")
-
-    # Plot imaginary part
-    axs[1].imshow(imag_part, cmap="gray")
-    axs[1].set_title("Imaginary Part")
-    axs[1].axis("off")
-
-    # Plot original intensity
-    if log_scale:
-        # Apply log transformation for better visualization
-        intensity_log = np.log(intensity + np.spacing(1))
-        im = axs[2].imshow(intensity_log, cmap="gray")
-    else:
-        im = axs[2].imshow(intensity, cmap="gray")
-    axs[2].set_title("Intensity (Original)")
-    axs[2].axis("off")
-
-    # Plot reflectivity if available
-    if reflectivity is not None:
-        if log_scale:
-            # Apply log transformation for better visualization
-            reflectivity_log = np.log(reflectivity + 1e-10)
-            im = axs[3].imshow(reflectivity_log, cmap="gray")
-        else:
-            im = axs[3].imshow(reflectivity, cmap="gray")
-        axs[3].set_title("Reflectivity (Despeckled)")
-        axs[3].axis("off")
-
-    # Add colorbar
-    fig.colorbar(im, ax=axs, fraction=0.046, pad=0.04)
-
-    plt.tight_layout()
-    return fig
-
-
-def calculate_equivalent_number_of_looks(reflectivity, intensity):
-    """Calculate equivalent number of looks (ENL) for despeckling quality evaluation.
-
-    Args:
-        reflectivity: Despeckled reflectivity estimate
-        intensity: Original intensity
-
-    Returns:
-        ENL value
-    """
-    # Convert to numpy arrays
-    if isinstance(reflectivity, torch.Tensor):
-        reflectivity = reflectivity.detach().cpu().numpy()
-    if isinstance(intensity, torch.Tensor):
-        intensity = intensity.detach().cpu().numpy()
-
-    # Remove singleton dimensions
-    if reflectivity.ndim > 2 and reflectivity.shape[0] == 1:
-        reflectivity = reflectivity[0]
-    if intensity.ndim > 2 and intensity.shape[0] == 1:
-        intensity = intensity[0]
-
-    # Calculate statistics in a homogeneous region (center patch)
-    h, w = reflectivity.shape
-    center_h, center_w = h // 2, w // 2
-    patch_size = min(h, w) // 4
-
-    h_start, h_end = center_h - patch_size, center_h + patch_size
-    w_start, w_end = center_w - patch_size, center_w + patch_size
-
-    # Extract patches
-    reflectivity_patch = reflectivity[h_start:h_end, w_start:w_end]
-    intensity_patch = intensity[h_start:h_end, w_start:w_end]
-
-    # Calculate ENL
-    enl_orig = np.mean(intensity_patch) ** 2 / np.var(intensity_patch)
-    enl_desp = np.mean(reflectivity_patch) ** 2 / np.var(reflectivity_patch)
-
-    return {
-        "enl_original": enl_orig,
-        "enl_despeckled": enl_desp,
-        "improvement": enl_desp / enl_orig,
-    }
-
-
-def save_anomaly_visualization(input, target, reconstruction, filename, info=None):
-    """Save visualization and information for anomalous batches.
-
-    Args:
-        input: Input tensor [B, H, W] or [B, H, W, C]
-        target: Target tensor [B, H, W] or [B, H, W, C]
-        reconstruction: Reconstructed output [B, H, W] or [B, H, W, C]
-        filename: Base filename to save outputs
-        info: Dictionary containing additional information about the anomaly
-    """
-
-    # Convert tensors to numpy if needed
-    def to_numpy(tensor):
-        if isinstance(tensor, torch.Tensor):
-            return tensor.detach().cpu().numpy()
-        return tensor
-
-    input_np = to_numpy(input)
-    target_np = to_numpy(target)
-    reconstruction_np = to_numpy(reconstruction)
-
-    # Save detailed information to a text file
-    with open(f"{filename}_info.txt", "w") as f:
-        f.write("===== ANOMALY DETECTED =====\n\n")
-
-        if info:
-            f.write(f"Reason: {info.get('reason', 'Unknown')}\n")
-            f.write(f"Epoch: {info.get('current_epoch', 'Unknown')}\n")
-            f.write(f"Global step: {info.get('global_step', 'Unknown')}\n\n")
-
-            # Print metrics
-            f.write("Metrics:\n")
-            metrics = info.get("metrics", {})
-            for key, value in metrics.items():
-                f.write(f"  {key}: {value}\n")
-            f.write("\n")
-
-        # Save data statistics
-        f.write("Data Statistics:\n")
-        f.write("Input:\n")
-        _write_statistics(f, input_np, indent="  ")
-
-        f.write("Target:\n")
-        _write_statistics(f, target_np, indent="  ")
-
-        f.write("Reconstruction:\n")
-        _write_statistics(f, reconstruction_np, indent="  ")
-
-    # Create visualizations - select up to 4 samples if batched
-    num_samples = min(4, input_np.shape[0]) if input_np.ndim > 3 else 1
-
-    for i in range(num_samples):
-        # Extract the sample
-        if input_np.ndim > 3:
-            sample_input = np.squeeze(input_np[i])
-            sample_target = np.squeeze(target_np[i])
-            sample_recon = np.squeeze(reconstruction_np[i])
-        else:
-            sample_input = np.squeeze(input_np)
-            sample_target = np.squeeze(target_np)
-            sample_recon = np.squeeze(reconstruction_np)
-
-        # Create figure with multiple plots
-        fig, axs = plt.subplots(2, 3, figsize=(15, 10))
-        fig.suptitle(f"Anomaly Detection - {info.get('reason', '')}", fontsize=16)
-
-        # Row 1: Original data
-        _plot_sample(axs[0, 0], sample_input, "Input")
-        _plot_sample(axs[0, 1], sample_target, "Target")
-        _plot_sample(axs[0, 2], sample_recon, "Reconstruction")
-
-        # Row 2: Difference and error maps
-        _plot_difference(
-            axs[1, 0], sample_input, sample_target, "Input-Target Difference"
-        )
-        _plot_difference(
-            axs[1, 1], sample_recon, sample_target, "Recon-Target Difference"
-        )
-        _plot_error_map(
-            axs[1, 2], sample_recon, sample_target, "Error Map (Recon vs Target)"
-        )
-
-        plt.tight_layout()
-        sample_suffix = f"_sample{i}" if num_samples > 1 else ""
-        plt.savefig(f"{filename}{sample_suffix}.png", dpi=150)
-        plt.close(fig)
-
-
-def _write_statistics(file, data, indent=""):
-    """Write statistical information about the data to a file."""
-    file.write(f"{indent}Shape: {data.shape}\n")
-    file.write(f"{indent}Mean: {np.mean(data):.6f}\n")
-    file.write(f"{indent}Std: {np.std(data):.6f}\n")
-    file.write(f"{indent}Min: {np.min(data):.6f}\n")
-    file.write(f"{indent}Max: {np.max(data):.6f}\n")
-    file.write(f"{indent}NaN count: {np.isnan(data).sum()}\n")
-    file.write(f"{indent}Inf count: {np.isinf(data).sum()}\n\n")
-
-
-def _plot_sample(ax, data, title):
-    """Plot a single sample on the given axis."""
-    if data.ndim > 2 and data.shape[-1] == 2:
-        # Complex data (real + imaginary)
-        intensity = data[..., 0] + data[..., 1]
-        ax.imshow(intensity, cmap="gray")
-    else:
-        # Real data
-        ax.imshow(data, cmap="gray")
-
-    ax.set_title(title)
-    ax.axis("off")
-
-
-def _plot_difference(ax, data1, data2, title):
-    """Plot difference between two samples."""
-    # Handle complex data
-    if data1.ndim > 2 and data1.shape[-1] == 2:
-        # For complex data, compute difference of intensities
-        intensity1 = data1[..., 0] + data1[..., 1]
-        intensity2 = data2[..., 0] + data2[..., 1]
-        diff = intensity1 - intensity2
-    else:
-        diff = data1 - data2
-
-    im = ax.imshow(diff, cmap="gray", vmin=-np.abs(diff).max(), vmax=np.abs(diff).max())
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    ax.set_title(title)
-    ax.axis("off")
-
-
-def _plot_error_map(ax, data1, data2, title):
-    """Plot error map between reconstruction and target."""
-    # Handle complex data
-    if data1.ndim > 2 and data1.shape[-1] == 2:
-        # For complex data, compute MSE between intensities
-        intensity1 = data1[..., 0] + data1[..., 1]
-        intensity2 = data2[..., 0] + data2[..., 1]
-        error_map = (intensity1 - intensity2) ** 2
-    else:
-        error_map = (data1 - data2) ** 2
-
-    im = ax.imshow(error_map, cmap="jet", norm=plt.Normalize(0, error_map.max()))
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    ax.set_title(title)
-    ax.axis("off")
+    return extract_patches(image, patch_size, stride=patch_size)

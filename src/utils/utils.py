@@ -55,8 +55,8 @@ def early_wandb_initialization(cfg: Dict[str, Any]) -> None:
 
     run_name = (
         make_a_nice_run_name(cfg)
-        if cfg.logger.wandb.get("name", None) is None
-        else cfg.logger.wandb.get("name")
+        if cfg.logger.wandb.get("run_name", None) is None
+        else cfg.logger.wandb.get("run_name")
     )
     # Manual cast of the config from a DictConfig to a regular dict (should be supported by W&B by now)
     config_dict = omegaconf.OmegaConf.to_container(
