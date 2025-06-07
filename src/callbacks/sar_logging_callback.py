@@ -76,20 +76,21 @@ class LogValidationPatch(Callback):
 
         # Always create 3 columns (reflectivity, reconstruction, residuals)
         ncols = 3 if self.add_residuals else 2
-        fig, axs = plt.subplots(2, ncols, figsize=(5 * ncols, 10))
+        # Now we have 3 rows: image with fixed range, histogram, image with natural range
+        fig, axs = plt.subplots(3, ncols, figsize=(5 * ncols, 15))
 
         real = torch.squeeze(real).cpu().numpy()
         imag = torch.squeeze(imag).cpu().numpy()
         output_real = torch.squeeze(output_real).cpu().numpy()
-        reflectivity = np.add(real, imag) / 2
+        reflectivity = np.add(real, imag)
         residuals = abs(reflectivity - output_real)
 
-        # Row 0: All plots with vmin=0, vmax=1
+        # Row 0: All plots with vmin=0, vmax=2
         # Column 0: Original reflectivity
         axs[0, 0].set_title(
             f"Reflectivity [0,1] (mean: {reflectivity.mean():.3f}, std: {reflectivity.std():.3f})"
         )
-        im1 = axs[0, 0].imshow(reflectivity, cmap="gray", vmin=0, vmax=1)
+        im1 = axs[0, 0].imshow(reflectivity, cmap="gray", vmin=0, vmax=2)
         axs[0, 0].axis("off")
         fig.colorbar(im1, ax=axs[0, 0], shrink=0.8)
 
@@ -97,7 +98,7 @@ class LogValidationPatch(Callback):
         axs[0, 1].set_title(
             f"Reconstruction [0,1] (mean: {output_real.mean():.3f}, std: {output_real.std():.3f})"
         )
-        im2 = axs[0, 1].imshow(output_real, cmap="gray", vmin=0, vmax=1)
+        im2 = axs[0, 1].imshow(output_real, cmap="gray", vmin=0, vmax=2)
         axs[0, 1].axis("off")
         fig.colorbar(im2, ax=axs[0, 1], shrink=0.8)
 
@@ -106,37 +107,70 @@ class LogValidationPatch(Callback):
             axs[0, 2].set_title(
                 f"Residuals [0,1] (mean: {residuals.mean():.3f}, std: {residuals.std():.3f})"
             )
-            im3 = axs[0, 2].imshow(residuals, cmap="gray", vmin=0, vmax=1)
+            im3 = axs[0, 2].imshow(residuals, cmap="gray", vmin=0, vmax=2)
             axs[0, 2].axis("off")
             fig.colorbar(im3, ax=axs[0, 2], shrink=0.8)
 
-        # Row 1: All plots with natural range
+        # Row 1: Histograms
+        # Column 0: Original reflectivity histogram
+        axs[1, 0].set_title("Reflectivity Histogram")
+        axs[1, 0].hist(reflectivity.flatten(), bins=50, alpha=0.5)
+        axs[1, 0].grid(True, alpha=0.3)
+        axs[1, 0].tick_params(axis="y", labelsize=8)
+        axs[1, 0].yaxis.set_major_formatter(
+            plt.FuncFormatter(
+                lambda x, loc: f"{x / 1000:.0f}K" if x >= 1000 else f"{x:.0f}"
+            )
+        )
+
+        # Column 1: Reconstructed real part histogram
+        axs[1, 1].set_title("Reconstruction Histogram")
+        axs[1, 1].hist(output_real.flatten(), bins=50, alpha=0.5)
+        axs[1, 1].grid(True, alpha=0.3)
+        axs[1, 1].tick_params(axis="y", labelsize=8)
+        axs[1, 1].yaxis.set_major_formatter(
+            plt.FuncFormatter(
+                lambda x, loc: f"{x / 1000:.0f}K" if x >= 1000 else f"{x:.0f}"
+            )
+        )
+
+        # Column 2: Residuals histogram
+        if self.add_residuals:
+            axs[1, 2].set_title("Residuals Histogram")
+            axs[1, 2].hist(residuals.flatten(), bins=50, alpha=0.5)
+            axs[1, 2].grid(True, alpha=0.3)
+            axs[1, 2].tick_params(axis="y", labelsize=8)
+            axs[1, 2].yaxis.set_major_formatter(
+                plt.FuncFormatter(
+                    lambda x, loc: f"{x / 1000:.0f}K" if x >= 1000 else f"{x:.0f}"
+                )
+            )
+
+        # Row 2: All plots with natural range (was Row 1 before)
         # Column 0: Original reflectivity
-        axs[1, 0].set_title(
+        axs[2, 0].set_title(
             f"Reflectivity (mean: {reflectivity.mean():.3f}, std: {reflectivity.std():.3f})"
         )
-        im4 = axs[1, 0].imshow(reflectivity, cmap="gray")
-        axs[1, 0].axis("off")
-        fig.colorbar(im4, ax=axs[1, 0], shrink=0.8)
+        im4 = axs[2, 0].imshow(reflectivity, cmap="gray")
+        axs[2, 0].axis("off")
+        fig.colorbar(im4, ax=axs[2, 0], shrink=0.8)
 
         # Column 1: Reconstructed real part
-        axs[1, 1].set_title(
+        axs[2, 1].set_title(
             f"Reconstruction (mean: {output_real.mean():.3f}, std: {output_real.std():.3f})"
         )
-        im5 = axs[1, 1].imshow(output_real, cmap="gray")
-        axs[1, 1].axis("off")
-        fig.colorbar(im5, ax=axs[1, 1], shrink=0.8)
+        im5 = axs[2, 1].imshow(output_real, cmap="gray")
+        axs[2, 1].axis("off")
+        fig.colorbar(im5, ax=axs[2, 1], shrink=0.8)
 
         # Column 2: Residuals
         if self.add_residuals:
-            axs[1, 2].set_title(
-                f"Residuals (mean: {residuals.mean():.3f}, std: {residuals.std():.3f})"
-            )
-            im6 = axs[1, 2].imshow(residuals, cmap="gray")
-            axs[1, 2].axis("off")
-            fig.colorbar(im6, ax=axs[1, 2], shrink=0.8)
+            axs[2, 2].set_title(plt.subplots_adjust(wspace=0.15, hspace=0.3))
+            im6 = axs[2, 2].imshow(residuals, cmap="gray")
+            axs[2, 2].axis("off")
+            fig.colorbar(im6, ax=axs[2, 2], shrink=0.8)
 
-        plt.subplots_adjust(wspace=0.05, hspace=0.2)
+        plt.subplots_adjust(wspace=0.05, hspace=0.3)
 
         default_patch_warning = (
             "\n /!\\ Default patch used  /!\\." if self.is_default_patch else ""
@@ -148,9 +182,17 @@ class LogValidationPatch(Callback):
             f"BPP={out_criterion['bpp_loss']:.4f}{default_patch_warning}"
         )
 
+        # Let's also save just reconstruction as a new WandB variable
+        fig2, ax2 = plt.subplots()
+        ax2.imshow(output_real, cmap="gray")
+        ax2.set_title(
+            f"epoch {trainer.current_epoch}, bpp={out_criterion['bpp_loss']:.4f}"
+        )
+
         pl_module.logger.experiment.log(
             {
                 "val_large_patch": fig,
+                "val_reconstruction": fig2,
                 "val_patch/loss": out_criterion["loss"],
                 "val_patch/bpp_loss": out_criterion["bpp_loss"],
                 "val_patch/mse": out_criterion["mse"],
