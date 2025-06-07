@@ -4,6 +4,7 @@ from typing import Dict
 import torch
 from compressai.registry import register_criterion
 from torch import Tensor, nn
+from torchmetrics import MeanSquaredError
 from torchmetrics.image import (
     MultiScaleStructuralSimilarityIndexMeasure,
     PeakSignalNoiseRatio,
@@ -26,7 +27,7 @@ class UnitaryRDLoss(nn.Module):
 
         self.lmbda = lmbda
 
-        self.mse = nn.MSELoss()
+        self.mse = MeanSquaredError()  # nn.MSELoss(reduction="sum")
         self.psnr = PeakSignalNoiseRatio(data_range=(0.0, 1.0))
         self.ssim = StructuralSimilarityIndexMeasure(data_range=(0.0, 1.0))
         self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=(0.0, 1.0))
@@ -45,13 +46,17 @@ class UnitaryRDLoss(nn.Module):
         out["psnr"] = self.psnr(output["x_hat"], target)
         out["ssim"] = self.ssim(output["x_hat"], target)
         out["ms_ssim"] = self.ms_ssim(output["x_hat"], target)
+
         # # sum over pixel k  0.5*output[k] + exp(input[k] − output[k])
         # out["merlin"] = torch.mean(
         #     0.5 * output["x_hat"] + torch.exp(target - output["x_hat"])
         # )
-        out["merlin"] = torch.sum(
-            0.5 * output["x_hat"] + torch.exp(target - output["x_hat"])
-        )
+        out["merlin"] = (
+            (0.5 * output["x_hat"] + torch.exp(target - output["x_hat"]))
+            .view(output["x_hat"].shape[0], -1)
+            .sum(dim=1)
+            .mean()
+        )  # sum over pixels for each image, mean across batch
 
         if self.metric == "merlin":
             out["distortion"] = out["merlin"]
