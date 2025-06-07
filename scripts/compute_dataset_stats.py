@@ -114,7 +114,7 @@ class RunningStatistics:
         }
 
 
-def process_sar_image(filepath, stast_inten):
+def process_sar_image(filepath, stats_inten, stats_amp, stats_inten_log):
     """Process a single SAR image and update statistics."""
     print(f"Processing {filepath.name}...")
 
@@ -136,16 +136,19 @@ def process_sar_image(filepath, stast_inten):
 
     # Apply log transformation
     intensity = sar_data[:, :, 0] + sar_data[:, :, 1]
+    amp = np.sqrt(intensity)
     inten_log = np.log(intensity + np.spacing(1))
 
     # # Update statistics
     # stats_real.update(sar_data[:, :, 0])
     # stats_imag.update(sar_data[:, :, 1])
     # stats_whole.update(sar_data)
-    stast_inten.update(inten_log)
+    stats_inten.update(intensity)
+    stats_amp.update(amp)
+    stats_inten_log.update(inten_log)
 
     # Free memory
-    del sar_data, intensity
+    del sar_data, intensity, inten_log, amp
     gc.collect()
 
     return True
@@ -232,38 +235,52 @@ def main():
     # stats_real = RunningStatistics("Real Component (log-squared)")
     # stats_imag = RunningStatistics("Imaginary Component (log-squared)")
     # stats = RunningStatistics("Whole image (log-squared)")
-    stats_inten = RunningStatistics("Intensity (log)")
+    stats_inten = RunningStatistics("Intensity")
+    stats_amp = RunningStatistics("Amplitude")
+    stats_inten_log = RunningStatistics("Intensity (log)")
 
     # Process each image
     for file_path in cos_files:
-        process_sar_image(file_path, stats_inten)
+        process_sar_image(file_path, stats_inten, stats_amp, stats_inten_log)
 
     # Generate reports
     print("\n=== INTENSITY STATISTICS ===")
     stats_inten.report()
-
-    # Plot histogram
     plot_histogram(
         stats_inten,
         "Log-transformed Intensity Distribution",
         output_dir / "intensity_histogram.png",
     )
 
-    # Print final conclusion
-    print(
-        "\nDataset Analysis Complete. Summary of the Intensity (log(Re^2 + Im^2)) Statistics:"
+    print("\n=== AMPLITUDE STATISTICS ===")
+    stats_amp.report()
+    plot_histogram(
+        stats_amp,
+        "Log-transformed Amplitude Distribution",
+        output_dir / "amplitude_histogram.png",
     )
-    print(f"  - Mean: {stats_inten.mean}")
-    print(f"  - Std: {stats_inten.std}")
-    print(
-        f"  - Range: [{stats_inten.percentile(1)}, {stats_inten.percentile(99)}] (1st-99th percentile)"
+    print("\n=== INTENSITY (LOG) STATISTICS ===")
+    stats_inten_log.report()
+    plot_histogram(
+        stats_inten_log,
+        "Intensity (log) Distribution",
+        output_dir / "intensity_log_histogram.png",
     )
-    print(
-        f"  - Range: [{stats_inten.percentile(10)}, {stats_inten.percentile(90)}] (10th-90th percentile)"
-    )
-    print(
-        f"The analyzed dataset contains values from {stats_inten.min_val} to {stats_inten.max_val}"
-    )
+    # # Print final conclusion
+    # print(
+    #     "\nDataset Analysis Complete. Summary of the Intensity (log(Re^2 + Im^2)) Statistics:"
+    # )
+    # print(f"  - Mean: {stats_inten.mean}")
+    # print(f"  - Std: {stats_inten.std}")
+    # print(
+    #     f"  - Range: [{stats_inten.percentile(1)}, {stats_inten.percentile(99)}] (1st-99th percentile)"
+    # )
+    # print(
+    #     f"  - Range: [{stats_inten.percentile(10)}, {stats_inten.percentile(90)}] (10th-90th percentile)"
+    # )
+    # print(
+    #     f"The analyzed dataset contains values from {stats_inten.min_val} to {stats_inten.max_val}"
+    # )
 
 
 if __name__ == "__main__":
