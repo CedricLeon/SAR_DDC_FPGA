@@ -21,19 +21,6 @@ g = "\033[32m"
 b = "\033[34m"
 e = "\033[0m"
 
-# These percentiles are the statistics of the intensity image in log-scale of the whole dataset. See scripts/compute_dataset_stats.py and data/analysis/dataset_all_stats.log
-PERCENTILES = {
-    "p1": 5.0998743307292065,
-    "p5": 6.76272625759834,
-    "p10": 7.5093313731365825,
-    "p25": 8.58166854680157,
-    "p50": 9.592196081062,
-    "p75": 10.47517273375431,
-    "p90": 11.218084495319967,
-    "p95": 11.667549457990336,
-    "p99": 12.611018051940837,
-}
-
 
 def convert_to_db(x: np.ndarray):
     """Convert input to decibels (dB)."""
@@ -221,24 +208,24 @@ def preserve_point_like_scatterers(
 
 def normalize_image(
     im: np.ndarray,
-    log_base: str = "nat",
-    percentiles: Tuple[int, int] = (10, 90),
+    log_base: str,
+    min_max: Tuple[float, float],
     clip: bool = False,
 ) -> np.ndarray:
     """
     Normalize a 3D image using log transformation and min-max scaling.
     Args:
         im: Input image with shape [H, W, 2]
-        log_base: The logarithm base for the normalized image. "nat" for natural base or "db" for base 10. Default is "nat".
-        percentiles: Tuple of percentiles for min-max normalization, (min_percentile, max_percentile). Default is (10, 90).
+        log_base: The logarithm base for the normalized image. "nat" for natural base or "db" for base 10.
+        min_max: Tuple of values to use for min-max normalization, (min, max().
         clip: Whether to clip values to [0, 1] after normalization. Default is False.
     Returns:
         Normalized image
     """
     assert im.ndim == 3, "Data must be 3D [H, W, 2]."
     assert im.shape[-1] == 2, "Data must have 2 channels."
-    assert len(percentiles) == 2, "Percentiles must be a tuple of length 2."
-    assert percentiles[0] < percentiles[1], "Percentiles must be in increasing order."
+    assert len(min_max) == 2, "min_max must be a tuple of length 2."
+    assert min_max[0] < min_max[1], "min_max must be in increasing order: (min, max)."
 
     # Bring to log base
     if log_base == "nat":
@@ -249,13 +236,7 @@ def normalize_image(
         raise NotImplementedError(f"Normalization mode {log_base} not implemented.")
 
     # MinMax normalization
-    # Percentiles are of the intensity image log-scale
-    print(
-        f"Using percentiles: {percentiles} with values {PERCENTILES[f'p{percentiles[0]}']}, {PERCENTILES[f'p{percentiles[1]}']}"
-    )
-    min_value = PERCENTILES[f"p{percentiles[0]}"]
-    max_value = PERCENTILES[f"p{percentiles[1]}"]
-    im_norm = (im_log - min_value) / (max_value - min_value)
+    im_norm = (im_log - min_max[0]) / (min_max[1] - min_max[0])
     return np.clip(im_norm, 0, 1) if clip else im_norm
 
 
@@ -290,7 +271,7 @@ def preprocess_TSX_image(
     path: Path,
     preserve_threshold: float,
     log_base: str | None,
-    percentiles: Tuple[int, int],
+    min_max: Tuple[float, float],
     clip: bool,
     patch_size: int,
 ) -> np.ndarray:
@@ -312,6 +293,6 @@ def preprocess_TSX_image(
         image, _ = preserve_point_like_scatterers(image, preserve_threshold)
 
     if log_base is not None:
-        image = normalize_image(image, log_base, percentiles, clip)
+        image = normalize_image(image, log_base, min_max, clip)
 
     return extract_patches(image, patch_size, stride=patch_size)
