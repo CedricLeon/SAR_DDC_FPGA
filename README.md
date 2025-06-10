@@ -11,23 +11,61 @@
 Yes, that's a lot of acronyms. But now you know why it's called DDC_FPGA.
 This project implements the solution presented by Amao-Oliva et al. [1] available at [sciencedirect.com](https://www.sciencedirect.com/science/article/pii/S0924271624004866) on FPGA.
 
-## TODOs
+### TODOs
 *I'll use this section as a TODO list, including ideas for future projects.*
 - [ ] "NWML" warning, see [NVML is the NVIDIA Management Library and is used on NVIDIA GPUs](https://discuss.pytorch.org/t/cant-initialize-nvml-error-with-rvc-project/194206)
-
-### Repo features
-- [x] Make a smaller dataset (2 images, in random_split, for easier testing through epochs)
 - [ ] Spatial_split dataset
-- More metrics:
-  - [x] SSIM and MS-SSIM if patch_size > 176 (See [this discusssion](https://github.com/francois-rozet/piqa/discussions/11))
-  - [ ] Despeckling metrics: ENL = $\frac{\mu^2}{\sigma^2}$ over the image
+- [ ] Incorporate validation_big_patch generation in [TSX_dataset_creation.py](scripts/TSX_dataset_creation.py)
+- [ ] Settle on metric accumulation strategy: "mean" or "sum", and derive $\lambda$ range accordingly
 
 ### Long-term Experiments/Upgrades
 - [ ] Maybe there is a way to avoid the concatenation and average latent representations before hyperprior ???
+- [ ] Experiment with data preprocessing. Asymmetric percentiles, e.g., p0.1% and p95% (For log-intensity, ~0.0 and ~11.6, something like MERLIN's m and M).
 
 ### Method
 The pipeline relies on Pytorch Ligthning on [Compressai](https://github.com/InterDigitalInc/CompressAI) [2] to implement Hyper-autoencoders solutions based on Johannes Ballé's work [3-5].
 In addition, the despeckling task is inspired from MERLIN's self-supervised training pipeline [6].
+
+#### MERLIN Theory
+**The big picture (mostly written by ChatGPT)**:
+Dalsasso et al. introduce MERLIN, a fully self-supervised strategy for training deep despeckling networks directly on single-look complex (SLC) SAR images. By exploiting Goodman’s speckle model—which shows that the real and imaginary components of an SLC pixel are two independent, Gaussian-distributed realizations with variance proportional to the local reflectivity $r$—they train a U-Net to predict pixel-wise variance maps (i.e., the effective “blurred” reflectivity $r$) from one component (say, the real part) and evaluate the loss on the other component (the imaginary part).
+
+
+Taking a SLC SAR image with Real part $\tilde{a}$ and Imaginary part $\tilde{b}$ (We use tilde notation to indicate the transformation from the SAR transfer function **H**, see MERLIN Eq.(4) and (5)). Its intensity $I$ is
+$$
+I = \tilde{a}^2 + \tilde{b}^2
+\tag{1}
+$$
+MERLIN aims at depesckling, i.e., reconstructing the underlying reflectivity image $\tilde r$, with a self-supervised model $f_\theta()$ as $\frac{f_\theta(\tilde{a}^2) + f_\theta(\tilde{b}^2)}{2}$.
+To achieve this, the model is trained with the loss function below, where $k$ represent the iteration over pixels:
+$$
+\mathcal{L}(\tilde{r}, \tilde{b}) = \sum_k \frac{log(\tilde{r}_k)}{2} + \frac{\tilde{b}_k^2}{\tilde{r}_k}
+\tag{2a}
+$$
+In practice, it is useful to work in log-scale to reduce the dynamic range. We use the check notation to represent log-scaled variables: $\check r = log~\tilde r$, $\check a = log|\tilde a|$ and $\check b = log|\tilde b|$.
+> Note: The absolute value operator |.| is only used for mathematical correctness as $\tilde a$ and $\tilde b$ can have negative values. In practice it is not needed as these values are squared before being fed to the network. As a last detail, it is also necessary to add a small $\epsilon$ to $\tilde a$ or $\tilde b$, to avoid $log(0)$. In python, this is done with `1e-6` or, preferably, `np.spacing(1)`.
+
+Working in log-scale implies to modify the loss:
+$$
+\mathcal{L}(\check r, \check b) = \sum_k \frac{\check r_k}{2} + exp(2 \check b_k - \check r_k)
+\tag{2b}
+$$
+
+**A few mode details**:
+- **Further normalization**. In addition of the log-scale, it is beneficial to "normalize the images using a fixed affine transform".
+> What this mean is using the minmax formula, but not with the minimum and maximum values of the image (because of the strong outliers, the whole distribution would end up being very narrow and the network would struggle differentiating values). Instead percentile values are used, typically 5 and 95%.
+
+- **Misconception about the data range of the output**. As (most of) the data lies between $[0;1]$, one could expect the reconstruction of the network be in the same interval. However, the network learns to map from noisy realizations of $\tilde a \sim \mathcal{N}(0,r/2)$ to the total reflectivity $r$, not to $\frac{r}{2}$. Same for $\tilde b$.
+> This means that to compare 2 images of the same scale one must visualize the Intensity $I = \tilde{a}^2 + \tilde{b}^2$ and a single prediction , e.g., $f_\theta(\tilde{a}^2)$. During inference both network estimations are averaged to decrease the variance of the reconstructed reflectivity, but if a simple proxy is needed, one could use only one of the reconstructions.
+
+- **An $ln(2)$ offset**. @TODO. One thing I still do not undestand comes from the loss optimization. If the network tries to optimize Eq. (2b), that I simplify with $\hat x$ the reconstruction and $y$ the target:
+$$
+\text{Optimizing}~f(\hat x, y) = \frac{\hat x}{2} + exp(2 y - \hat x) \\
+\text{Means finding where}~f'(\hat x, y): \frac{1}{2} - exp(2 y - \hat x) = 0 \\
+\Leftrightarrow 2y - \hat x = ln(\frac{1}{2}) \\
+\Leftrightarrow \hat x = 2y + ln(2)
+$$
+> Given that we reconstruct the estimated reflectivity and not half of it $2y$ makes kind of sense, however, the ln(2) offset does not have an explanation to me. 
 
 ### Data
 TerraSAR-x StripMap (SM) SSC (Single Look Slant Range Complex) images downloaded from [ESA's platform](https://earth.esa.int/eogateway/catalog/terrasar-x-esa-archive).
@@ -43,9 +81,9 @@ I'll try to follow the dataset naming conventions below: `<split_type><nb_images
 - `split_type` is how the patches where split ("randomsplit" or "spatialsplit")
 - `nb_images` corresponds to the number of `.cos` files used for the dataset (typically 5)
 - `preservation` indicates if strong point-like scatterers were preserved following (@TODO add equation in [[Math.md]]) and the threshold, for example "nopres" or "pres60dB".
-- `normalization` consists of `norm<normalization_percentiles><log_mode><clipped>`
+- `normalization` consists of `norm<normalization_percentiles><log_base><clipped>`
   - `normalization_percentiles` indicates if min-max normalization was performed on the patches, and which percentiles were used as "min" and "max". For example, "nonorm" or "norm1".
-  - `log_mode` the logarithmic base was used in the normalization, either "db" (`np.log10()`) or "nat" (natural: `np.log()`)
+  - `log_base` the logarithmic base was used in the normalization, either "db" (`np.log10()`) or "nat" (natural: `np.log()`)
   - `clipped` is "clip" or "" depending if the data was clipped to [0,1] or not. If `normalization_percentiles=0` clipping is deactivated by default, as after a minmax normalization the data lies already in [0,1]
 Examples:
 - "randomsplit5_pres60dB_norm5db" was processed with preservation of scatterers with signals above 60dB, the patches were placed in log10 base before being "min-maxed" with p5 and p95 (i.e., value 0 corresponds to p5 and value 1 to p95)
