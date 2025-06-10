@@ -23,7 +23,6 @@ class TSXSSCDataset(Dataset):
     def __init__(
         self,
         hdf5_path: Path,
-        log_mode: str = "natural",
         must_normalize: float | None = None,
         transform=None,
     ):
@@ -31,13 +30,11 @@ class TSXSSCDataset(Dataset):
 
         Args:
             hdf5_path: Path to the HDF5 file containing pre-processed patches
-            log_mode: logarithmic base of the loaded data, either "db": Transformed with 10*log10() or "natural": Transformed with log(). Default: "natural".
             must_normalize: Min-max normalization used for the data. None means the data is already normalized, while any other percent indicates the percentiles that should be used in place of min and max values, e.g., 1 <=> norm_x = (x - p1) / (p99 - p1). In particular, 0 implies the traditionnal min-max normalization. Default: None.
             transform: Optional transform to apply to samples (default: None)
         """
         super().__init__()
         self.hdf5_path = hdf5_path
-        self.log_mode = log_mode
         self.must_normalize = must_normalize
         self.transform = transform
 
@@ -72,7 +69,7 @@ class TSXSSCDataset(Dataset):
             if self.must_normalize is not None:
                 # @TODO: implement support for unnormalized data
                 warnings.warn(
-                    f"Unnormalized data is not supported. TSXSSCDataset was instantiated with {self.must_normalize=} and {self.log_mode=}."
+                    f"Unnormalized data is not supported. TSXSSCDataset was instantiated with {self.must_normalize=}."
                 )
                 # # Apply normalization
                 # real = normalize_sar(real)
