@@ -104,6 +104,11 @@ In particular, each .cos file present in `data/TSX_cos_files/` is open, images a
 ### Hardware implementation
 Vitis AI [7]
 
+#### What I did for a first deployment (20/06/2025)
+1. Created a similar `model_quantization.py` in DDC_FPGA, realized I need it in Vitis-AI
+2. Wanted to start docker, the GPU image seems to have disappeared, so I started the `cpu:latest`
+3. I ran into partition space problems so i started mounting 1 of the 2 1TB disks available and copying vitisAI and my repo there. i've used ChatGPT to do so and for the moment I'll use a symlink between the partition and my `~/dev/Vitis-AI/`
+
 #### References
 [1] Joel Amao-Oliva, Nils Foix-Colonier, Francescopaolo Sica. (2024). Joint compression and despeckling by SAR representation learning. ISPRS Journal of Photogrammetry and Remote Sensing.
 [2] J. Bégaint, F. Racapé, S. Feltman, and A. Pushparaja, “CompressAI: a PyTorch library and evaluation platform for end-to-end compression research,” Nov. 05, 2020, arXiv: arXiv:2011.03029. doi: 10.48550/arXiv.2011.03029.
