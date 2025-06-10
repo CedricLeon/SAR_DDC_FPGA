@@ -6,6 +6,7 @@ from typing import Any, Dict
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torchmetrics
 from lightning import Callback, LightningModule, Trainer
 
 
@@ -26,7 +27,6 @@ class LogValidationPatch(Callback):
         self.patch_dir = Path(patch_dir)
         self.log_every_n_epochs = log_every_n_epochs
         self.add_residuals = add_residuals
-        self.is_default_patch = False
 
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
         """Find the large patch and convert it to a torch tensor."""
@@ -38,13 +38,10 @@ class LogValidationPatch(Callback):
                 found_patch = True
                 break
         if not found_patch:
-            warnings.warn(
-                f"No patch found in{self.patch_dir}. Using default patch in parent."
+            raise FileNotFoundError(
+                f"No validation patch found in {self.patch_dir}. "
+                "Please ensure the directory contains a file starting with 'val_' and ending with '.npy'."
             )
-            self.patch_path = (
-                self.patch_dir.parent / "default_large_validation_patch.npy"
-            )
-            self.is_default_patch = True
 
         # Read, convert to Tensor, and add batch dimension
         self.patch = (
@@ -53,6 +50,48 @@ class LogValidationPatch(Callback):
             .unsqueeze(0)
             .float()
         )
+
+        # Load MERLIN Ground Truth
+        merlin_gt_dir = self.patch_dir.parent.parent / "denoised"
+        for file in os.listdir(merlin_gt_dir):
+            if file.startswith("val_") and file.endswith(".npy"):
+                self.merlin_gt_path = merlin_gt_dir / file
+                merlin_patch_dict = np.load(
+                    self.merlin_gt_path, allow_pickle=True
+                ).item()
+                merlin_patch = merlin_patch_dict["denoised"]["from_real"]
+                # Access Lightning Datamodule hdf5_metadata to normalize the patch as needed
+                self.log_base = trainer.datamodule.hdf5_metadata.get("log_base", None)
+                self.min_val = trainer.datamodule.hdf5_metadata.get("norm_min", None)
+                self.max_val = trainer.datamodule.hdf5_metadata.get("norm_max", None)
+
+                if self.log_base == "nat":
+                    merlin_patch = np.log(
+                        (merlin_patch - self.min_val) / (self.max_val - self.min_val)
+                    )
+                elif self.log_base == "db":
+                    merlin_patch = 10 * np.log10(
+                        (merlin_patch - self.min_val) / (self.max_val - self.min_val)
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Unsupported log base: {self.log_base}. "
+                        "Supported values are 'nat' and 'db'."
+                    )
+
+                self.merlin_gt = merlin_patch.astype(np.float32)
+                found_patch = True
+                break
+        if not found_patch:
+            warnings.warn(
+                f"No MERLIN Ground Truth found in {merlin_gt_dir}. Skipping GT logging."
+            )
+            self.merlin_gt = None
+        if self.merlin_gt_path.name.split("_")[1] != self.patch_path.name.split("_")[1]:
+            warnings.warn(
+                f"Patch and MERLIN GT filenames do not match: {self.patch_path.name} vs {self.merlin_gt_path.name}. "
+                "This may lead to incorrect logging."
+            )
 
     def on_validation_batch_end(
         self,
@@ -172,22 +211,66 @@ class LogValidationPatch(Callback):
 
         plt.subplots_adjust(wspace=0.05, hspace=0.3)
 
-        default_patch_warning = (
-            "\n /!\\ Default patch used  /!\\." if self.is_default_patch else ""
-        )
         fig.suptitle(
             f"Val Large patch, epoch {trainer.current_epoch}: "
             f"Loss={out_criterion['loss']:.3f}, MSE={out_criterion['mse']:.3f}, "
             f"SSIM={out_criterion['ssim']:.4f}, MS-SSIM={out_criterion['ms_ssim']:.4f}, "
-            f"BPP={out_criterion['bpp_loss']:.4f}{default_patch_warning}"
+            f"BPP={out_criterion['bpp_loss']:.4f}"
         )
 
-        # Let's also save just reconstruction as a new WandB variable
-        fig2, ax2 = plt.subplots()
-        ax2.imshow(output_real, cmap="gray")
-        ax2.set_title(
-            f"epoch {trainer.current_epoch}, bpp={out_criterion['bpp_loss']:.4f}"
-        )
+        # Let's also save comparison with MERLIN GT if available
+        # @TODO: once happy with the metrics, move that to a standalone function that automatically takes care of numpoy to torch conversion
+        if self.merlin_gt is not None:
+            output_real_torch = (
+                torch.from_numpy(output_real)
+                .to(pl_module.device)
+                .unsqueeze(0)
+                .unsqueeze(0)
+            )  # Add batch and channel dims
+            merlin_gt_torch = (
+                torch.from_numpy(self.merlin_gt)
+                .to(pl_module.device)
+                .unsqueeze(0)
+                .unsqueeze(0)
+            )  # Add batch and channel dims
+            mse_merlin = torchmetrics.functional.mean_squared_error(
+                output_real_torch, merlin_gt_torch
+            )
+            psnr_merlin = torchmetrics.functional.image.peak_signal_noise_ratio(
+                output_real_torch, merlin_gt_torch
+            )
+            ssim_merlin = (
+                torchmetrics.functional.image.structural_similarity_index_measure(
+                    output_real_torch, merlin_gt_torch
+                )
+            )
+            ms_ssim_merlin = torchmetrics.functional.image.multiscale_structural_similarity_index_measure(
+                output_real_torch, merlin_gt_torch
+            )
+
+            fig2, axs = plt.subplots(1, 2)
+
+            im0 = axs[0].imshow(output_real, cmap="gray")
+            axs[0].set_title("Reconstruction")
+            axs[0].axis("off")
+            fig2.colorbar(im0, ax=axs[0], shrink=0.6)
+
+            im1 = axs[1].imshow(self.merlin_gt, cmap="gray")
+            axs[1].set_title("MERLIN GT")
+            axs[1].axis("off")
+            fig2.colorbar(im1, ax=axs[1], shrink=0.6)
+
+            fig2.suptitle(
+                f"epoch {trainer.current_epoch}, bpp={out_criterion['bpp_loss']:.4f}, mse={mse_merlin:.4f}, \n "
+                f"psnr={psnr_merlin:.4f}, ssim={ssim_merlin:.4f}, ms_ssim={ms_ssim_merlin:.4f}"
+            )
+        else:
+            fig2, ax = plt.subplots()
+            ax.imshow(output_real, cmap="gray")
+            ax.set_title("Reconstruction")
+            ax.set_title(
+                f"epoch {trainer.current_epoch}, bpp={out_criterion['bpp_loss']:.4f}"
+            )
 
         pl_module.logger.experiment.log(
             {
@@ -231,7 +314,7 @@ class LogValidationBatchPlot(Callback):
 
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
         """Fix the image indices to log, to always log the same images."""
-        batch_size = trainer.datamodule.hparams.batch_size
+        batch_size = trainer.datamodule.batch_size
         if batch_size <= self.num_images:
             self.image_indices = torch.arange(batch_size)
         else:
