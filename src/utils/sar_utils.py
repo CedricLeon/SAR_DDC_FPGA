@@ -296,3 +296,31 @@ def preprocess_TSX_image(
         image = normalize_image(image, log_base, min_max, clip)
 
     return extract_patches(image, patch_size, stride=patch_size)
+
+
+def preprocess_TSX_patch(
+    path: Path,
+    crop_coordinates: Tuple[int, int],
+    patch_size: Tuple[int, int],
+    preserve_threshold: float,
+    log_base: str | None,
+    min_max: Tuple[float, float],
+    clip: bool,
+) -> np.ndarray:
+    image = load_cosar(path)
+    if image is None:
+        raise ValueError(f"Image {path} could not be loaded")
+
+    patch = image[
+        crop_coordinates[0] : crop_coordinates[0] + patch_size[0],
+        crop_coordinates[1] : crop_coordinates[1] + patch_size[1],
+        :,
+    ]
+
+    patch = symmetrize(patch)
+    patch = np.square(patch)
+    if preserve_threshold is not None:
+        patch, _ = preserve_point_like_scatterers(patch, preserve_threshold)
+    if log_base is not None:
+        patch = normalize_image(patch, log_base, min_max, clip)
+    return patch
