@@ -1,5 +1,6 @@
 import warnings
 from importlib.util import find_spec
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import omegaconf
@@ -21,11 +22,16 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
     lmbda = cfg.model.criterion.get("lmbda", None)
     metric = cfg.model.criterion.get("metric", None)
     lr = cfg.model.net_optimizer.get("lr", None)
-    data_norm = cfg.data.get("hdf5_dir", None)
-    if data_norm is not None:
-        data_norm = data_norm.split("/")[-1].split("_")[-1]
+    split = cfg.data.get("hdf5_dir", None).split("/")[-1].split("_")[0][-5:]
+    data_dir = cfg.data.get("hdf5_dir", None)
 
-    return f"ReSHyp_{seed}_{metric}ʎ{lmbda}_lr{lr}_data{data_norm}"
+    data_norm = "default"
+    if data_norm is not None:
+        dataset_name = Path(data_dir).name
+        dataset_type = "sp" if dataset_name.startswith("spatial") else "rd"
+        data_norm = dataset_type + "-" + dataset_name.split("_")[-1]
+
+    return f"ReSHyp_{seed}_{metric}ʎ{lmbda}_lr{lr}_{split}{data_norm}"
 
 
 @rank_zero_only
