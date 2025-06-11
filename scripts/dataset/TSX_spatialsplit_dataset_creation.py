@@ -18,7 +18,7 @@ import h5py
 import numpy as np
 from lightning_utilities.core.rank_zero import rank_zero_only
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src.utils.constants import PERCENTILES, M, m
 from src.utils.pylogger import RankedLogger
 from src.utils.sar_utils import preprocess_TSX_image, preprocess_TSX_patch

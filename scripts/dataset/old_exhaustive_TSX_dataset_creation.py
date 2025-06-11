@@ -42,7 +42,7 @@ import torch
 from tqdm import tqdm
 
 # Add parent directory to path to import from src
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 # Import SAR utilities
 from src.utils.MERLIN_sar_utils import cos2mat, symetrisation_patch_test
 from src.utils.pylogger import RankedLogger

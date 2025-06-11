@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Add parent directory to path to import from src
-sys.path.append("..")
+sys.path.append("../..")
 from src.utils.sar_utils import load_cosar, symmetrize
 
 
@@ -114,7 +114,7 @@ class RunningStatistics:
         }
 
 
-def process_sar_image(filepath, stats_inten, stats_amp, stats_inten_log):
+def process_sar_image(filepath, stats_inten_log_spacing, stats_inten_log_1e3, stats_inten_log_1e6):
     """Process a single SAR image and update statistics."""
     print(f"Processing {filepath.name}...")
 
@@ -136,20 +136,17 @@ def process_sar_image(filepath, stats_inten, stats_amp, stats_inten_log):
 
     # Apply log transformation
     intensity = sar_data[:, :, 0] + sar_data[:, :, 1]
-    amp = np.sqrt(intensity)
-    inten_log = np.log(intensity + np.spacing(1))
+    inten_log_spacing = np.log(intensity + np.spacing(1))
+    inten_log_1e3 = np.log(intensity + 1e-3)
+    inten_log_1e6 = np.log(intensity + 1e-6)
 
-    # # Update statistics
-    # stats_real.update(sar_data[:, :, 0])
-    # stats_imag.update(sar_data[:, :, 1])
-    # stats_whole.update(sar_data)
-    stats_inten.update(intensity)
-    stats_amp.update(amp)
-    stats_inten_log.update(inten_log)
+    # Update statistics
+    stats_inten_log_spacing.update(inten_log_spacing)
+    stats_inten_log_1e3.update(inten_log_1e3)
+    stats_inten_log_1e6.update(inten_log_1e6)
 
     # Free memory
-    del sar_data, intensity, inten_log, amp
-    gc.collect()
+    del sar_data, intensity, inten_log_spacing, inten_log_1e3, inten_log_1e6
 
     return True
 
@@ -223,8 +220,8 @@ def plot_histogram(stats, title, filename):
 
 def main():
     # Configuration
-    data_dir = Path("../data/TSX_cos_files")
-    output_dir = Path("../data/analysis")
+    data_dir = Path("../../data/TSX_cos_files")
+    output_dir = Path("../../data/analysis")
     output_dir.mkdir(exist_ok=True, parents=True)
 
     # List .cos files
@@ -235,37 +232,38 @@ def main():
     # stats_real = RunningStatistics("Real Component (log-squared)")
     # stats_imag = RunningStatistics("Imaginary Component (log-squared)")
     # stats = RunningStatistics("Whole image (log-squared)")
-    stats_inten = RunningStatistics("Intensity")
-    stats_amp = RunningStatistics("Amplitude")
-    stats_inten_log = RunningStatistics("Intensity (log)")
+    stats_inten_log_spacing = RunningStatistics("Intensity (log + spacing)")
+    stats_inten_log_1e3 = RunningStatistics("Intensity (log + 1e-3)")
+    stats_inten_log_1e6 = RunningStatistics("Intensity (log + 1e-6)")
 
     # Process each image
     for file_path in cos_files:
-        process_sar_image(file_path, stats_inten, stats_amp, stats_inten_log)
+        process_sar_image(file_path, stats_inten_log_spacing, stats_inten_log_1e3, stats_inten_log_1e6)
 
     # Generate reports
-    print("\n=== INTENSITY STATISTICS ===")
-    stats_inten.report()
+    # Generate reports
+    print("\n=== INTENSITY STATISTICS (log + spacing) ===")
+    stats_inten_log_spacing.report()
     plot_histogram(
-        stats_inten,
+        stats_inten_log_spacing,
         "Log-transformed Intensity Distribution",
-        output_dir / "intensity_histogram.png",
+        output_dir / "intensity_log_spacing_histogram.png",
     )
-
-    print("\n=== AMPLITUDE STATISTICS ===")
-    stats_amp.report()
+    print("\n=== INTENSITY STATISTICS (log + 1e-3) ===")
+    stats_inten_log_1e3.report()
     plot_histogram(
-        stats_amp,
+        stats_inten_log_1e3,
         "Log-transformed Amplitude Distribution",
-        output_dir / "amplitude_histogram.png",
+        output_dir / "intensity_log_1e-3_histogram.png",
     )
-    print("\n=== INTENSITY (LOG) STATISTICS ===")
-    stats_inten_log.report()
+    print("\n=== INTENSITY STATISTICS (log + 1e-6) ===")
+    stats_inten_log_1e6.report()
     plot_histogram(
-        stats_inten_log,
+        stats_inten_log_1e6,
         "Intensity (log) Distribution",
-        output_dir / "intensity_log_histogram.png",
+        output_dir / "intensity_log_1e-6_histogram.png",
     )
+    
     # # Print final conclusion
     # print(
     #     "\nDataset Analysis Complete. Summary of the Intensity (log(Re^2 + Im^2)) Statistics:"
