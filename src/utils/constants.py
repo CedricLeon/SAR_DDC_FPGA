@@ -1,4 +1,13 @@
-# These percentiles are the statistics of the intensity image in log-scale of the whole dataset. See scripts/compute_dataset_stats.py and data/analysis/dataset_all_stats.log
+# ----- Intensity: log(a^2 + b^2 + epsilon)-----
+# These percentiles are the statistics of the intensity image in log-scale of the whole dataset. To know how they were obtained, refer to the README.
+# To avoid error in log we need to add a small epsilon. The value of this epsilon significantly impacts the minimum value of the log image.
+inten_min_1e2 = -4.605170249938965  # log + 1e-2
+inten_min_1e3 = -6.907755374908447  # log + 1e-3
+inten_min_1e6 = -13.81551074981689  # log + 1e-6
+inten_min_spacing = -36.04365338911715  # log + np.spacing(1)
+inten_max_1e2 = 21.484479904174805  # max is barely impacted by the value of epsilon
+
+# /!\ DEPRECATED /!\, Percentiles for log(intensity + np.spacing(1)), used in old scripts.
 PERCENTILES = {
     "p1": 5.0998743307292065,
     "p5": 6.76272625759834,
@@ -11,6 +20,22 @@ PERCENTILES = {
     "p99": 12.611018051940837,
 }
 
-# Global maximum and minimum values obtained empirically and used to normalize SAR images
-M = 10.089038980848645
+# ---- Amplitude: log(sqrt(intensity) + 1e-2) ----
+amp_min = -4.605170249938965
+amp_max = 10.742239952087402
+
+# PERCENTILES = {
+#     "p1": 2.5657155513763428,
+#     "p5": 3.377060890197754,
+#     "p10": 3.750775098800659,
+#     "p25": 4.290596961975098,
+#     "p50": 4.796180248260498,
+#     "p75": 5.238076686859131,
+#     "p90": 5.608729362487793,
+#     "p95": 5.8340229988098145,
+#     "p99": 6.301939024925232,
+# }
+
+# MERLIN constants: global maximum and minimum values obtained empirically and used for the training of MERLIN (see https://github.com/hi-paris/deepdespeckling)
 m = -1.429329123112601
+M = 10.089038980848645

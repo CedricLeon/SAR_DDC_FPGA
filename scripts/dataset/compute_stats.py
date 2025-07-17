@@ -3,7 +3,6 @@ Standalone script to compute statistics over all CoSAR images found in a given f
 The statistics are computed over the pre-processed data, i.e., each image is loaded symmetrized, squared, and log-transformed (natural basis).
 """
 
-import gc
 import sys
 import time
 from pathlib import Path
@@ -50,7 +49,7 @@ class RunningStatistics:
         self.min_val = min(self.min_val, np.min(flat_data))
         self.max_val = max(self.max_val, np.max(flat_data))
 
-        # Update mean and M2 using Welford's online algorithm
+        # Update mean and M2 using Welford's online algorithm, see https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Welford's_online_algorithm
         delta = flat_data - self.mean
         self.mean += np.sum(delta) / self.n
         delta2 = flat_data - self.mean
@@ -90,10 +89,10 @@ class RunningStatistics:
     def report(self):
         """Generate a report of the statistics."""
         print(f"Statistics for {self.name} ({self.n:,} values):")
-        print(f"  Mean: {self.mean:.4f}")
-        print(f"  Std dev: {self.std:.4f}")
-        print(f"  Min: {self.min_val:.4f}")
-        print(f"  Max: {self.max_val:.4f}")
+        print(f"  Mean: {self.mean}")
+        print(f"  Std dev: {self.std}")
+        print(f"  Min: {self.min_val}")
+        print(f"  Max: {self.max_val}")
 
         # Calculate percentiles if we have samples
         if self.sample_values:
@@ -114,12 +113,12 @@ class RunningStatistics:
         }
 
 
-def process_sar_image(filepath, stats_inten_log_spacing, stats_inten_log_1e3, stats_inten_log_1e6):
+def process_sar_image(filepath, stats_intensity_log, stats_amp_log_sqrt):
     """Process a single SAR image and update statistics."""
     print(f"Processing {filepath.name}...")
 
     # Load the image
-    sar_data = load_cosar(filepath, verbose=False)
+    sar_data = load_cosar(filepath)
     if sar_data is None:
         print(f"Failed to load {filepath}")
         return False
@@ -133,22 +132,18 @@ def process_sar_image(filepath, stats_inten_log_spacing, stats_inten_log_1e3, st
 
     # Square the components
     sar_data = np.square(sar_data)
+    intensity = sar_data[:, :, 0] + sar_data[:, :, 1]
 
     # Apply log transformation
-    intensity = sar_data[:, :, 0] + sar_data[:, :, 1]
-    inten_log_spacing = np.log(intensity + np.spacing(1))
-    inten_log_1e3 = np.log(intensity + 1e-3)
-    inten_log_1e6 = np.log(intensity + 1e-6)
+    inten_log = np.log(intensity + 1e-2)
+    amp_log_sqrt = np.log(np.sqrt(intensity) + 1e-2)
 
     # Update statistics
-    stats_inten_log_spacing.update(inten_log_spacing)
-    stats_inten_log_1e3.update(inten_log_1e3)
-    stats_inten_log_1e6.update(inten_log_1e6)
+    stats_intensity_log.update(inten_log)
+    stats_amp_log_sqrt.update(amp_log_sqrt)
 
     # Free memory
-    del sar_data, intensity, inten_log_spacing, inten_log_1e3, inten_log_1e6
-
-    return True
+    del sar_data, intensity, inten_log, amp_log_sqrt
 
 
 def plot_histogram(stats, title, filename):
@@ -229,56 +224,29 @@ def main():
     print(f"Found {len(cos_files)} .cos files in {data_dir}")
 
     # Create statistics trackers
-    # stats_real = RunningStatistics("Real Component (log-squared)")
-    # stats_imag = RunningStatistics("Imaginary Component (log-squared)")
-    # stats = RunningStatistics("Whole image (log-squared)")
-    stats_inten_log_spacing = RunningStatistics("Intensity (log + spacing)")
-    stats_inten_log_1e3 = RunningStatistics("Intensity (log + 1e-3)")
-    stats_inten_log_1e6 = RunningStatistics("Intensity (log + 1e-6)")
+    stats_intensity_log = RunningStatistics("Intensity (log + 1e-2)")
+    stats_amp_log_sqrt = RunningStatistics("Amplitude (log(sqrt(intensity) + 1e-2))")
 
     # Process each image
     for file_path in cos_files:
-        process_sar_image(file_path, stats_inten_log_spacing, stats_inten_log_1e3, stats_inten_log_1e6)
+        process_sar_image(file_path, stats_intensity_log, stats_amp_log_sqrt)
 
     # Generate reports
-    # Generate reports
-    print("\n=== INTENSITY STATISTICS (log + spacing) ===")
-    stats_inten_log_spacing.report()
+    print("\n=== INTENSITY STATISTICS (log + 1e-2) ===")
+    stats_intensity_log.report()
     plot_histogram(
-        stats_inten_log_spacing,
-        "Log-transformed Intensity Distribution",
-        output_dir / "intensity_log_spacing_histogram.png",
+        stats_intensity_log,
+        "Intensity (log + 1e-2) Distribution",
+        output_dir / "intensity_log_1e-2_histogram.png",
     )
-    print("\n=== INTENSITY STATISTICS (log + 1e-3) ===")
-    stats_inten_log_1e3.report()
+
+    print("\n=== AMPLITUDE STATISTICS (log(sqrt(intensity) + 1e-2)) ===")
+    stats_amp_log_sqrt.report()
     plot_histogram(
-        stats_inten_log_1e3,
-        "Log-transformed Amplitude Distribution",
-        output_dir / "intensity_log_1e-3_histogram.png",
+        stats_amp_log_sqrt,
+        "Amplitude (log(sqrt(intensity) + 1e-2)) Distribution",
+        output_dir / "amplitude_log-sqrt_1e-2_histogram.png",
     )
-    print("\n=== INTENSITY STATISTICS (log + 1e-6) ===")
-    stats_inten_log_1e6.report()
-    plot_histogram(
-        stats_inten_log_1e6,
-        "Intensity (log) Distribution",
-        output_dir / "intensity_log_1e-6_histogram.png",
-    )
-    
-    # # Print final conclusion
-    # print(
-    #     "\nDataset Analysis Complete. Summary of the Intensity (log(Re^2 + Im^2)) Statistics:"
-    # )
-    # print(f"  - Mean: {stats_inten.mean}")
-    # print(f"  - Std: {stats_inten.std}")
-    # print(
-    #     f"  - Range: [{stats_inten.percentile(1)}, {stats_inten.percentile(99)}] (1st-99th percentile)"
-    # )
-    # print(
-    #     f"  - Range: [{stats_inten.percentile(10)}, {stats_inten.percentile(90)}] (10th-90th percentile)"
-    # )
-    # print(
-    #     f"The analyzed dataset contains values from {stats_inten.min_val} to {stats_inten.max_val}"
-    # )
 
 
 if __name__ == "__main__":

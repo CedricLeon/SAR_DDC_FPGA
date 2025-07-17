@@ -118,7 +118,18 @@ Vitis AI [7]
 [6] Dalsasso, E., Denis, L., & Tupin, F. (2022). As if by magic: Self-supervised training of deep despeckling networks with MERLIN. IEEE Transactions on Geoscience and Remote Sensing, 60, 1–13. https://doi.org/10.1109/TGRS.2021.3128621
 [7] AMD Vitis™ AI Software. (2019). AMD. https://www.amd.com/en/products/software/vitis-ai.html
 
-
+## How to use
+Consider we start from the repository root (`<something>/DDC_FPGA`).
+#### Miscalleneous scripts
+**Compute dataset statistics**
+By default statistics for the intensity and the amplitude in log-scale (natural log with an epsilon of $1e-2$) are computed. Modify the file to compute more.
+```bash
+cd scripts/dataset
+python compute_stats.py > ../../data/analysis/dataset_stats.log
+```
+**Dataset creation**
+Old already fully-preprocessed dataset `TSX_spatialsplit_dataset_creation.py`
+@TODO: make a new that simply ensures i.i.d. of each patch and patchifies, but does not normalize (done before network forward).
 
 # Original Template README
 Below is the original README for the [template](https://github.com/CedricLeon/Setup_Lightning_Hydra_template). I keep it for the moment.
