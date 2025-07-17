@@ -143,7 +143,7 @@ def normalize_data(data, norm_mode="db", norm_minmax_val=0, clip=False, verbose=
         if verbose:
             log.info("      Applied dB (10*log10) transformation")
     elif norm_mode == "nat":
-        sample_log = np.log(sample + np.spacing(1))
+        sample_log = np.log(sample + 1e-2)
         if verbose:
             log.info("      Applied natural (nat) log transformation")
     else:
@@ -188,7 +188,7 @@ def normalize_data(data, norm_mode="db", norm_minmax_val=0, clip=False, verbose=
         if norm_mode == "db":
             batch_log = convert_to_db(batch)
         else:
-            batch_log = np.log(batch + np.spacing(1))
+            batch_log = np.log(batch + 1e-2))
 
         # In-place normalization for real component
         normalized_data[start_idx:end_idx, ...] = norm_minmax(

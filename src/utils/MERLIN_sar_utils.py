@@ -21,7 +21,7 @@ def normalize_sar(im):
     print(
         f"Warning: deprecated normalization function using MERLIN's constants: {m} and {M}. Prefer to use sar_utils.py version."
     )
-    return ((np.log(im + np.spacing(1)) - m) / (M - m)).astype("float32")
+    return ((np.log(im + 1e-3) - m) / (M - m)).astype("float32")
 
 
 # From MERLIN:  self.Y_input in `__init__()` in model.py # The 2 times comes from the power in the log

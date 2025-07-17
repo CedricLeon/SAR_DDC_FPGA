@@ -24,9 +24,7 @@ e = "\033[0m"
 
 def convert_to_db(x: np.ndarray):
     """Convert input to decibels (dB)."""
-    return 10 * np.log10(
-        x + np.spacing(1)
-    )  # np.spacing(1) is similar to using 1e-10 (to avoid log(0))
+    return 10 * np.log10(x + 1e-2)
 
 
 def convert_from_db(x: np.ndarray):
@@ -229,7 +227,7 @@ def normalize_image(
 
     # Bring to log base
     if log_base == "nat":
-        im_log = np.log(im + np.spacing(1))
+        im_log = np.log(im + 1e-2)
     elif log_base == "db":
         im_log = convert_to_db(im)
     else:

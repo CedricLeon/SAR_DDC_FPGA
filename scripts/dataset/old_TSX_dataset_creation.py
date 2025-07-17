@@ -803,7 +803,7 @@ def run_random_split_mode(
 
             # Calculate statistics on the combined dataset
             real_db = convert_to_db(real_values)
-            real_nat = np.log(real_values + np.spacing(1))
+            real_nat = np.log(real_values + 1e-2)
 
             combined_stats = {
                 "min_db": float(np.min(real_db)),
