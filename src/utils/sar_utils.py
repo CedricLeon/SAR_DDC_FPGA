@@ -8,18 +8,12 @@ This module provides utility functions for SAR data handling:
 """
 
 import struct
+from logging import Logger
 from pathlib import Path
 from typing import Tuple
 
 import numpy as np
 from scipy import signal
-
-# Quick ANSI color code shortcuts
-r = "\033[31m"
-y = "\033[33m"
-g = "\033[32m"
-b = "\033[34m"
-e = "\033[0m"
 
 
 def convert_to_db(x: np.ndarray):
@@ -32,12 +26,12 @@ def convert_from_db(x: np.ndarray):
     return pow(10, x / 10)
 
 
-def load_cosar(path: Path, verbose: bool = True) -> np.ndarray | None:
+def load_cosar(path: Path, logger: Logger | None = None) -> np.ndarray | None:
     """Convert a CoSAR image to a numpy array. Function from MERLIN (originally named `cos2mat`) 'improved' with Copilot.
 
     Args:
         path (Path): Path to the .cos file.
-        verbose (bool): Print additional information during loading. Default is True.
+        logger (Logger | None): Logger instance for logging. Default is None.
 
     Returns:
         The image as a numpy array with dimensions [nlines, ncolumns, 2], where [:,:,0] is real part and [:,:,1] is imaginary part. None if the file could not be open.
@@ -45,8 +39,9 @@ def load_cosar(path: Path, verbose: bool = True) -> np.ndarray | None:
     try:
         fin = open(path, "rb")
     except IOError:
-        print(f"{path}: it is a not openable file")
-        print("Failed to call cos2mat")
+        if logger:
+            logger.error(f"{path}: it is a not openable file")
+            logger.error("Failed to call cos2mat")
         return None
 
     # Read header information
@@ -63,8 +58,8 @@ def load_cosar(path: Path, verbose: bool = True) -> np.ndarray | None:
     ncol = ncoltot - 2
     nlig = ias
 
-    if verbose:
-        print(
+    if logger:
+        logger.info(
             f"                Reading image in CoSAR format. ncolumns={ncol} nlines={nlig}"
         )
 
@@ -79,7 +74,8 @@ def load_cosar(path: Path, verbose: bool = True) -> np.ndarray | None:
     for iut in range(nlig):
         firm = fin.read(4 * ncoltot)
         if len(firm) < 4 * ncoltot:  # Check if we've reached EOF
-            print(f"Warning: Reached EOF at line {iut}/{nlig}")
+            if logger:
+                logger.warning(f"Warning: Reached EOF at line {iut}/{nlig}")
             break
 
         imgligne = np.ndarray(2 * ncoltot, ">h", firm)
@@ -93,8 +89,8 @@ def load_cosar(path: Path, verbose: bool = True) -> np.ndarray | None:
     real_part = np.real(imgcxs)
     imag_part = np.imag(imgcxs)
 
-    if verbose:
-        print(
+    if logger:
+        logger.info(
             f"                Successfully loaded image with shape: {real_part.shape} ([:,:,0] real and [:,:,1] imaginary)."
         )
     return np.stack((real_part, imag_part), axis=2)
@@ -272,21 +268,22 @@ def preprocess_TSX_image(
     min_max: Tuple[float, float],
     clip: bool,
     patch_size: int,
+    logger: Logger | None = None,
 ) -> np.ndarray:
     """
     Preprocessing pipeline for a TSX CoSAR image.
     Loads, symmetrizes, squares, and normalizes the image.
     Returns all the patches of the image. (@TODO: patches smaller than patch_size x patch_size are discarded)
     """
-    image = load_cosar(path)
+    image = load_cosar(path, logger=logger)
     if image is None:
         raise ValueError(f"Failed to load {path}")
 
     # Assure real and imag parts are i.i.d. (MERLIN requirement)
     image = symmetrize(image)
-    # [H, W, 2]
-    image = np.square(abs(image))
+    image = np.square(image)
 
+    # Preserve strong scatterers (described in ADAM paper), not mandatory, I'm not doing it for the moment.
     if preserve_threshold is not None:
         image, _ = preserve_point_like_scatterers(image, preserve_threshold)
 
@@ -304,8 +301,9 @@ def preprocess_TSX_patch(
     log_base: str | None,
     min_max: Tuple[float, float],
     clip: bool,
+    logger: Logger | None = None,
 ) -> np.ndarray:
-    image = load_cosar(path)
+    image = load_cosar(path, logger=logger)
     if image is None:
         raise ValueError(f"Image {path} could not be loaded")
 

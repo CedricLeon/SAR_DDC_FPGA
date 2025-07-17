@@ -19,7 +19,7 @@ import numpy as np
 from lightning_utilities.core.rank_zero import rank_zero_only
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
-from src.utils.constants import PERCENTILES, M, m
+from src.utils.constants import PERCENTILES, M, amp_max, amp_min, m
 from src.utils.pylogger import RankedLogger
 from src.utils.sar_utils import preprocess_TSX_image, preprocess_TSX_patch
 
@@ -78,12 +78,12 @@ parser.add_argument(
     "--norm-minmax",
     type=int,
     default=-1,
-    help="Percentiles used in place of min and max in the normalization: 0, 1, 5, or 10 (default: -1 -> MERLIN m and M values are used, see `src/utils/constants.py`)",
+    help="Percentiles used in place of min and max in the normalization: 0, 1, 5, or 10 (default: 0 -> min and max are used). you can also use -1 to use MERLIN's empirical values (not recommended). See `src/utils/constants` for more info.",
 )
 parser.add_argument(
     "--clip",
     action="store_true",
-    help="Whether to clip the data to the range [0, 1] after normalization. Disabled is --norm-minmax is 0 (data already between 0 and 1). (default: False)",
+    help="Whether to clip the data to the range [0, 1] after normalization. Not recommended. Disabled is --norm-minmax is 0 (data already between 0 and 1). (default: False)",
 )
 args = parser.parse_args()
 
@@ -197,6 +197,8 @@ def main():
     # ----- Solve normalization settings -----
     if args.norm_minmax == -1:  # Use MERLIN's empirical values
         min_max = (m, M)
+    elif args.norm_minmax == 0:  # Use min and max
+        min_max = (amp_min, amp_max)
     else:
         min_max = (
             PERCENTILES[f"p{args.norm_minmax}"],
@@ -261,6 +263,7 @@ def process_dataset(
                 min_max=min_max,
                 clip=args.clip,
                 patch_size=args.patch_size,
+                logger=log,
             )
 
             nb_patches = patches.shape[0]
@@ -302,6 +305,7 @@ def process_dataset(
                 shuffled_dataset,
                 nb_total_patches,
                 patches_per_image,
+                min_max,
             )
 
     (output_dir / "unshuffled.h5").unlink(missing_ok=True)
@@ -323,6 +327,7 @@ def process_dataset(
                 min_max=min_max,
                 clip=args.clip,
                 patch_size=args.patch_size,
+                logger=log,
             )
             nb_patches = patches.shape[0]
             patches_per_image[short_name] = nb_patches
@@ -345,6 +350,7 @@ def process_dataset(
                 dset,
                 nb_total_patches=patches.shape[0],
                 patches_per_image=patches_per_image,
+                min_max=min_max,
             )
         del patches
         log.info(
@@ -356,6 +362,7 @@ def add_metadata_to_dataset(
     dset: h5py.Dataset,
     nb_total_patches: int,
     patches_per_image: dict[str, int],
+    min_max: tuple[float, float],
 ):
     """Add metadata to the shuffled dataset."""
     dset.attrs["creation_date"] = datetime.now().isoformat()
@@ -373,12 +380,8 @@ def add_metadata_to_dataset(
     # Store boolean as integer (0 or 1)
     dset.attrs["clip"] = int(args.clip)
 
-    dset.attrs["norm_min"] = (
-        m if args.norm_minmax == -1 else PERCENTILES[f"p{args.norm_minmax}"]
-    )
-    dset.attrs["norm_max"] = (
-        M if args.norm_minmax == -1 else PERCENTILES[f"p{100 - args.norm_minmax}"]
-    )
+    dset.attrs["norm_min"] = min_max[0]
+    dset.attrs["norm_max"] = min_max[1]
 
     dset.attrs["patch_size"] = args.patch_size
     dset.attrs["nb_patches"] = nb_total_patches
@@ -405,6 +408,7 @@ def add_patch_for_persistent_visualization(filenames, min_max, save_dir):
         args.log_base,
         min_max,
         args.clip,
+        logger=log,
     )
     patch_path = save_dir / f"val_{short_name}_{PATCH_SIZE[0]}x{PATCH_SIZE[1]}.npy"
     np.save(patch_path, patch_np)
