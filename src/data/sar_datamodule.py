@@ -5,6 +5,7 @@ This module handles loading, preprocessing, and splitting of SAR data
 with deterministic behavior.
 """
 
+import logging
 from pathlib import Path
 
 import h5py
@@ -12,6 +13,8 @@ from lightning import LightningDataModule
 from torch.utils.data import DataLoader
 
 from src.data.components.sar_dataset import TSXSSCDataset
+
+log = logging.getLogger(__name__)
 
 
 class TSXSSCDataModule(LightningDataModule):
@@ -58,6 +61,22 @@ class TSXSSCDataModule(LightningDataModule):
         # Data transformations
         self.transform = transform
 
+    def log_patches_per_split(
+        self, split: str, total_patches: int, patches_per_image_str: str
+    ):
+        patches_per_image = {
+            name: int(count)
+            for name, count in (
+                entry.split("-") for entry in patches_per_image_str.split("_")
+            )
+        }
+        patches_summary = ", ".join(
+            f"{count} from {name}" for name, count in patches_per_image.items()
+        )
+        log.info(
+            f"{split} set contains a total of {total_patches} patches with {patches_summary}."
+        )
+
     def prepare_data(self):
         """Data preparation (download, etc.) - runs once on the node."""
         # Check if the HDF5 files exist
@@ -67,7 +86,27 @@ class TSXSSCDataModule(LightningDataModule):
 
         # Read hdf5 attributes to set pre-processing information
         with h5py.File(self.train_path, "r") as f:
-            self.hdf5_metadata = dict(f["patches"].attrs)
+            attrs = f["patches"].attrs
+            self.hdf5_metadata = dict(attrs)
+            log.info(
+                f"Loaded datasets created at {attrs.get('creation_date', 'Unknown')} with seed {attrs.get('seed', 'Unknown')} and "
+                f"{'normalized' if attrs.get('normalize', False) else 'NOT normalized'} data."
+            )
+            self.log_patches_per_split(
+                "Train", attrs.get("nb_patches", -1), attrs.get("patches_per_image", "")
+            )
+        with h5py.File(self.val_path, "r") as f:
+            self.log_patches_per_split(
+                "Validation",
+                f["patches"].attrs.get("nb_patches", -1),
+                f["patches"].attrs.get("patches_per_image", ""),
+            )
+        with h5py.File(self.test_path, "r") as f:
+            self.log_patches_per_split(
+                "Test",
+                f["patches"].attrs.get("nb_patches", -1),
+                f["patches"].attrs.get("patches_per_image", ""),
+            )
 
     def setup(self, stage=None):
         """Data setup per stage - runs on every process."""
