@@ -60,7 +60,7 @@ def load_cosar(path: Path, logger: Logger | None = None) -> np.ndarray | None:
 
     if logger:
         logger.info(
-            f"                Reading image in CoSAR format. ncolumns={ncol} nlines={nlig}"
+            f"      Reading image in CoSAR format. ncolumns={ncol} nlines={nlig}"
         )
 
     # Reset file position and skip headers
@@ -91,7 +91,7 @@ def load_cosar(path: Path, logger: Logger | None = None) -> np.ndarray | None:
 
     if logger:
         logger.info(
-            f"                Successfully loaded image with shape: {real_part.shape} ([:,:,0] real and [:,:,1] imaginary)."
+            f"      Successfully loaded image with shape: {real_part.shape} ([:,:,0] real and [:,:,1] imaginary)."
         )
     return np.stack((real_part, imag_part), axis=2)
 
@@ -261,8 +261,18 @@ def extract_patches(
     return np.array(patches)
 
 
+def load_and_symmetrize_TSX_image(
+    image_path: Path, logger: Logger | None = None
+) -> np.ndarray:
+    image = load_cosar(image_path, logger=logger)
+    if image is None:
+        raise ValueError(f"Failed to load {image_path}")
+    # Assure real and imag parts are i.i.d. (MERLIN requirement)
+    return symmetrize(image)
+
+
 def preprocess_TSX_image(
-    path: Path,
+    image_path: Path,
     preserve_threshold: float,
     log_base: str | None,
     min_max: Tuple[float, float],
@@ -275,12 +285,12 @@ def preprocess_TSX_image(
     Loads, symmetrizes, squares, and normalizes the image.
     Returns all the patches of the image. (@TODO: patches smaller than patch_size x patch_size are discarded)
     """
-    image = load_cosar(path, logger=logger)
-    if image is None:
-        raise ValueError(f"Failed to load {path}")
-
-    # Assure real and imag parts are i.i.d. (MERLIN requirement)
-    image = symmetrize(image)
+    # deprecated warning
+    if logger:
+        logger.warning("This function is deprecated.")
+    else:
+        print("This function is deprecated.")
+    image = load_and_symmetrize_TSX_image(image_path, logger=logger)
     image = np.square(image)
 
     # Preserve strong scatterers (described in ADAM paper), not mandatory, I'm not doing it for the moment.

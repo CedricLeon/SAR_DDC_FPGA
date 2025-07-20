@@ -47,7 +47,7 @@ parser.add_argument(
     "--patch-size",
     type=int,
     default=256,
-    help="Size of patches to extract. Size under @TODO not recommended because of MS-SSIM. (default: 256)",
+    help="Size of patches to extract. Size under 128 not recommended because of MS-SSIM. (default: 256)",
 )
 parser.add_argument(
     "--seed",
@@ -59,7 +59,7 @@ parser.add_argument(
     "--max-files-train",
     type=int,
     default=5,
-    help="Maximum number of files to process for training split (optional)",
+    help="Maximum number of files to process for training split (default: 5)",
 )
 parser.add_argument(
     "--preserve-threshold",
@@ -257,7 +257,7 @@ def process_dataset(
             )
 
             patches = preprocess_TSX_image(
-                path=file_path,
+                image_path=file_path,
                 preserve_threshold=args.preserve_threshold,
                 log_base=args.log_base,
                 min_max=min_max,
@@ -321,7 +321,7 @@ def process_dataset(
             log.info(f"  - Processing {short_name}")
 
             patches = preprocess_TSX_image(
-                path=file_path,
+                image_path=file_path,
                 preserve_threshold=args.preserve_threshold,
                 log_base=args.log_base,
                 min_max=min_max,

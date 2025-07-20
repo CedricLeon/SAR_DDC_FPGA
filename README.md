@@ -129,7 +129,10 @@ python compute_stats.py > ../../data/analysis/dataset_stats.log
 ```
 **Dataset creation**
 Old already fully-preprocessed dataset `TSX_spatialsplit_dataset_creation.py`
-@TODO: make a new that simply ensures i.i.d. of each patch and patchifies, but does not normalize (done before network forward).
+`preprocess_TSX_images.py` takes images and a 'split file' (stating which image should be part of which split). By the default processing symmetrizes and patchifies, but does not square or normalize the patches. Specifying `--normalize` addes squaring and normalization..
+```bash
+python scripts/dataset/preprocess_TSX_images.py --input-dir data/TSX_cos_files --split-file data/TSX_cos_files/spatial_splits_5.json --output-dir data/processed_hdf5/ --normalize
+```
 
 # Original Template README
 Below is the original README for the [template](https://github.com/CedricLeon/Setup_Lightning_Hydra_template). I keep it for the moment.
