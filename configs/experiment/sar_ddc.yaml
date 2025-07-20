@@ -23,9 +23,6 @@ model:
     metric: "merlin" # "mse" or "ssim" or "ms_ssim"
     lmbda: 0.1
 
-  net_optimizer:
-    lr: 1e-5 # Got infinite loss with 0.001
-
 callbacks:
   log_val_patch:
     patch_dir: ${data.hdf5_dir}
@@ -38,7 +35,7 @@ callbacks:
 
 trainer:
   min_epochs: 1
-  max_epochs: 5
+  max_epochs: 10
 
 logger:
   wandb:
