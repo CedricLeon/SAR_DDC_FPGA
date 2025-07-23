@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Tuple
 
 import numpy as np
+import torch
 from scipy import signal
 
 
@@ -200,7 +201,14 @@ def preserve_point_like_scatterers(
     return np.stack((real2_proc, imag2_proc), axis=2), scatterer_mask
 
 
-def normalize_image(
+def normalize_tensor(
+    tensor: torch.Tensor, min_max: Tuple[float, float]
+) -> torch.Tensor:
+    tensor = torch.log(tensor + 1e-2)
+    return (tensor - min_max[0]) / (min_max[1] - min_max[0])
+
+
+def normalize_ndarray(
     im: np.ndarray,
     log_base: str,
     min_max: Tuple[float, float],
@@ -298,7 +306,7 @@ def preprocess_TSX_image(
         image, _ = preserve_point_like_scatterers(image, preserve_threshold)
 
     if log_base is not None:
-        image = normalize_image(image, log_base, min_max, clip)
+        image = normalize_ndarray(image, log_base, min_max, clip)
 
     return extract_patches(image, patch_size, stride=patch_size)
 
@@ -328,5 +336,5 @@ def preprocess_TSX_patch(
     if preserve_threshold is not None:
         patch, _ = preserve_point_like_scatterers(patch, preserve_threshold)
     if log_base is not None:
-        patch = normalize_image(patch, log_base, min_max, clip)
+        patch = normalize_ndarray(patch, log_base, min_max, clip)
     return patch

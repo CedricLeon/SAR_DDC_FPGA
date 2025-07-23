@@ -114,23 +114,20 @@ class TSXSSCDataModule(LightningDataModule):
             # Create training dataset
             self.data_train = TSXSSCDataset(
                 self.train_path,
-                must_normalize=self.must_normalize,
-                transform=self.transform,
+                self.hdf5_metadata["normalize"],
             )
 
             # Create validation dataset
             self.data_val = TSXSSCDataset(
                 self.val_path,
-                must_normalize=self.must_normalize,
-                transform=self.transform,
+                self.hdf5_metadata["normalize"],
             )
 
         if stage == "test" or stage is None:
             # Create test dataset
             self.data_test = TSXSSCDataset(
                 self.test_path,
-                must_normalize=self.must_normalize,
-                transform=self.transform,
+                self.hdf5_metadata["normalize"],
             )
 
     def train_dataloader(self):

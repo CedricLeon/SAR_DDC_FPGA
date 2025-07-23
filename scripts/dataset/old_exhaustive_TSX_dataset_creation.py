@@ -49,7 +49,7 @@ from src.utils.pylogger import RankedLogger
 from src.utils.sar_utils import (
     convert_to_db,
     extract_patches,
-    normalize_image,
+    normalize_ndarray,
     preserve_point_like_scatterers,
 )
 
@@ -286,19 +286,12 @@ def preprocess_tsx_image(
         log.info(
             f"  5. Normalizing data using {norm_mode} log mode with {percentiles[0]}-{percentiles[1]}% range..."
         )
-        tsx_data_normalized = normalize_image(
+        tsx_data_normalized = normalize_ndarray(
             tsx_data_preserved,
             log_base=norm_mode,
-            percentiles=percentiles,
+            min_max=percentiles,
             clip=clip,
         )
-        # tsx_data_normalized = normalize_data(
-        #     tsx_data_preserved,
-        #     norm_mode=norm_mode,
-        #     norm_minmax_val=norm_minmax_val,
-        #     clip=clip,
-        #     verbose=verbose,
-        # )
         norm_stats_real = compute_statistics(tsx_data_normalized[..., 0])
         norm_stats_imag = compute_statistics(tsx_data_normalized[..., 1])
         # Combine the statistics for real and imaginary parts

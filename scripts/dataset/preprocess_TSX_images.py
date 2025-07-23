@@ -19,7 +19,7 @@ from src.utils.constants import amp_max, amp_min
 from src.utils.sar_utils import (
     extract_patches,
     load_and_symmetrize_TSX_image,
-    normalize_image,
+    normalize_ndarray,
     preprocess_TSX_patch,
 )
 
@@ -176,7 +176,7 @@ def process_dataset(
             )
             if args.normalize:
                 image = np.square(image)
-                image = normalize_image(
+                image = normalize_ndarray(
                     image,
                     log_base="nat",
                     min_max=(amp_min, amp_max),
@@ -249,7 +249,7 @@ def process_dataset(
             )
             if args.normalize:
                 image = np.square(image)
-                image = normalize_image(
+                image = normalize_ndarray(
                     image,
                     log_base="nat",
                     min_max=(amp_min, amp_max),
