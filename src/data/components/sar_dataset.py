@@ -63,9 +63,8 @@ class TSXSSCDataset(Dataset):
         with h5py.File(self.hdf5_path, "r") as f:
             patch = torch.from_numpy(f["patches"][idx]).float()
 
-            if self.normalize:
+            if not self.normalize:
                 patch = torch.square(patch)
-                patch = torch.log(patch)
                 patch = normalize_tensor(patch, min_max=(amp_min, amp_max))
 
             return {  # Add channel dimension
