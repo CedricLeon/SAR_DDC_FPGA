@@ -3,7 +3,7 @@ _target_: src.models.sar_ddc_module.SARDDCModule
 net:
   _target_: src.models.components.sar_hyperprior.ResidualScaleHyperprior
   nb_channels_main: 128  # Number of channels for main transform
-  DPU_compile: False # Always false, only set when quantizing the netwrk with Vitis-AI
+  # DPU_compile: False # Always false, only set when quantizing the netwrk with Vitis-AI
   # No need to specify th number of channel of the hyperprior, by the model architecture it has to be twice the number of channels of the main transform
 
 criterion:
