@@ -1,0 +1,106 @@
+from typing import Any, Mapping
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from lightning import Callback, LightningModule, Trainer
+from pytorch_lightning.loggers import WandbLogger
+
+
+class MonitorValReconstruction(Callback):
+    def __init__(
+        self,
+        log_every_n_epochs: int,
+        num_images: int = 3,
+    ):
+        super().__init__()
+        self.log_every_n_epochs = log_every_n_epochs
+        self.num_images = num_images
+
+    def on_validation_batch_end(
+        self,
+        trainer: Trainer,
+        pl_module: LightningModule,
+        outputs: torch.Tensor | Mapping[str, Any] | None,
+        batch: Any,
+        batch_idx: int,
+        dataloader_idx: int = 0,
+    ) -> None:
+        """Log a few validation reconstruction examples."""
+        # Only log on specified epochs and for the first batch
+        if (trainer.current_epoch % self.log_every_n_epochs != 0) or batch_idx > 0:
+            return
+
+        print(
+            f"Logging validation reconstruction for epoch {trainer.current_epoch}, batch {batch_idx}."
+        )
+
+        # Get the first few images from the batch
+        num_images_to_show = min(self.num_images, batch["real"].shape[0])
+
+        # Prepare input and target deterministically (always use real as input, imag as target)
+        input = batch["real"]
+        target = batch["imag"]
+
+        # Forward pass to get reconstructions
+        with torch.no_grad():
+            out_criterion, reconstructions = pl_module._model_forward(input, target)
+
+        # Create the visualization
+        fig, axes = plt.subplots(
+            3, num_images_to_show, figsize=(4 * num_images_to_show, 12)
+        )
+        if num_images_to_show == 1:
+            axes = axes.reshape(-1, 1)
+
+        for i in range(num_images_to_show):
+            # Get individual images and convert to numpy
+            real_i = batch["real"][i, 0].cpu().numpy()  # Remove channel dim
+            imag_i = batch["imag"][i, 0].cpu().numpy()  # Remove channel dim
+            input_reflectivity_i = real_i + imag_i  # Sum for input reflectivity
+            reconstruction_i = reconstructions[i, 0].cpu().numpy()  # Remove channel dim
+
+            # Row 0: Input reflectivity
+            axes[0, i].imshow(input_reflectivity_i, cmap="gray")
+            axes[0, i].axis("off")
+            # Row 1: Reconstruction
+            axes[1, i].imshow(reconstruction_i, cmap="gray")
+            axes[1, i].axis("off")
+            # Row 2: Residuals (difference)
+            residuals = np.abs(input_reflectivity_i - reconstruction_i)
+            axes[2, i].imshow(residuals, cmap="gray")
+            axes[2, i].axis("off")
+
+            # Add row labels (only for first column)
+            if i == 0:
+                axes[0, 0].set_ylabel(
+                    "Input (Real)", fontsize=12, rotation=90, labelpad=15
+                )
+                axes[1, 0].set_ylabel(
+                    "Reconstruction", fontsize=12, rotation=90, labelpad=15
+                )
+                axes[2, 0].set_ylabel(
+                    "Residuals", fontsize=12, rotation=90, labelpad=15
+                )
+
+        # Add overall title with metrics
+        fig.suptitle(
+            f"Validation Epoch {trainer.current_epoch} - "
+            f"Loss: {out_criterion['loss']:.3f}, "
+            f"MSE: {out_criterion['mse']:.4f}, "
+            f"PSNR: {out_criterion['psnr']:.2f}dB"
+            f"\nMetrics computed between reconstructions (real) and target (imag)"
+        )
+
+        plt.tight_layout()
+
+        pl_module.logger.experiment.log(
+            {
+                "val_reconstructions": fig,
+                "val_batch/loss": out_criterion["loss"],
+                "val_batch/mse": out_criterion["mse"],
+                "val_batch/psnr": out_criterion["psnr"],
+            }
+        )
+
+        plt.close(fig)

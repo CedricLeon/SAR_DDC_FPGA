@@ -24,12 +24,8 @@ model:
     lmbda: 0.1
 
 callbacks:
-  log_val_patch:
+  compare_recon_to_gt:
     patch_dir: ${data.hdf5_dir}
-  log_val_batch_plot:
-    log_every_n_epochs: 1
-    num_images: 3
-    add_residuals: True
   early_stopping:
     verbose: True
 
