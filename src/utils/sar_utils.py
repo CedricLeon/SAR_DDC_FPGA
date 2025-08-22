@@ -208,6 +208,13 @@ def normalize_tensor(
     return (tensor - min_max[0]) / (min_max[1] - min_max[0])
 
 
+def denormalize_tensor(
+    tensor: torch.Tensor, min_max: Tuple[float, float]
+) -> torch.Tensor:
+    """Denormalize a tensor using the provided min_max values."""
+    return torch.exp(tensor * (min_max[1] - min_max[0]) + min_max[0])
+
+
 def normalize_ndarray(
     im: np.ndarray,
     log_base: str,
