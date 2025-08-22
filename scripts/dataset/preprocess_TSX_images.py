@@ -1,5 +1,13 @@
-"""This file creates a pre-processed dataset made from the orgiginal TSX COS files.
-No normalization is done, simply loading, the images, symmetrizing them (Zero-Doppler centering), patchification and splitting into train/val/test sets."""
+"""
+This script creates a pre-processed dataset from the orgiginal TSX COS files.
+
+The dataset is created using spatial splits, a file stating which image belongs to which split is required (see `--split-file` argument). The size of the patches can be specified, default is 256x256. The seed can be set for reproducibility, default is 42.
+
+Regarding normalization, none is made by default, i.e., the only processing done is the symmetrization of the images (Zero-Doppler centering) and the patchification. If the `--normalize` flag is set, the images are squared, moved to a natural log-scale, and normalized using the global minimum and maximum of the amplitude of the images (computed in a different script, these values should remain FIXED).
+
+Example usage (from repo root):
+$ python scripts/dataset/preprocess_TSX_images.py --input-dir data/TSX_cos_files --output-dir data/processed_hdf5/ --split-file data/TSX_cos_files/spatial_splits_1.json --normalize
+"""
 
 import argparse
 import gc
@@ -116,7 +124,7 @@ def add_patch_for_persistent_visualization(filenames, save_dir):
         PATCH_SIZE,
         preserve_threshold=False,
         log_base="nat",
-        min_max=(amp_min, amp_max),
+        min_max=(2 * amp_min, 2 * amp_max),
         clip=False,
         logger=None,
     )
@@ -179,7 +187,7 @@ def process_dataset(
                 image = normalize_ndarray(
                     image,
                     log_base="nat",
-                    min_max=(amp_min, amp_max),
+                    min_max=(2 * amp_min, 2 * amp_max),
                     clip=False,
                 )
             patches = extract_patches(image, args.patch_size, stride=args.patch_size)
@@ -252,7 +260,7 @@ def process_dataset(
                 image = normalize_ndarray(
                     image,
                     log_base="nat",
-                    min_max=(amp_min, amp_max),
+                    min_max=(2 * amp_min, 2 * amp_max),
                     clip=False,
                 )
             patches = extract_patches(image, args.patch_size, stride=args.patch_size)
@@ -289,8 +297,8 @@ def main():
     # ----- Setup logging -----
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
-    split_file = Path(args.split_file).name
-    dataset_name = f"TSX_preprocessed_{split_file}_{args.patch_size}x{args.patch_size}{'_normalized' if args.normalize else ''}"
+    split_file = Path(args.split_file)
+    dataset_name = f"TSX_preprocessed_{split_file.stem}_{args.patch_size}x{args.patch_size}{'_normalized' if args.normalize else ''}"
     setup_logging(output_dir, dataset_name)
 
     # ----- Validate script arguments -----
