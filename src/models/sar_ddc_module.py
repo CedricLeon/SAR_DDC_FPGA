@@ -109,6 +109,14 @@ class SARDDCModule(lightning.LightningModule):
     def _model_forward(
         self, input: Tensor, target: Tensor
     ) -> Tuple[Dict[str, Any], Tensor]:
+        """Forward pass through the model and criterion computation.
+        Args:
+            input: Input tensor (squared real or imaginary part) [batch_size, 1, height, width]
+            target: Target tensor (squared real or imaginary part) [batch_size, 1, height, width]
+
+        Returns:
+            (out_criterion, reconstruction): A tuple with a dictionary containing loss and metrics, and the reconstructed output tensor.
+        """
         output = self.forward(input)
         out_criterion = self.criterion(output, target)
         return out_criterion, output["x_hat"]
