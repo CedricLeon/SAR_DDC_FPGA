@@ -16,8 +16,6 @@ tags: ["sar_hyperprior", "tsx_ssc"]
 
 data:
   hdf5_dir: ${paths.data_dir}processed_hdf5/spatialsplit5_nopres_norm0nat
-  log_mode: "natural"
-  must_normalize: null # 0 <=> true min-max, 1 <=> min-max with 1% and 99% percentiles, etc.
   batch_size: 16
   num_workers: 11
 

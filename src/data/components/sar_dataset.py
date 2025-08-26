@@ -12,7 +12,6 @@ import torch
 from torch.utils.data import Dataset
 
 from src.utils.constants import amp_max, amp_min
-from src.utils.sar_utils import normalize_tensor
 
 
 class TSXSSCDataset(Dataset):
@@ -65,7 +64,8 @@ class TSXSSCDataset(Dataset):
 
             if not self.normalize:
                 patch = torch.square(patch)
-                patch = normalize_tensor(patch, min_max=(amp_min, amp_max))
+                patch = torch.log(patch + 1e-2)
+                patch = (patch - amp_max) / (amp_min - amp_max)
 
             return {  # Add channel dimension
                 "real": patch[:, :, 0].unsqueeze(0),

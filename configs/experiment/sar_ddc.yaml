@@ -12,9 +12,7 @@ defaults:
   - override /hydra: default.yaml
 
 data:
-  hdf5_dir: ${paths.data_dir}processed_hdf5/spatialsplit5_nopres_normMERLINnat
-  log_mode: "natural"
-  must_normalize: null # 0 <=> true min-max, 1 <=> min-max with 1% and 99% percentiles, etc.
+  hdf5_dir: ${paths.data_dir}processed_hdf5/TSX_preprocessed_spatial_splits_5_256x256_normalized
   batch_size: 16
   num_workers: 11
 

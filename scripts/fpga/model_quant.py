@@ -93,7 +93,7 @@ def load_data(
     data_dir: Path,
     **kwargs,
 ):
-    dataset = TSXSSCDataset(data_dir / "val.h5", must_normalize=None, transform=None)
+    dataset = TSXSSCDataset(data_dir / "val.h5", transform=None)
     if args.subset_len:  # random sampling method
         assert args.subset_len <= len(dataset)
         dataset = torch.utils.data.Subset(

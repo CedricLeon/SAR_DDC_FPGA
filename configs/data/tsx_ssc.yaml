@@ -1,7 +1,6 @@
 _target_: src.data.sar_datamodule.TSXSSCDataModule
 
 hdf5_dir: ${paths.data_dir}processed_hdf5/random_split_preserved_60dB
-must_normalize: null # "None" => no normalization
 batch_size: 16
 num_workers: 8
 pin_memory: True
