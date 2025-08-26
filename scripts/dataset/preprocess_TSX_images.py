@@ -138,7 +138,7 @@ def add_patch_for_persistent_visualization(filenames, save_dir):
 
 def add_metadata_to_dataset(
     dset: h5py.Dataset,
-    nb_total_patches: int,
+    nb_patches: int,
     patches_per_image: dict[str, int],
 ):
     """Add metadata to the shuffled dataset."""
@@ -147,7 +147,7 @@ def add_metadata_to_dataset(
     dset.attrs["split_file"] = args.split_file
     dset.attrs["normalize"] = args.normalize
     dset.attrs["patch_size"] = args.patch_size
-    dset.attrs["nb_patches"] = nb_total_patches
+    dset.attrs["nb_patches"] = nb_patches
     dset.attrs["patches_per_image"] = "_".join(
         f"{name}-{count}" for name, count in patches_per_image.items()
     )  # e.g., "Roma-123_Geneva-456"
@@ -163,6 +163,7 @@ def process_dataset(
     log.info(
         f"{Colors.YELLOW}Processing training split with {len(filenames['train'])} files.{Colors.RESET}"
     )
+    nb_patches_split = {}
     with h5py.File(output_dir / "unshuffled.h5", "w") as f:
         hdf5_dataset = f.create_dataset(
             "patches",
@@ -205,18 +206,23 @@ def process_dataset(
     log.info("Shuffling training patches...")
     with h5py.File(output_dir / "unshuffled.h5", "r") as f:
         patches_dataset = f["patches"]
-        nb_total_patches = patches_dataset.shape[0]
+        nb_patches_split["training"] = patches_dataset.shape[0]
         # Create a random permutation of indices
-        indices = np.random.permutation(nb_total_patches)
+        indices = np.random.permutation(nb_patches_split["training"])
 
         with h5py.File(output_dir / "train.h5", "w") as out_f:
             shuffled_dataset = out_f.create_dataset(
                 "patches",
-                shape=(nb_total_patches, args.patch_size, args.patch_size, 2),
+                shape=(
+                    nb_patches_split["training"],
+                    args.patch_size,
+                    args.patch_size,
+                    2,
+                ),
                 dtype="float32",
             )
             chunk_size = 1024
-            for i in range(0, nb_total_patches, chunk_size):
+            for i in range(0, nb_patches_split["training"], chunk_size):
                 batch_indices = indices[i : i + chunk_size]
                 # Read patches in original order
                 tmp_data = patches_dataset[
@@ -231,11 +237,11 @@ def process_dataset(
 
             add_metadata_to_dataset(
                 shuffled_dataset,
-                nb_total_patches,
+                nb_patches_split["training"],
                 patches_per_image,
             )
         log.info(
-            f"Saved {nb_total_patches} shuffled training patches to {output_dir / 'train.h5'}"
+            f"Saved {nb_patches_split['training']} shuffled training patches to {output_dir / 'train.h5'}"
         )
 
     (output_dir / "unshuffled.h5").unlink(missing_ok=True)
@@ -272,9 +278,10 @@ def process_dataset(
             del patches
 
         patches = np.concatenate(all_patches, axis=0)
+        nb_patches_split[split] = patches.shape[0]
         del all_patches
 
-        patches = patches[np.random.permutation(patches.shape[0])]
+        patches = patches[np.random.permutation(nb_patches_split[split])]
         with h5py.File(output_dir / f"{split}.h5", "w") as f:
             dset = f.create_dataset(
                 "patches",
@@ -284,13 +291,19 @@ def process_dataset(
             )
             add_metadata_to_dataset(
                 dset,
-                patches.shape[0],
+                nb_patches_split[split],
                 patches_per_image,
             )
         del patches
         log.info(
-            f"Saved {split} split with {nb_total_patches} patches to {output_dir / f'{split}.h5'}"
+            f"Saved {split} split with {nb_patches_split[split]} patches to {output_dir / f'{split}.h5'}"
         )
+        total_nb_patches = sum(nb_patches_split.values())
+        log.info(f"In total {total_nb_patches} patches processed:")
+        for split in nb_patches_split.keys():
+            log.info(
+                f"  - {nb_patches_split[split] / total_nb_patches * 100:.2f}% {split}"
+            )
 
 
 def main():
