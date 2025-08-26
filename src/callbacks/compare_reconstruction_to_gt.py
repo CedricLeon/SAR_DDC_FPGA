@@ -1,4 +1,3 @@
-import os
 import warnings
 from pathlib import Path
 from typing import Any, Mapping
@@ -7,7 +6,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from lightning import Callback, LightningModule, Trainer
-from pytorch_lightning.loggers import WandbLogger
 
 from src.utils.constants import amp_max, amp_min
 from src.utils.sar_utils import denormalize_tensor
@@ -40,11 +38,9 @@ class CompareReconstructionToGT(Callback):
 
         # Read and prepare patch data as numpy arrays for visualization
         patch_data = np.load(self.patch_path)  # [H, W, 2]
-        self.original_real = patch_data[:, :, 0]  # [H, W] numpy
-        self.original_imag = patch_data[:, :, 1]  # [H, W] numpy
-        self.original_reflectivity = (
-            self.original_real + self.original_imag
-        )  # [H, W] numpy
+        self.original_real = patch_data[:, :, 0]
+        self.original_imag = patch_data[:, :, 1]
+        self.original_reflectivity = np.sqrt(self.original_real + self.original_imag)
 
         # Store as torch tensors on device
         self.patch_tensor = (
@@ -124,6 +120,10 @@ class CompareReconstructionToGT(Callback):
         recon_full = torch.sqrt(
             0.5 * (torch.square(recon_real) + torch.square(recon_imag))
         )
+
+        if torch.isnan(recon_full).any():
+            raise ValueError("NaNs found in the denormed amplitude reconstruction.")
+
         # Log-scale, then compute statistics for clipping
         recon_log = torch.log(recon_full + 1e-2)
         # Clip using log-domain statistics and normalize
@@ -132,6 +132,11 @@ class CompareReconstructionToGT(Callback):
             recon_log.mean() + 3 * recon_log.std(),
         )
         recon = (recon - recon.min()) / (recon.max() - recon.min())
+
+        # Check NaNs
+        if torch.isnan(recon).any():
+            raise ValueError("NaNs found in the normalized reconstruction.")
+
         # Bring to numpy for visualization
         reconstruction = recon.squeeze().cpu().numpy()
 
@@ -139,21 +144,24 @@ class CompareReconstructionToGT(Callback):
         fig, axes = plt.subplots(2, 3, figsize=(15, 10))
 
         # Row 1: Images
-        # Original reflectivity (sum of real + imag)
-        axes[0, 0].imshow(self.original_reflectivity, cmap="gray")
-        axes[0, 0].set_title("Original Reflectivity")
+        # Original amplitude (sum of real + imag)
+        im0 = axes[0, 0].imshow(self.original_reflectivity, cmap="gray")
+        axes[0, 0].set_title("Original Amplitude")
         axes[0, 0].axis("off")
+        fig.colorbar(im0, ax=axes[0, 0], shrink=0.8)
 
         # Reconstruction
-        axes[0, 1].imshow(reconstruction, cmap="gray")
-        axes[0, 1].set_title("Reconstruction")
+        im1 = axes[0, 1].imshow(reconstruction, cmap="gray")
+        axes[0, 1].set_title("Recon amp, clipped and normalized")
         axes[0, 1].axis("off")
+        fig.colorbar(im1, ax=axes[0, 1], shrink=0.8)
 
         # MERLIN GT (if available)
         if self.merlin_gt is not None:
-            axes[0, 2].imshow(self.merlin_gt, cmap="gray")
-            axes[0, 2].set_title("MERLIN GT")
+            im2 = axes[0, 2].imshow(self.merlin_gt, cmap="gray")
+            axes[0, 2].set_title("MERLIN GT amp")
             axes[0, 2].axis("off")
+            fig.colorbar(im2, ax=axes[0, 2], shrink=0.8)
         else:
             axes[0, 2].text(
                 0.5,
@@ -171,21 +179,15 @@ class CompareReconstructionToGT(Callback):
             self.original_reflectivity.flatten(), bins=50, alpha=0.7, color="blue"
         )
         axes[1, 0].set_title("Original Histogram")
-        axes[1, 0].set_xlabel("Intensity")
-        axes[1, 0].set_ylabel("Frequency")
 
         # Reconstruction histogram
-        axes[1, 1].hist(reconstruction.flatten(), bins=50, alpha=0.7, color="orange")
+        axes[1, 1].hist(reconstruction.flatten(), bins=50, alpha=0.7, color="blue")
         axes[1, 1].set_title("Reconstruction Histogram")
-        axes[1, 1].set_xlabel("Intensity")
-        axes[1, 1].set_ylabel("Frequency")
 
         # MERLIN GT histogram (if available)
         if self.merlin_gt is not None:
-            axes[1, 2].hist(self.merlin_gt.flatten(), bins=50, alpha=0.7, color="green")
+            axes[1, 2].hist(self.merlin_gt.flatten(), bins=50, alpha=0.7, color="blue")
             axes[1, 2].set_title("MERLIN GT Histogram")
-            axes[1, 2].set_xlabel("Intensity")
-            axes[1, 2].set_ylabel("Frequency")
         else:
             axes[1, 2].text(
                 0.5,

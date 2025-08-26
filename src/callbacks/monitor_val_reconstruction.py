@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from lightning import Callback, LightningModule, Trainer
-from pytorch_lightning.loggers import WandbLogger
 
 
 class MonitorValReconstruction(Callback):
@@ -61,27 +60,37 @@ class MonitorValReconstruction(Callback):
             reconstruction_i = reconstructions[i, 0].cpu().numpy()  # Remove channel dim
 
             # Row 0: Input reflectivity
-            axes[0, i].imshow(input_reflectivity_i, cmap="gray")
+            im0 = axes[0, i].imshow(input_reflectivity_i, cmap="gray")
             axes[0, i].axis("off")
+            fig.colorbar(im0, ax=axes[0, i], shrink=0.6)
             # Row 1: Reconstruction
-            axes[1, i].imshow(reconstruction_i, cmap="gray")
+            im1 = axes[1, i].imshow(reconstruction_i, cmap="gray")
             axes[1, i].axis("off")
+            fig.colorbar(im1, ax=axes[1, i], shrink=0.6)
             # Row 2: Residuals (difference)
             residuals = np.abs(input_reflectivity_i - reconstruction_i)
-            axes[2, i].imshow(residuals, cmap="gray")
+            im2 = axes[2, i].imshow(residuals, cmap="gray")
             axes[2, i].axis("off")
+            fig.colorbar(im2, ax=axes[2, i], shrink=0.6)
 
-            # Add row labels (only for first column)
-            if i == 0:
-                axes[0, 0].set_ylabel(
-                    "Input (Real)", fontsize=12, rotation=90, labelpad=15
-                )
-                axes[1, 0].set_ylabel(
-                    "Reconstruction", fontsize=12, rotation=90, labelpad=15
-                )
-                axes[2, 0].set_ylabel(
-                    "Residuals", fontsize=12, rotation=90, labelpad=15
-                )
+        # Add Row titles on the left side
+        row_titles = [
+            "Input Reflectivity\n(Real + Imag)",
+            "Reconstruction",
+            "Residuals",
+        ]
+        for i, title in enumerate(row_titles):
+            axes[i, 0].text(
+                -0.1,
+                0.5,
+                title,
+                transform=axes[i, 0].transAxes,
+                fontsize=12,
+                rotation=90,
+                verticalalignment="center",
+                horizontalalignment="right",
+                weight="bold",
+            )
 
         # Add overall title with metrics
         fig.suptitle(
