@@ -72,7 +72,7 @@ class CompareReconstructionToGT(Callback):
 
             print(f"Loaded MERLIN GT from {self.merlin_gt_path}.")
             print(
-                f"MERLIN AMPLITUDE statistics: min={self.A_merlin.min():.4f}, max={self.A_merlin.max():.4f}, mean={self.A_merlin.mean():.4f}, std={self.A_merlin.std():.4f}. Is NaN={np.isnan(self.A_merlin).any()}."
+                f"MERLIN LINEAR-AMPLITUDE statistics: min={self.A_merlin.min():.4f}, max={self.A_merlin.max():.4f}, mean={self.A_merlin.mean():.4f}, std={self.A_merlin.std():.4f}. Is NaN={np.isnan(self.A_merlin).any()}."
             )
             print(
                 f"MERLIN LOG-INTENSITY statistics: min={self.logI_merlin.min():.4f}, max={self.logI_merlin.max():.4f}, mean={self.logI_merlin.mean():.4f}, std={self.logI_merlin.std():.4f}. Is NaN={np.isnan(self.logI_merlin).any()}."
@@ -84,7 +84,8 @@ class CompareReconstructionToGT(Callback):
             warnings.warn(
                 f"No MERLIN Ground Truth found in {self.patch_dir}. Skipping GT logging."
             )
-            self.merlin_gt = None
+            self.A_merlin = None
+            self.logI_merlin = None
         elif (
             self.merlin_gt_path.name.split("_")[3] != self.patch_path.name.split("_")[1]
         ):
@@ -92,6 +93,11 @@ class CompareReconstructionToGT(Callback):
                 f"Patch and MERLIN GT filenames do not match: {self.patch_path.name} vs {self.merlin_gt_path.name}. "
                 "This may lead to incorrect logging."
             )
+
+    def _clip_and_minmax_normalize(self, img: np.ndarray) -> np.ndarray:
+        img = img.clip(img.mean() - 3 * img.std(), img.mean() + 3 * img.std())
+        img = (img - img.min()) / (img.max() - img.min())
+        return img
 
     def on_validation_batch_end(
         self,
@@ -166,7 +172,7 @@ class CompareReconstructionToGT(Callback):
         fig.colorbar(im1, ax=axes[0, 1], shrink=0.8)
 
         # MERLIN GT (if available)
-        if self.merlin_gt is not None:
+        if self.logI_merlin is not None:
             im2 = axes[0, 2].imshow(self.logI_merlin, cmap="gray")
             axes[0, 2].set_title("MERLIN GT amp")
             axes[0, 2].axis("off")
@@ -192,7 +198,7 @@ class CompareReconstructionToGT(Callback):
         axes[1, 1].set_title("Reconstruction Histogram")
 
         # MERLIN GT histogram (if available)
-        if self.merlin_gt is not None:
+        if self.logI_merlin is not None:
             axes[1, 2].hist(
                 self.logI_merlin.flatten(), bins=50, alpha=0.7, color="blue"
             )
@@ -214,7 +220,7 @@ class CompareReconstructionToGT(Callback):
         ) / 2
         bpp = (out_criterion_real["bpp"].item() + out_criterion_imag["bpp"].item()) / 2
         # Compute MSE, PSNR between reconstructions and MERLIN GT
-        if self.merlin_gt is not None:
+        if self.logI_merlin is not None:
             logI_diff = logI_recon - self.logI_merlin
             mse = np.mean((logI_diff) ** 2)
             peak = self.logI_merlin.max()  # Should be amp_max - amp_min?
