@@ -1,12 +1,11 @@
 """
-This script creates a pre-processed dataset from the orgiginal TSX COS files.
+This script creates a pre-processed dataset from the original TSX COS files.
 
 The dataset is created using spatial splits, a file stating which image belongs to which split is required (see `--split-file` argument). The size of the patches can be specified, default is 256x256. The seed can be set for reproducibility, default is 42.
-
-Regarding normalization, none is made by default, i.e., the only processing done is the symmetrization of the images (Zero-Doppler centering) and the patchification. If the `--normalize` flag is set, the images are squared, moved to a natural log-scale, and normalized using the global minimum and maximum of the amplitude of the images (computed in a different script, these values should remain FIXED).
+NO NORMALIZATION IS DONE.
 
 Example usage (from repo root):
-$ python scripts/dataset/preprocess_TSX_images.py --input-dir data/TSX_cos_files --output-dir data/processed_hdf5/ --split-file data/TSX_cos_files/spatial_splits_1.json --normalize
+$ python scripts/dataset/preprocess_TSX_images.py --input-dir data/TSX_cos_files --output-dir data/processed_hdf5/ --split-file data/TSX_cos_files/spatial_splits_5.json
 """
 
 import argparse
@@ -26,9 +25,8 @@ from src.utils.constants import amp_max, amp_min
 # from src.utils.pylogger import RankedLogger
 from src.utils.sar_utils import (
     extract_patches,
-    load_and_symmetrize_TSX_image,
-    normalize_ndarray,
-    preprocess_TSX_patch,
+    load_cosar,
+    symmetrize,
 )
 
 
@@ -56,11 +54,6 @@ parser.add_argument(
     type=str,
     required=True,
     help="Path of the split file (JSON format).",
-)
-parser.add_argument(
-    "--normalize",
-    action="store_true",
-    help="Apply normalization (natural log-scale + min/max using amplitude global minimum/maximum) to the images",
 )
 parser.add_argument(
     "--patch-size",
@@ -112,25 +105,25 @@ def extract_short_name_from_filepath(filepath: Path):
 
 def add_patch_for_persistent_visualization(filenames, save_dir):
     """Preprocess and save a unique, large patch used for visualizing improvments during training."""
-    # Cheery picked the towncenter of Hamburg (ncolumns=14686 nlines=32901)
+    # Cherry picked the towncenter of Hamburg (ncolumns=14686 nlines=32901)
     CROP_COORDINATES = (11000, 8500)
     PATCH_SIZE = (1024, 1024)
     image_path = filenames["val"][0]
     short_name = extract_short_name_from_filepath(image_path)
 
-    patch_np = preprocess_TSX_patch(
-        image_path,
-        CROP_COORDINATES,
-        PATCH_SIZE,
-        preserve_threshold=False,
-        log_base="nat",
-        min_max=(2 * amp_min, 2 * amp_max),
-        clip=False,
-        logger=None,
-    )
+    image = load_cosar(image_path, logger=None)
+    if image is None:
+        raise ValueError(f"Image {image_path} could not be loaded")
+    patch = image[
+        CROP_COORDINATES[0] : CROP_COORDINATES[0] + PATCH_SIZE[0],
+        CROP_COORDINATES[1] : CROP_COORDINATES[1] + PATCH_SIZE[1],
+        :,
+    ]
+    patch = symmetrize(patch)
+    patch = np.square(patch)
 
     patch_path = save_dir / f"val_{short_name}_{PATCH_SIZE[0]}x{PATCH_SIZE[1]}.npy"
-    np.save(patch_path, patch_np)
+    np.save(patch_path, patch)
     log.info(
         f"Successfully saved persistent visualization patch of {short_name} at {patch_path}."
     )
@@ -145,7 +138,6 @@ def add_metadata_to_dataset(
     dset.attrs["creation_date"] = datetime.now().isoformat()
     dset.attrs["seed"] = args.seed
     dset.attrs["split_file"] = args.split_file
-    dset.attrs["normalize"] = args.normalize
     dset.attrs["patch_size"] = args.patch_size
     dset.attrs["nb_patches"] = nb_patches
     dset.attrs["patches_per_image"] = "_".join(
@@ -179,18 +171,11 @@ def process_dataset(
             log.info(
                 f" - {Colors.BLUE}Processing {i + 1}/{len(filenames['train'])}: {short_name}{Colors.RESET}"
             )
-            image = load_and_symmetrize_TSX_image(
-                image_path=file_path,
-                logger=log,
-            )
-            if args.normalize:
-                image = np.square(image)
-                image = normalize_ndarray(
-                    image,
-                    log_base="nat",
-                    min_max=(2 * amp_min, 2 * amp_max),
-                    clip=False,
-                )
+            # Load, symmetrize, patchify
+            image = load_cosar(file_path, logger=log)
+            if image is None:
+                raise ValueError(f"Failed to load {file_path}")
+            image = symmetrize(image)
             patches = extract_patches(image, args.patch_size, stride=args.patch_size)
 
             nb_patches = patches.shape[0]
@@ -257,18 +242,11 @@ def process_dataset(
             short_name = extract_short_name_from_filepath(file_path)
             log.info(f"  - {Colors.BLUE}Processing {short_name}{Colors.RESET}")
 
-            image = load_and_symmetrize_TSX_image(
-                image_path=file_path,
-                logger=log,
-            )
-            if args.normalize:
-                image = np.square(image)
-                image = normalize_ndarray(
-                    image,
-                    log_base="nat",
-                    min_max=(2 * amp_min, 2 * amp_max),
-                    clip=False,
-                )
+            # Load, symmetrize, patchify
+            image = load_cosar(file_path, logger=log)
+            if image is None:
+                raise ValueError(f"Failed to load {file_path}")
+            image = symmetrize(image)
             patches = extract_patches(image, args.patch_size, stride=args.patch_size)
 
             nb_patches = patches.shape[0]
@@ -307,21 +285,13 @@ def process_dataset(
 
 
 def main():
-    # ----- Disgusting warning message -----
-    if args.normalize:
-        # @TODO: Once happy with the workflow, remove the normalize feature
-        print(
-            f"{Colors.RED}Normalize is set to true, this option is deprecated, prefer doing that on __getitem__()!{Colors.RESET}"
-        )
-        raise ValueError(
-            "Normalization is deprecated, prefer doing that on __getitem__()!"
-        )
-
     # ----- Setup logging -----
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
     split_file = Path(args.split_file)
-    dataset_name = f"TSX_preprocessed_{split_file.stem}_{args.patch_size}x{args.patch_size}{'_normalized' if args.normalize else ''}"
+    dataset_name = (
+        f"TSX_preprocessed_{split_file.stem}_{args.patch_size}x{args.patch_size}"
+    )
     setup_logging(output_dir, dataset_name)
 
     # ----- Validate script arguments -----
@@ -336,7 +306,6 @@ def main():
     log.info(f"  Output directory: {args.output_dir}")
     log.info(f"  Split file: {args.split_file}")
     log.info(f"  Patch size: {args.patch_size}x{args.patch_size}")
-    log.info(f"  Normalize: {args.normalize}")
     log.info(f"  Seed: {args.seed}")
     log.info("")
 
@@ -371,7 +340,7 @@ def main():
     log.info(
         f"{Colors.GREEN}Starting the creation of the dataset {dataset_name} at {start_time}{Colors.RESET}",
     )
-    add_patch_for_persistent_visualization(filenames, output_dir / dataset_name)
+    # add_patch_for_persistent_visualization(filenames, output_dir / dataset_name)
     process_dataset(
         filenames,
         output_dir / dataset_name,

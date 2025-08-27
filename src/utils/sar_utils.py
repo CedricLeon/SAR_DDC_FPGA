@@ -267,16 +267,6 @@ def extract_patches(
     return np.array(patches)
 
 
-def load_and_symmetrize_TSX_image(
-    image_path: Path, logger: Logger | None = None
-) -> np.ndarray:
-    image = load_cosar(image_path, logger=logger)
-    if image is None:
-        raise ValueError(f"Failed to load {image_path}")
-    # Assure real and imag parts are i.i.d. (MERLIN requirement)
-    return symmetrize(image)
-
-
 def preprocess_TSX_image(
     image_path: Path,
     preserve_threshold: float,

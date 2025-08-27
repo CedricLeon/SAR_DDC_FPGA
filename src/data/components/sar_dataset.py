@@ -24,17 +24,14 @@ class TSXSSCDataset(Dataset):
     def __init__(
         self,
         hdf5_path: Path,
-        normalize: bool,
     ):
         """Initialize the dataset.
 
         Args:
             hdf5_path: Path to the HDF5 file containing pre-processed patches
-            normalize: Boolean indicating whether the data must be normalized when accessed. True
         """
         super().__init__()
         self.hdf5_path = hdf5_path
-        self.normalize = normalize
 
         if not self.hdf5_path.exists():
             raise FileNotFoundError(f"HDF5 file not found: {self.hdf5_path}")
@@ -62,10 +59,9 @@ class TSXSSCDataset(Dataset):
         with h5py.File(self.hdf5_path, "r") as f:
             patch = torch.from_numpy(f["patches"][idx]).float()
 
-            if not self.normalize:
-                patch = torch.square(patch)
-                patch = torch.log(patch + 1e-2)
-                patch = (patch - amp_max) / (amp_min - amp_max)
+            patch = torch.square(patch)
+            patch = torch.log(patch + 1e-2)
+            patch = (patch - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
 
             return {  # Add channel dimension
                 "real": patch[:, :, 0].unsqueeze(0),

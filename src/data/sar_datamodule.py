@@ -109,23 +109,14 @@ class TSXSSCDataModule(LightningDataModule):
         """Data setup per stage - runs on every process."""
         if stage == "fit" or stage is None:
             # Create training dataset
-            self.data_train = TSXSSCDataset(
-                self.train_path,
-                self.hdf5_metadata["normalize"],
-            )
+            self.data_train = TSXSSCDataset(self.train_path)
 
             # Create validation dataset
-            self.data_val = TSXSSCDataset(
-                self.val_path,
-                self.hdf5_metadata["normalize"],
-            )
+            self.data_val = TSXSSCDataset(self.val_path)
 
         if stage == "test" or stage is None:
             # Create test dataset
-            self.data_test = TSXSSCDataset(
-                self.test_path,
-                self.hdf5_metadata["normalize"],
-            )
+            self.data_test = TSXSSCDataset(self.test_path)
 
     def train_dataloader(self):
         """Create train dataloader."""
