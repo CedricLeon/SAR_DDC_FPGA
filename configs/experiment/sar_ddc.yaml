@@ -12,7 +12,7 @@ defaults:
   - override /hydra: default.yaml
 
 data:
-  hdf5_dir: ${paths.data_dir}processed_hdf5/TSX_preprocessed_spatial_splits_5_256x256_normalized
+  # hdf5_dir: ${paths.data_dir}processed_hdf5/TSX_preprocessed_spatial_splits_5_256x256
   batch_size: 32
   num_workers: 11
 

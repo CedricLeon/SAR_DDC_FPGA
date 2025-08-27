@@ -1,6 +1,6 @@
 _target_: src.data.sar_datamodule.TSXSSCDataModule
 
-hdf5_dir: ${paths.data_dir}processed_hdf5/random_split_preserved_60dB
+hdf5_dir: ${paths.data_dir}processed_hdf5/TSX_preprocessed_spatial_splits_5_256x256
 batch_size: 16
 num_workers: 8
 pin_memory: True
