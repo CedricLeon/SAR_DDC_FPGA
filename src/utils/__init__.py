@@ -13,7 +13,6 @@ from src.utils.sar_utils import (
     convert_to_db,
     extract_patches,
     normalize_ndarray,
-    normalize_tensor,
     preserve_point_like_scatterers,
 )
 from src.utils.utils import (
