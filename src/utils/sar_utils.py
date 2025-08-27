@@ -8,6 +8,7 @@ This module provides utility functions for SAR data handling:
 """
 
 import struct
+import warnings
 from logging import Logger
 from pathlib import Path
 from typing import Tuple
@@ -186,6 +187,10 @@ def preserve_point_like_scatterers(
     Returns:
         Tuple of (preserved_patch, scatterer_mask) where preserved_patch is the processed image
     """
+    warnings.warn(
+        "preserve_point_like_scatterers() is not necessary. See MERLIN multi-temporal despeckling paper by Ines Meraoumia in TGRS."
+    )
+
     real2_proc = image2[..., 0].copy()
     imag2_proc = image2[..., 1].copy()
 
@@ -199,20 +204,6 @@ def preserve_point_like_scatterers(
     imag2_proc[scatterer_mask] = scatterer_value
 
     return np.stack((real2_proc, imag2_proc), axis=2), scatterer_mask
-
-
-def normalize_tensor(
-    tensor: torch.Tensor, min_max: Tuple[float, float]
-) -> torch.Tensor:
-    tensor = torch.log(tensor + 1e-2)
-    return (tensor - min_max[0]) / (min_max[1] - min_max[0])
-
-
-def denormalize_tensor(
-    tensor: torch.Tensor, min_max: Tuple[float, float]
-) -> torch.Tensor:
-    """Denormalize a tensor using the provided min_max values."""
-    return torch.exp(tensor * (min_max[1] - min_max[0]) + min_max[0])
 
 
 def normalize_ndarray(

@@ -23,7 +23,7 @@ model:
 
 callbacks:
   compare_recon_to_gt:
-    patch_dir: ${data.hdf5_dir}
+    patch_dir: ${paths.data_dir}
   early_stopping:
     verbose: True
 

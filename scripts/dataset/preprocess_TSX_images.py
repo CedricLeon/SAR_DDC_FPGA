@@ -307,6 +307,16 @@ def process_dataset(
 
 
 def main():
+    # ----- Disgusting warning message -----
+    if args.normalize:
+        # @TODO: Once happy with the workflow, remove the normalize feature
+        print(
+            f"{Colors.RED}Normalize is set to true, this option is deprecated, prefer doing that on __getitem__()!{Colors.RESET}"
+        )
+        raise ValueError(
+            "Normalization is deprecated, prefer doing that on __getitem__()!"
+        )
+
     # ----- Setup logging -----
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
