@@ -323,7 +323,7 @@ class SARDDCModule(lightning.LightningModule):
             # Track how much each loss contributes to total loss = R + lmbda * D
             f"{prefix}/loss": out_criterion["loss"].item(),
             f"{prefix}/distortion": out_criterion["distortion"].item(),
-            f"{prefix}/bpp": out_criterion["bpp_loss"].item(),
+            f"{prefix}/bpp": out_criterion["bpp"].item(),
             f"{prefix}/mse": mse_value.item(),
             f"{prefix}/ssim": out_criterion["ssim"].item(),
             f"{prefix}/ms_ssim": out_criterion["ms_ssim"].item(),
@@ -352,7 +352,7 @@ class SARDDCModule(lightning.LightningModule):
         # # Log anomalies (low PSNR)
         # if self.current_epoch > 0 and psnr_value_1 < self.psnr_ano_threshold:
         #     additional_info = {
-        #         "bpp": out_criterion["bpp_loss"].item(),
+        #         "bpp": out_criterion["bpp"].item(),
         #         "mse": mse_value.item(),
         #         "ssim": out_criterion["ssim"].item(),
         #         "ms_ssim": out_criterion["ms_ssim"].item(),

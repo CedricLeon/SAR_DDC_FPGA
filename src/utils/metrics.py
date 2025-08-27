@@ -11,6 +11,8 @@ from torchmetrics.image import (
     StructuralSimilarityIndexMeasure,
 )
 
+from src.utils.constants import amp_max, amp_min
+
 
 @register_criterion("UnitaryRDLoss")
 class UnitaryRDLoss(nn.Module):
@@ -33,43 +35,43 @@ class UnitaryRDLoss(nn.Module):
         self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=(0.0, 1.0))
 
     def forward(self, output: Dict[str, Tensor], target: Tensor) -> Dict[str, Tensor]:
-        N, _, H, W = target.size()
         out = {}
+        # Compute BPP based on the estimated likelihoods (Average of the estimated number of bits needed to encode each pixel)
+        N, _, H, W = target.size()
         num_pixels = N * H * W
-
-        # Average of the estimated number of bits needed to encode each pixel
-        out["bpp_loss"] = sum(
+        out["bpp"] = sum(
             (torch.log(likelihoods).sum() / (-math.log(2) * num_pixels))
             for likelihoods in output["likelihoods"].values()
         )
-        out["mse"] = self.mse(output["x_hat"], target)
-        out["psnr"] = self.psnr(output["x_hat"], target)
-        out["ssim"] = self.ssim(output["x_hat"], target)
-        out["ms_ssim"] = self.ms_ssim(output["x_hat"], target)
 
-        # # sum over pixel k  0.5*output[k] + exp(input[k] − output[k])
-        # out["merlin"] = torch.mean(
-        #     0.5 * output["x_hat"] + torch.exp(target - output["x_hat"])
+        # Denorm the reconstructions and target before computing losses
+        x_hat = output["x_hat"] * (2 * amp_max - 2 * amp_min) + 2 * amp_min
+        target = target * (2 * amp_max - 2 * amp_min) + 2 * amp_min
+        if torch.isnan(x_hat).any() or torch.isnan(target).any():
+            raise ValueError("NaNs found in denormalized tensors.")
+
+        out["mse"] = self.mse(x_hat, target)
+        out["psnr"] = self.psnr(x_hat, target)
+        out["ssim"] = self.ssim(x_hat, target)
+        out["ms_ssim"] = self.ms_ssim(x_hat, target)
+
+        # ----- MERLIN Loss -----
+        # Classic:      (0.5 * log(output) + input^2 / output)
+        # merlin = 0.5 * torch.log(x_hat + 1e-6) + torch.square(target) / (
+        #     x_hat + 1e-6
         # )
+        # In Log-Scale: (0.5 * output + exp(2*target - output))
+        merlin = 0.5 * x_hat + torch.exp(2 * target - x_hat)
         out["merlin"] = (
-            (0.5 * output["x_hat"] + torch.exp(target - output["x_hat"]))
-            .view(output["x_hat"].shape[0], -1)
-            .sum(dim=1)
-            .mean()
-        )  # sum over pixels for each image, mean across batch
+            merlin.mean()
+        )  # mean over pixels and batch (the loss should not depend on the patch_size)
 
-        if self.metric == "merlin":
-            out["distortion"] = out["merlin"]
-        elif self.metric == "mse":
-            out["distortion"] = out["mse"]
-        elif self.metric == "ssim":
-            out["distortion"] = 1 - out["ssim"]
-        elif self.metric == "ms-ssim":
-            out["distortion"] = 1 - out["ms_ssim"]
-        else:
-            raise NotImplementedError(f"{self.metric} is not supported!")
+        if self.metric == "merlin" or self.metric == "mse":
+            out["distortion"] = out[self.metric]
+        elif self.metric == "ssim" or self.metric == "ms_ssim":
+            out["distortion"] = 1 - out[self.metric]
 
-        out["loss"] = self.lmbda * out["distortion"] + out["bpp_loss"]
+        out["loss"] = self.lmbda * out["distortion"] + out["bpp"]
         return out
 
 

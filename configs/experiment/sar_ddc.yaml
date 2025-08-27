@@ -13,13 +13,13 @@ defaults:
 
 data:
   hdf5_dir: ${paths.data_dir}processed_hdf5/TSX_preprocessed_spatial_splits_5_256x256_normalized
-  batch_size: 16
+  batch_size: 32
   num_workers: 11
 
 model:
   criterion:
     metric: "merlin" # "mse" or "ssim" or "ms_ssim"
-    lmbda: 0.1
+    lmbda: 100
 
 callbacks:
   compare_recon_to_gt:
