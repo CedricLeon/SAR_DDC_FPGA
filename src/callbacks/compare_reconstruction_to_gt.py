@@ -20,6 +20,7 @@ class CompareReconstructionToGT(Callback):
         self.patch_dir = Path(patch_dir) / "visualization"
         self.log_every_n_epochs = log_every_n_epochs
         self.eps = 1e-2
+        self.clip_and_norm = True
 
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
         """Find the large patch and convert it to a torch tensor."""
@@ -42,6 +43,10 @@ class CompareReconstructionToGT(Callback):
         self.A_noisy = np.sqrt(I_noisy)
         self.logI_noisy = np.log(I_noisy + self.eps)
 
+        if self.clip_and_norm:
+            self.A_noisy = self._clip_and_minmax_normalize(self.A_noisy)
+            self.logI_noisy = self._clip_and_minmax_normalize(self.logI_noisy)
+
         # Store as torch tensors on device for forward passes
         patch_tensor = torch.from_numpy(patch_data).to(pl_module.device)
         # Normalize
@@ -61,14 +66,10 @@ class CompareReconstructionToGT(Callback):
             # Normalize the patch: log, clip +- 3 std, and scale (0,1)
             self.A_merlin = merlin_patch_dict["denoised"]["full"]
             self.logI_merlin = np.log(self.A_merlin**2 + self.eps)
-            # --- No normalization for the moment ---
-            # logI_merlin_clip = logI_merlin.clip(
-            #     logI_merlin.mean() - 3 * logI_merlin.std(),
-            #     logI_merlin.mean() + 3 * logI_merlin.std(),
-            # )
-            # self.merlin_gt = (logI_merlin_clip - logI_merlin_clip.min()) / (
-            #     logI_merlin_clip.max() - logI_merlin_clip.min()
-            # )
+
+            if self.clip_and_norm:
+                self.A_merlin = self._clip_and_minmax_normalize(self.A_merlin)
+                self.logI_merlin = self._clip_and_minmax_normalize(self.logI_merlin)
 
             print(f"Loaded MERLIN GT from {self.merlin_gt_path}.")
             print(
@@ -133,48 +134,83 @@ class CompareReconstructionToGT(Callback):
         A_recon = torch.sqrt(I_recon)
         logI_recon = torch.log(I_recon + self.eps)
 
-        if torch.isnan(logI_recon).any():
-            raise ValueError("NaNs found in the denormed log-intensity reconstruction.")
-
-        # --- No normalization for the moment ---
-        logI_recon_min = logI_recon.min().item()
-        logI_recon_max = logI_recon.max().item()
-        # # Clip using log-domain statistics and normalize
-        # logI_recon = logI_recon.clip(
-        #     logI_recon.mean() - 3 * logI_recon.std(),
-        #     logI_recon.mean() + 3 * logI_recon.std(),
-        # )
-        # logI_recon = (logI_recon - logI_recon.min()) / (logI_recon.max() - logI_recon.min())
-        # # Check NaNs
-        # if torch.isnan(logI_recon).any():
-        #     raise ValueError("NaNs found in the normalized log-intensity reconstruction.")
-
         # Bring to numpy for visualization
         A_recon = A_recon.squeeze().cpu().numpy()
         logI_recon = logI_recon.squeeze().cpu().numpy()
+
+        if self.clip_and_norm:
+            A_recon = self._clip_and_minmax_normalize(A_recon)
+            logI_recon = self._clip_and_minmax_normalize(logI_recon)
+
+        # fig_A, _ = self._visualize_with_histograms(
+        #     self.A_noisy,
+        #     A_recon,
+        #     self.A_merlin,
+        #     out_criterion_real,
+        #     out_criterion_imag,
+        #     trainer,
+        #     scale="A",
+        # )
+        fig_logI, metrics = self._visualize_with_histograms(
+            self.logI_noisy,
+            logI_recon,
+            self.logI_merlin,
+            out_criterion_real,
+            out_criterion_imag,
+            trainer,
+            scale="logI",
+        )
+
+        pl_module.logger.experiment.log(
+            {
+                "val_large_patch_comparison": fig_logI,
+                "val_large_patch/loss": metrics["loss"],
+                "val_large_patch/bpp": metrics["bpp"],
+                "val_large_patch/mse_to_MERLIN": metrics["mse"],
+                "val_large_patch/psnr_to_MERLIN": metrics["psnr"],
+            }
+        )
+
+        # plt.close(fig_A)
+        plt.close(fig_logI)
+
+    def _visualize_with_histograms(
+        self,
+        noisy: np.ndarray,
+        recon: np.ndarray,
+        merlin: np.ndarray | None,
+        criterion_real: dict,
+        criterion_imag: dict,
+        trainer: Trainer,
+        scale: str = "logI",
+    ) -> tuple[plt.Figure, dict]:
+        if scale == "logI":
+            subtitles = ["Noisy Log-I", "Recon Log-I", "MERLIN GT Log-I"]
+        elif scale == "A":
+            subtitles = ["Noisy Amplitude", "Recon Amplitude", "MERLIN GT Amplitude"]
+        else:
+            raise ValueError(f"Unknown scale: {scale}")
 
         # ----- Create visualization -----
         fig, axes = plt.subplots(2, 3, figsize=(15, 10))
 
         # Row 1: Images
         # Original amplitude (sum of real + imag)
-        im0 = axes[0, 0].imshow(self.logI_noisy, cmap="gray")
-        axes[0, 0].set_title("Original Amplitude")
+        im0 = axes[0, 0].imshow(noisy, cmap="gray")
+        axes[0, 0].set_title(subtitles[0])
         axes[0, 0].axis("off")
         fig.colorbar(im0, ax=axes[0, 0], shrink=0.8)
 
         # Reconstruction
-        im1 = axes[0, 1].imshow(logI_recon, cmap="gray")
-        axes[0, 1].set_title(
-            f"Recon amp (original min={logI_recon_min:.2f}, max={logI_recon_max:.2f})"
-        )
+        im1 = axes[0, 1].imshow(recon, cmap="gray")
+        axes[0, 1].set_title(subtitles[1])
         axes[0, 1].axis("off")
         fig.colorbar(im1, ax=axes[0, 1], shrink=0.8)
 
         # MERLIN GT (if available)
-        if self.logI_merlin is not None:
-            im2 = axes[0, 2].imshow(self.logI_merlin, cmap="gray")
-            axes[0, 2].set_title("MERLIN GT amp")
+        if merlin is not None:
+            im2 = axes[0, 2].imshow(merlin, cmap="gray")
+            axes[0, 2].set_title(subtitles[2])
             axes[0, 2].axis("off")
             fig.colorbar(im2, ax=axes[0, 2], shrink=0.8)
         else:
@@ -190,18 +226,16 @@ class CompareReconstructionToGT(Callback):
 
         # Row 2: Histograms
         # Original histogram
-        axes[1, 0].hist(self.logI_noisy.flatten(), bins=50, alpha=0.7, color="blue")
-        axes[1, 0].set_title("Original Histogram")
+        axes[1, 0].hist(noisy.flatten(), bins=50, alpha=0.7, color="blue")
+        axes[1, 0].set_title("Noisy Histogram")
 
         # Reconstruction histogram
-        axes[1, 1].hist(logI_recon.flatten(), bins=50, alpha=0.7, color="blue")
-        axes[1, 1].set_title("Reconstruction Histogram")
+        axes[1, 1].hist(recon.flatten(), bins=50, alpha=0.7, color="blue")
+        axes[1, 1].set_title("Recon Histogram")
 
         # MERLIN GT histogram (if available)
-        if self.logI_merlin is not None:
-            axes[1, 2].hist(
-                self.logI_merlin.flatten(), bins=50, alpha=0.7, color="blue"
-            )
+        if merlin is not None:
+            axes[1, 2].hist(merlin.flatten(), bins=50, alpha=0.7, color="blue")
             axes[1, 2].set_title("MERLIN GT Histogram")
         else:
             axes[1, 2].text(
@@ -214,38 +248,37 @@ class CompareReconstructionToGT(Callback):
             )
             axes[1, 2].axis("off")
 
-        # ----- Add overall title with metrics -----
-        loss = (
-            out_criterion_real["loss"].item() + out_criterion_imag["loss"].item()
+        # ----- Add overall title with metrics -----\
+        metrics = {}
+        metrics["loss"] = (
+            criterion_real["loss"].item() + criterion_imag["loss"].item()
         ) / 2
-        bpp = (out_criterion_real["bpp"].item() + out_criterion_imag["bpp"].item()) / 2
+        metrics["bpp"] = (
+            criterion_real["bpp"].item() + criterion_imag["bpp"].item()
+        ) / 2
         # Compute MSE, PSNR between reconstructions and MERLIN GT
-        if self.logI_merlin is not None:
-            logI_diff = logI_recon - self.logI_merlin
-            mse = np.mean((logI_diff) ** 2)
-            peak = self.logI_merlin.max()  # Should be amp_max - amp_min?
-            psnr = 20 * np.log10(peak / np.sqrt(mse)) if mse > 0 else float("inf")
+        if merlin is not None:
+            logI_diff = recon - merlin
+            metrics["mse"] = np.mean((logI_diff) ** 2)
+            peak = merlin.max()  # Should be amp_max - amp_min?
+            metrics["psnr"] = (
+                20 * np.log10(peak / np.sqrt(metrics["mse"]))
+                if metrics["mse"] > 0
+                else float("inf")
+            )
             # ssim
         else:
-            mse = psnr = -1  # Not available if MERLIN GT is not loaded
+            metrics["mse"] = metrics[
+                "psnr"
+            ] = -1  # Not available if MERLIN GT is not loaded
 
         fig.suptitle(
             f"Val Large patch, epoch {trainer.current_epoch}: "
-            f"Loss={loss:.3f}, BPP={bpp:.4f}."
-            f"\n Metrics to MERLIN GT: MSE={mse:.4f}, PSNR={psnr:.2f}dB, Diff mean={logI_diff.mean():.4f} and Diff std={logI_diff.std():.4f}",
+            f"Loss={metrics['loss']:.3f}, BPP={metrics['bpp']:.4f}."
+            f"\n Metrics to MERLIN GT: MSE={metrics['mse']:.4f}, PSNR={metrics['psnr']:.2f}dB, Diff mean={logI_diff.mean():.4f} and Diff std={logI_diff.std():.4f}",
             fontsize=14,
         )
 
         plt.tight_layout()
 
-        pl_module.logger.experiment.log(
-            {
-                "val_large_patch_comparison": fig,
-                "val_large_patch/loss": loss,
-                "val_large_patch/bpp": bpp,
-                "val_large_patch/mse_to_MERLIN": mse,
-                "val_large_patch/psnr_to_MERLIN": psnr,
-            }
-        )
-
-        plt.close(fig)
+        return fig, metrics
