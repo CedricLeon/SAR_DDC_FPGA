@@ -113,9 +113,6 @@ class CompareReconstructionToGT(Callback):
         # Only log on specified epochs and for the first batch
         if (trainer.current_epoch % self.log_every_n_epochs != 0) or batch_idx > 0:
             return
-        print(
-            f"Logging reconstruction comparison to MERLIN GT for epoch {trainer.current_epoch}, batch {batch_idx}."
-        )
 
         # ----- Forward pass to get reconstruction and metrics -----
         with torch.no_grad():

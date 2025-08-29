@@ -30,10 +30,6 @@ class MonitorValReconstruction(Callback):
         if (trainer.current_epoch % self.log_every_n_epochs != 0) or batch_idx > 0:
             return
 
-        print(
-            f"Logging validation reconstruction for epoch {trainer.current_epoch}, batch {batch_idx}."
-        )
-
         # Get the first few images from the batch
         num_images_to_show = min(self.num_images, batch["real"].shape[0])
 
