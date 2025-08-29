@@ -7,7 +7,7 @@ net:
   # No need to specify th number of channel of the hyperprior, by the model architecture it has to be twice the number of channels of the main transform
 
 criterion:
-  _target_: src.utils.metrics.UnitaryRDLoss #compressai.losses.RateDistortionLoss
+  _target_: src.utils.metrics.MerlinRDLoss #compressai.losses.RateDistortionLoss
   metric: "merlin" # "ssim", "ms_ssim", or "mse"
   lmbda: 1
 

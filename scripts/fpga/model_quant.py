@@ -5,7 +5,7 @@ It is based on Vitis-AI resnet18 PyTorch model quantization example, available a
 @TODO:
 - I might have to have this script in Vitis-AI folder, because I ned to start the docker there
 - Guess the data_dir from model configuration file (to avoid messing up)
-- Write functional UnitaryRDLoss function to compute the loss after evaluation
+- Write functional MerlinRDLoss function to compute the loss after evaluation
 - Write how my evaluation will work
 
 What I will do in this script:
@@ -35,7 +35,7 @@ from tqdm import tqdm
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src.data.components.sar_dataset import TSXSSCDataset
 from src.models.components.sar_hyperprior import ResidualScaleHyperprior
-from src.utils.metrics import UnitaryRDLoss
+from src.utils.metrics import MerlinRDLoss
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -168,8 +168,8 @@ if __name__ == "__main__":
         )
         quant_model = quantizer.quant_model
 
-    # Get loss after evaluation @TODO: Write unitary RDLoss functionnal
-    loss_fn = UnitaryRDLoss(metric="mse", lmbda=0.01).to(device)
+    # Get loss after evaluation @TODO: Write MerlinRDLoss functionnal
+    loss_fn = MerlinRDLoss(metric="mse", lmbda=0.01).to(device)
 
     # ----- Load data -----
     val_loader = load_data(data_dir)
