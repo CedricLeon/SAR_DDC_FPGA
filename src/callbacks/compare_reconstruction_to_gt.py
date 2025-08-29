@@ -21,6 +21,7 @@ class CompareReconstructionToGT(Callback):
         self.log_every_n_epochs = log_every_n_epochs
         self.eps = 1e-2
         self.clip_and_norm = True
+        self.clip_factor = 3  # Clip to mean +/- self.clip_factor * std
 
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
         """Find the large patch and convert it to a torch tensor."""
@@ -43,10 +44,6 @@ class CompareReconstructionToGT(Callback):
         self.A_noisy = np.sqrt(I_noisy)
         self.logI_noisy = np.log(I_noisy + self.eps)
 
-        if self.clip_and_norm:
-            self.A_noisy = self._clip_and_minmax_normalize(self.A_noisy)
-            self.logI_noisy = self._clip_and_minmax_normalize(self.logI_noisy)
-
         # Store as torch tensors on device for forward passes
         patch_tensor = torch.from_numpy(patch_data).to(pl_module.device)
         # Normalize
@@ -63,13 +60,8 @@ class CompareReconstructionToGT(Callback):
             self.merlin_gt_path = file
             merlin_patch_dict = np.load(self.merlin_gt_path, allow_pickle=True).item()
 
-            # Normalize the patch: log, clip +- 3 std, and scale (0,1)
             self.A_merlin = merlin_patch_dict["denoised"]["full"]
             self.logI_merlin = np.log(self.A_merlin**2 + self.eps)
-
-            if self.clip_and_norm:
-                self.A_merlin = self._clip_and_minmax_normalize(self.A_merlin)
-                self.logI_merlin = self._clip_and_minmax_normalize(self.logI_merlin)
 
             print(f"Loaded MERLIN GT from {self.merlin_gt_path}.")
             print(
@@ -96,7 +88,10 @@ class CompareReconstructionToGT(Callback):
             )
 
     def _clip_and_minmax_normalize(self, img: np.ndarray) -> np.ndarray:
-        img = img.clip(img.mean() - 3 * img.std(), img.mean() + 3 * img.std())
+        img = img.clip(
+            img.mean() - self.clip_factor * img.std(),
+            img.mean() + self.clip_factor * img.std(),
+        )
         img = (img - img.min()) / (img.max() - img.min())
         return img
 
@@ -135,23 +130,15 @@ class CompareReconstructionToGT(Callback):
         A_recon = A_recon.squeeze().cpu().numpy()
         logI_recon = logI_recon.squeeze().cpu().numpy()
 
-        if self.clip_and_norm:
-            A_recon = self._clip_and_minmax_normalize(A_recon)
-            logI_recon = self._clip_and_minmax_normalize(logI_recon)
-
         # fig_A, _ = self._visualize_with_histograms(
-        #     self.A_noisy,
         #     A_recon,
-        #     self.A_merlin,
         #     out_criterion_real,
         #     out_criterion_imag,
         #     trainer,
         #     scale="A",
         # )
         fig_logI, metrics = self._visualize_with_histograms(
-            self.logI_noisy,
             logI_recon,
-            self.logI_merlin,
             out_criterion_real,
             out_criterion_imag,
             trainer,
@@ -173,40 +160,51 @@ class CompareReconstructionToGT(Callback):
 
     def _visualize_with_histograms(
         self,
-        noisy: np.ndarray,
         recon: np.ndarray,
-        merlin: np.ndarray | None,
         criterion_real: dict,
         criterion_imag: dict,
         trainer: Trainer,
         scale: str = "logI",
     ) -> tuple[plt.Figure, dict]:
         if scale == "logI":
+            noisy = self.logI_noisy
+            merlin = self.logI_merlin
             subtitles = ["Noisy Log-I", "Recon Log-I", "MERLIN GT Log-I"]
         elif scale == "A":
+            noisy = self.A_noisy
+            merlin = self.A_merlin
             subtitles = ["Noisy Amplitude", "Recon Amplitude", "MERLIN GT Amplitude"]
         else:
             raise ValueError(f"Unknown scale: {scale}")
 
-        # ----- Create visualization -----
         fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-
-        # Row 1: Images
-        # Original amplitude (sum of real + imag)
-        im0 = axes[0, 0].imshow(noisy, cmap="gray")
+        # ----- Row 1: Images -----
+        # Original
+        im0 = axes[0, 0].imshow(
+            self._clip_and_minmax_normalize(noisy) if self.clip_and_norm else noisy,
+            cmap="gray",
+        )
         axes[0, 0].set_title(subtitles[0])
         axes[0, 0].axis("off")
         fig.colorbar(im0, ax=axes[0, 0], shrink=0.8)
 
         # Reconstruction
-        im1 = axes[0, 1].imshow(recon, cmap="gray")
+        im1 = axes[0, 1].imshow(
+            self._clip_and_minmax_normalize(recon) if self.clip_and_norm else recon,
+            cmap="gray",
+        )
         axes[0, 1].set_title(subtitles[1])
         axes[0, 1].axis("off")
         fig.colorbar(im1, ax=axes[0, 1], shrink=0.8)
 
         # MERLIN GT (if available)
         if merlin is not None:
-            im2 = axes[0, 2].imshow(merlin, cmap="gray")
+            im2 = axes[0, 2].imshow(
+                self._clip_and_minmax_normalize(merlin)
+                if self.clip_and_norm
+                else merlin,
+                cmap="gray",
+            )
             axes[0, 2].set_title(subtitles[2])
             axes[0, 2].axis("off")
             fig.colorbar(im2, ax=axes[0, 2], shrink=0.8)
@@ -221,19 +219,43 @@ class CompareReconstructionToGT(Callback):
             )
             axes[0, 2].axis("off")
 
-        # Row 2: Histograms
-        # Original histogram
-        axes[1, 0].hist(noisy.flatten(), bins=50, alpha=0.7, color="blue")
-        axes[1, 0].set_title("Noisy Histogram")
+        # ----- Row 2: Histograms -----
+        def plot_histogram(ax, data, title):
+            ax.set_title(title)
+            ax.hist(data.flatten(), bins=50, alpha=0.7, color="blue")
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(axis="y", labelsize=8)
+            ax.yaxis.set_major_formatter(
+                plt.FuncFormatter(
+                    lambda x, loc: f"{x / 1000:.0f}K" if x >= 1000 else f"{x:.0f}"
+                )
+            )
+            mean = data.mean()
+            std = data.std()
+            ax.axvline(mean, color="red", linestyle="--", label="Mean")
+            ax.axvline(
+                mean + self.clip_factor * std,
+                color="green",
+                linestyle="--",
+                label=f"Mean + {self.clip_factor}*Std",
+            )
+            ax.axvline(
+                mean - self.clip_factor * std,
+                color="green",
+                linestyle="--",
+                label=f"Mean - {self.clip_factor}*Std",
+            )
+            ax.legend(fontsize=8)
+
+        # Noisy histogram
+        plot_histogram(axes[1, 0], noisy, "Noisy Histogram")
 
         # Reconstruction histogram
-        axes[1, 1].hist(recon.flatten(), bins=50, alpha=0.7, color="blue")
-        axes[1, 1].set_title("Recon Histogram")
+        plot_histogram(axes[1, 1], recon, "Recon Histogram")
 
         # MERLIN GT histogram (if available)
         if merlin is not None:
-            axes[1, 2].hist(merlin.flatten(), bins=50, alpha=0.7, color="blue")
-            axes[1, 2].set_title("MERLIN GT Histogram")
+            plot_histogram(axes[1, 2], merlin, "MERLIN GT Histogram")
         else:
             axes[1, 2].text(
                 0.5,
