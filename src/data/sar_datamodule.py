@@ -58,7 +58,7 @@ class TSXSSCDataModule(LightningDataModule):
         # Data transformations
         self.transform = transform
 
-    def log_patches_per_split(
+    def _log_patches_per_split(
         self, split: str, total_patches: int, patches_per_image_str: str
     ):
         patches_per_image = {
@@ -89,17 +89,17 @@ class TSXSSCDataModule(LightningDataModule):
                 f"Loaded datasets created at {attrs.get('creation_date', 'Unknown')} with seed {attrs.get('seed', 'Unknown')} and "
                 f"{'normalized' if attrs.get('normalize', False) else 'NOT normalized'} data."
             )
-            self.log_patches_per_split(
+            self._log_patches_per_split(
                 "Train", attrs.get("nb_patches", -1), attrs.get("patches_per_image", "")
             )
         with h5py.File(self.val_path, "r") as f:
-            self.log_patches_per_split(
+            self._log_patches_per_split(
                 "Validation",
                 f["patches"].attrs.get("nb_patches", -1),
                 f["patches"].attrs.get("patches_per_image", ""),
             )
         with h5py.File(self.test_path, "r") as f:
-            self.log_patches_per_split(
+            self._log_patches_per_split(
                 "Test",
                 f["patches"].attrs.get("nb_patches", -1),
                 f["patches"].attrs.get("patches_per_image", ""),
