@@ -1,26 +1,10 @@
-"""
-SAR Despeckling and Data Compression (DDC) Lightning Module.
-
-This module handles the training and testing logic for joint despeckling
-and compression of SAR images using a Noise2Noise approach.
-"""
-
-import datetime
-import os
 from typing import Any, Dict, Optional, Tuple
 
 import lightning
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
-import torch.nn.functional as F
 import wandb
 from pytorch_lightning.loggers import WandbLogger
 from torch import Tensor
-
-from src.utils.metrics import (
-    calculate_psnr_1,
-)
 
 
 class SARDDCModule(lightning.LightningModule):
@@ -39,7 +23,6 @@ class SARDDCModule(lightning.LightningModule):
         scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
         gradient_clip_norm: float = 1.0,
         compile: bool = False,
-        anomalies_log_dir: str = "anomalies",  # Directory for low PSNR logs
     ):
         """Initialize the Lightning Module.
 
@@ -51,7 +34,6 @@ class SARDDCModule(lightning.LightningModule):
             scheduler: Learning rate scheduler
             gradient_clip_norm: Maximum gradient norm for clipping (default: 1.0)
             compile: Whether to compile the model (default: False)
-            anomalies_log_dir: Directory to save anomalies (default: anomalies)
         """
         super().__init__()
 
@@ -65,19 +47,11 @@ class SARDDCModule(lightning.LightningModule):
         # Activate manual optimization, because we have two optimizers.
         self.automatic_optimization = False
 
-        # Set up directory for low PSNR logs
-        self.low_psnr_count = 0
-        self.psnr_ano_threshold = 0.0
-        os.makedirs(self.hparams.anomalies_log_dir, exist_ok=True)
-
     def on_fit_start(self):
         """Called at the beginning of fit."""
-        # # Initialize tracking dictionaries for monitoring
-        # self.weight_norms_history = {}
-        # self.gradient_norms_history = {}
-
         # Set up wandb watch to monitor parameters and gradients
         if isinstance(self.trainer.logger, WandbLogger):
+            print("----------------------The WandB logger should watch gradient")
             self.trainer.logger.watch(
                 self.net,
                 log="all",  # Track both gradients and parameters
@@ -121,210 +95,18 @@ class SARDDCModule(lightning.LightningModule):
         out_criterion = self.criterion(output, target)
         return out_criterion, output["x_hat"]
 
-    def _log_anomalies(
-        self,
-        prefix: str,
-        input: Tensor,
-        target: Tensor,
-        reconstruction: Tensor,
-        trigger: Tuple[str, float],
-        additional_info: Dict | None = None,
-    ) -> None:
-        """Log and visualize current metrics and batch statistics.
-
-        Args:
-            prefix: Log prefix (train/valid/test)
-            input: Input tensor
-            target: Target tensor
-            reconstruction: Reconstructed output
-            trigger: Tuple with the metric and its value that triggered the logging
-            additional_info: Additional information to include in the log
-        """
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.low_psnr_count += 1
-
-        # Create log directory with timestamp
-        log_dir = os.path.join(
-            self.hparams.anomalies_log_dir,
-            f"{prefix}_ano{self.low_psnr_count}_e{self.current_epoch}_step{self.global_step}_{trigger[0]}:{trigger[1]:.2f}dB",
-        )
-        os.makedirs(log_dir, exist_ok=True)
-
-        # Create a general information file
-        with open(os.path.join(log_dir, "info.txt"), "w") as f:
-            f.write(
-                f"===== LOW {trigger[0].upper()} DETECTED: {trigger[1]:.2f} dB (threshold: {self.psnr_ano_threshold:.2f} dB) =====\n\n"
-            )
-            f.write(f"Time: {timestamp}\n")
-            f.write(f"Epoch: {self.current_epoch}\n")
-            f.write(f"Global step: {self.global_step}\n\n")
-
-            # Write additional information if provided
-            if additional_info:
-                f.write("Additional Metrics:\n")
-                for key, value in additional_info.items():
-                    if isinstance(value, float):
-                        f.write(f"  {key}: {value:.6f}\n")
-                    else:
-                        f.write(f"  {key}: {value}\n")
-                f.write("\n")
-
-            # Write batch statistics
-            f.write("Batch Statistics:\n")
-            batch_size = input.shape[0] if input.ndim > 3 else 1  # Use torch shape
-            f.write(f"  Batch size: {batch_size}\n")
-
-            # Write overall statistics for the entire batch
-            f.write("\nOverall Statistics:\n")
-            f.write("Input:\n")
-            f.write(f"  Shape: {tuple(input.shape)}\n")  # Cast to tuple for printing
-            f.write(
-                f"  Mean: {torch.mean(input).item():.6f}\n"
-            )  # Convert to float before mean
-            f.write(f"  Std: {torch.std(input).item():.6f}\n")
-            f.write(f"  Min: {torch.min(input).item():.6f}\n")
-            f.write(f"  Max: {torch.max(input).item():.6f}\n")
-            f.write(f"  NaN count: {torch.isnan(input).sum().item()}\n")
-            f.write(f"  Inf count: {torch.isinf(input).sum().item()}\n\n")
-
-            f.write("Target:\n")
-            f.write(f"  Shape: {tuple(target.shape)}\n")  # Cast to tuple for printing
-            f.write(f"  Mean: {torch.mean(target).item():.6f}\n")
-            f.write(f"  Std: {torch.std(target).item():.6f}\n")
-            f.write(f"  Min: {torch.min(target).item():.6f}\n")
-            f.write(f"  Max: {torch.max(target).item():.6f}\n")
-            f.write(f"  NaN count: {torch.isnan(target).sum().item()}\n")
-            f.write(f"  Inf count: {torch.isinf(target).sum().item()}\n\n")
-
-            f.write("Reconstruction:\n")
-            f.write(
-                f"  Shape: {tuple(reconstruction.shape)}\n"
-            )  # Cast to tuple for printing
-            f.write(f"  Mean: {torch.mean(reconstruction).item():.6f}\n")
-            f.write(f"  Std: {torch.std(reconstruction).item():.6f}\n")
-            f.write(f"  Min: {torch.min(reconstruction).item():.6f}\n")
-            f.write(f"  Max: {torch.max(reconstruction).item():.6f}\n")
-            f.write(f"  NaN count: {torch.isnan(reconstruction).sum().item()}\n")
-            f.write(f"  Inf count: {torch.isinf(reconstruction).sum().item()}\n\n")
-
-            # Write statistics for each sample in the batch
-            num_samples = min(16, batch_size)
-            num_vis_samples = min(4, batch_size)
-            f.write("\nPer-Sample Statistics:\n")
-            for i in range(num_samples):
-                f.write(f"\nSample {i + 1}:\n")
-                if input.ndim > 3:
-                    sample_input = input[i].squeeze()
-                    sample_target = target[i].squeeze()
-                    sample_recon = reconstruction[i].squeeze()
-                else:
-                    sample_input = input.squeeze()
-                    sample_target = target.squeeze()
-                    sample_recon = reconstruction.squeeze()
-
-                f.write("  Input:\n")
-                f.write(f"    Mean: {torch.mean(sample_input).item():.6f}\n")
-                f.write(f"    Std: {torch.std(sample_input).item():.6f}\n")
-                f.write(f"    Min: {torch.min(sample_input).item():.6f}\n")
-                f.write(f"    Max: {torch.max(sample_input).item():.6f}\n")
-                f.write(f"    NaN count: {torch.isnan(sample_input).sum().item()}\n")
-                f.write(f"    Inf count: {torch.isinf(sample_input).sum().item()}\n")
-
-                f.write("  Target:\n")
-                f.write(f"    Mean: {torch.mean(sample_target).item():.6f}\n")
-                f.write(f"    Std: {torch.std(sample_target).item():.6f}\n")
-                f.write(f"    Min: {torch.min(sample_target).item():.6f}\n")
-                f.write(f"    Max: {torch.max(sample_target).item():.6f}\n")
-                f.write(f"    NaN count: {torch.isnan(sample_target).sum().item()}\n")
-                f.write(f"    Inf count: {torch.isinf(sample_target).sum().item()}\n")
-
-                f.write("  Reconstruction:\n")
-                f.write(f"    Mean: {torch.mean(sample_recon).item():.6f}\n")
-                f.write(f"    Std: {torch.std(sample_recon).item():.6f}\n")
-                f.write(f"    Min: {torch.min(sample_recon).item():.6f}\n")
-                f.write(f"    Max: {torch.max(sample_recon).item():.6f}\n")
-                f.write(f"    NaN count: {torch.isnan(sample_recon).sum().item()}\n")
-                f.write(f"    Inf count: {torch.isinf(sample_recon).sum().item()}\n")
-
-                # Calculate sample PSNR using torch.nn.functional.mse_loss and calculate_psnr_1
-                sample_mse = F.mse_loss(sample_recon, sample_target)
-                sample_psnr = calculate_psnr_1(sample_mse)
-                f.write(f"  MSE: {sample_mse.item():.6f}\n")
-                f.write(f"  PSNR: {sample_psnr.item():.2f} dB\n")
-
-                # Visualize the first few samples
-                if i < num_vis_samples:
-                    # Convert back to numpy only for visualization
-                    sample_input = sample_input.detach().cpu().numpy()
-                    sample_target = sample_target.detach().cpu().numpy()
-                    sample_recon = sample_recon.detach().cpu().numpy()
-
-                    fig, axs = plt.subplots(2, 3, figsize=(15, 10))
-                    fig.suptitle(
-                        f"Low PSNR Sample {i + 1} - PSNR: {sample_psnr.item():.2f} dB (threshold: {self.psnr_ano_threshold:.2f} dB)",
-                        fontsize=16,
-                    )
-
-                    # Plot original data
-                    axs[0, 0].imshow(sample_input, cmap="gray")
-                    axs[0, 0].set_title("Input")
-                    axs[0, 0].axis("off")
-
-                    axs[0, 1].imshow(sample_target, cmap="gray")
-                    axs[0, 1].set_title("Target")
-                    axs[0, 1].axis("off")
-
-                    axs[0, 2].imshow(sample_recon, cmap="gray")
-                    axs[0, 2].set_title("Reconstruction")
-                    axs[0, 2].axis("off")
-
-                    # Plot differences and error map
-                    diff_input_target = np.abs(sample_input - sample_target)
-                    axs[1, 0].imshow(diff_input_target, cmap="hot")
-                    axs[1, 0].set_title("Input-Target Difference")
-                    axs[1, 0].axis("off")
-
-                    diff_recon_target = np.abs(sample_recon - sample_target)
-                    axs[1, 1].imshow(diff_recon_target, cmap="hot")
-                    axs[1, 1].set_title("Recon-Target Difference")
-                    axs[1, 1].axis("off")
-
-                    # Square error map (for better visualization of errors)
-                    error_map = (sample_recon - sample_target) ** 2
-                    axs[1, 2].imshow(error_map, cmap="hot")
-                    axs[1, 2].set_title("Squared Error Map")
-                    axs[1, 2].axis("off")
-
-                    plt.tight_layout()
-                    plt.savefig(os.path.join(log_dir, f"sample_{i + 1}.png"), dpi=150)
-                    plt.close(fig)
-
-        # Log to console
-        print(
-            f"WARNING: Low {trigger[0].upper()} ({trigger[1]:.2f} dB) detected at epoch {self.current_epoch}, step {self.global_step}"
-        )
-        print(f"Statistics saved to {log_dir}")
-
     def _log_metrics(
         self,
         prefix: str,
         out_criterion: Dict[str, Any],
         aux_loss: float,
-        input: Tensor,
-        reconstructions: Tensor,
-        target: Tensor,
     ) -> None:
         """Log training, validation, or test metrics."""
-
-        mse_value = out_criterion["mse"]
-
-        # Enhanced metrics logging
         log_info = {
-            # Track how much each loss contributes to total loss = R + lmbda * D
             f"{prefix}/loss": out_criterion["loss"].item(),
             f"{prefix}/distortion": out_criterion["distortion"].item(),
             f"{prefix}/bpp": out_criterion["bpp"].item(),
-            f"{prefix}/mse": mse_value.item(),
+            f"{prefix}/mse": out_criterion["mse"].item(),
             f"{prefix}/ssim": out_criterion["ssim"].item(),
             f"{prefix}/ms_ssim": out_criterion["ms_ssim"].item(),
             f"{prefix}/merlin": out_criterion["merlin"].item(),
@@ -349,24 +131,6 @@ class SARDDCModule(lightning.LightningModule):
             prog_bar=prog_bar,
         )
 
-        # # Log anomalies (low PSNR)
-        # if self.current_epoch > 0 and psnr_value_1 < self.psnr_ano_threshold:
-        #     additional_info = {
-        #         "bpp": out_criterion["bpp"].item(),
-        #         "mse": mse_value.item(),
-        #         "ssim": out_criterion["ssim"].item(),
-        #         "ms_ssim": out_criterion["ms_ssim"].item(),
-        #         "loss": out_criterion["loss"].item(),
-        #     }
-        #     self._log_anomalies(
-        #         prefix,
-        #         input,
-        #         target,
-        #         reconstructions,
-        #         ("PSNR", out_criterion["psnr"].item()),
-        #         additional_info,
-        #     )
-
     def training_step(self, batch, batch_idx):
         """Training step using Noise2Noise approach.
         Because we have two optimizers, we need to manually optimize.
@@ -384,7 +148,7 @@ class SARDDCModule(lightning.LightningModule):
 
         # Forward pass
         input, target = self._random_switch_Re_Im(batch)
-        out_criterion, reconstructions = self._model_forward(input, target)
+        out_criterion, _ = self._model_forward(input, target)
 
         # Backward pass for the main loss
         self.manual_backward(out_criterion["loss"])
@@ -400,27 +164,21 @@ class SARDDCModule(lightning.LightningModule):
         aux_optimizer.step()
 
         # Log metrics
-        self._log_metrics(
-            "train", out_criterion, aux_loss.item(), input, reconstructions, target
-        )
+        self._log_metrics("train", out_criterion, aux_loss.item())
 
     def validation_step(self, batch, batch_idx):
         """Validation step with optimized processing of both real and imaginary parts."""
         input, target = self._random_switch_Re_Im(batch)
-        out_criterion, reconstructions = self._model_forward(input, target)
+        out_criterion, _ = self._model_forward(input, target)
         aux_loss = self.net.aux_loss()
-        self._log_metrics(
-            "valid", out_criterion, aux_loss.item(), input, reconstructions, target
-        )
+        self._log_metrics("valid", out_criterion, aux_loss.item())
 
     def test_step(self, batch, batch_idx):
         """Test step with optimized processing of both real and imaginary parts."""
         input, target = self._random_switch_Re_Im(batch)
-        out_criterion, reconstructions = self._model_forward(input, target)
+        out_criterion, _ = self._model_forward(input, target)
         aux_loss = self.net.aux_loss()
-        self._log_metrics(
-            "test", out_criterion, aux_loss.item(), input, reconstructions, target
-        )
+        self._log_metrics("test", out_criterion, aux_loss.item())
 
     def on_validation_epoch_end(self) -> None:
         """Update LR scheduler based on validation loss."""

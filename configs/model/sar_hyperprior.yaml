@@ -33,5 +33,3 @@ scheduler:
 
 gradient_clip_norm: 1.0 # https://github.com/ali-zafari/TBTC/blob/master/lit_model.py
 compile: False          # compile model for faster training with pytorch 2.0
-
-anomalies_log_dir: ${paths.output_dir}/anomalies
