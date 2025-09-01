@@ -22,16 +22,9 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
     lmbda = cfg.model.criterion.get("lmbda", None)
     metric = cfg.model.criterion.get("metric", None)
     lr = cfg.model.net_optimizer.get("lr", None)
-    split = cfg.data.get("hdf5_dir", None).split("/")[-1].split("_")[0][-5:]
-    data_dir = cfg.data.get("hdf5_dir", None)
+    batch_size = cfg.data.get("batch_size", None)
 
-    data_norm = "default"
-    if data_norm is not None:
-        dataset_name = Path(data_dir).name
-        dataset_type = "sp" if dataset_name.startswith("spatial") else "rd"
-        data_norm = dataset_type + "-" + dataset_name.split("_")[-1]
-
-    return f"ReSHyp_{seed}_{metric}ʎ{lmbda}_lr{lr}_{split}{data_norm}"
+    return f"ReSHyp_{seed}_{metric}ʎ{lmbda}_lr{lr}_b{batch_size}"
 
 
 @rank_zero_only
