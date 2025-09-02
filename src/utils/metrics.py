@@ -55,15 +55,15 @@ class MerlinRDLoss(nn.Module):
         out["ms_ssim"] = self.ms_ssim(r_denorm, b_denorm)
 
         # ----- MERLIN Loss -----
-        # Classic:      (0.5 * log(r) + b^2 / r)
-        # merlin_loss = 0.5 * torch.log(r_denorm + 1e-6) + torch.square(b_denorm) / (
+        # # Classic:      (0.5 * log(r) + b^2 / r)
+        # r_denorm = torch.exp(r_denorm)
+        # b_denorm = torch.exp(b_denorm)
+        # merlin_loss = 0.5 * torch.log(r_denorm + 1e-2) + torch.square(b_denorm) / (
         #     r_denorm + 1e-6
         # )
         # In Log-Scale: (0.5 * r + exp(2*b - r))
-        merlin_loss = 0.5 * r_denorm + torch.exp(2 * b_denorm - r_denorm)
-
-        # Mean over pixels and batch (the loss should not depend on the patch_size)
-        out["merlin"] = merlin_loss.mean()
+        merlin_loss = 0.5 * r_denorm + torch.exp(b_denorm - r_denorm)
+        out["merlin"] = torch.mean(merlin_loss)
 
         if self.metric == "merlin" or self.metric == "mse":
             out["distortion"] = out[self.metric]
