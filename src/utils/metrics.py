@@ -62,7 +62,7 @@ class MerlinRDLoss(nn.Module):
         #     r_denorm + 1e-6
         # )
         # In Log-Scale: (0.5 * r + exp(2*b - r))
-        merlin_loss = 0.5 * r_denorm + torch.exp(b_denorm - r_denorm)
+        merlin_loss = 0.5 * r_denorm + torch.exp(2 * b_denorm - r_denorm)
         out["merlin"] = torch.mean(merlin_loss)
 
         if self.metric == "merlin" or self.metric == "mse":
@@ -71,4 +71,65 @@ class MerlinRDLoss(nn.Module):
             out["distortion"] = 1 - out[self.metric]
 
         out["loss"] = self.lmbda * out["distortion"] + out["bpp"]
+        return out
+
+
+class MerlinLoss(nn.Module):
+    """
+    MERLIN loss function for SAR image despeckling.
+
+    Implements the loss function from:
+        Dalsasso, E., Denis, L., & Tupin, F. (2022). As if by magic: Self-supervised training of deep despeckling networks with MERLIN. IEEE Transactions on Geoscience and Remote Sensing.
+
+    The loss is computed in log-scale on DENORMALIZED images as: 0.5 * r + exp(2*b - r) where r is the predicted reflectivity and b is the observed (noisy) SAR image.
+    """
+
+    def __init__(self):
+        super().__init__()
+
+        self.mse = MeanSquaredError()
+        self.psnr = PeakSignalNoiseRatio(data_range=(amp_min, amp_max))
+        self.ssim = StructuralSimilarityIndexMeasure(data_range=(amp_min, amp_max))
+        self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(
+            data_range=(amp_min, amp_max)
+        )
+
+        self.count_calls = 0
+
+    def forward(
+        self, predicted: torch.Tensor, target: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute MERLIN loss.
+
+        Args:
+            predicted (torch.Tensor): Predicted reflectivity (r) in log-scale
+            target (torch.Tensor): Observed SAR image (b) in log-scale
+
+        Returns:
+            Dict[str, torch.Tensor]: Dictionary containing loss and metrics
+        """
+        out = {}
+
+        # Denorm the reconstructions and target before computing losses
+        predicted_denorm = predicted * (2 * amp_max - 2 * amp_min) + 2 * amp_min
+        target_denorm = target * (2 * amp_max - 2 * amp_min) + 2 * amp_min
+
+        # MERLIN loss in log-scale: 0.5 * r + exp(2*b - r)
+        loss = 0.5 * predicted_denorm + torch.exp(2 * target_denorm - predicted_denorm)
+        out["loss"] = torch.mean(loss)
+
+        out["mse"] = self.mse(predicted_denorm, target_denorm)
+        out["psnr"] = self.psnr(predicted_denorm, target_denorm)
+        out["ssim"] = self.ssim(predicted_denorm, target_denorm)
+        out["ms_ssim"] = self.ms_ssim(predicted_denorm, target_denorm)
+
+        # Print predicted statistics every 50th calls
+        if self.count_calls % 50 == 0:
+            print(
+                f"[MerlinLoss: {out['loss']:.3f}] Call {self.count_calls}: Predicted min {predicted.min().item():.4f}, max {predicted.max().item():.4f}, mean {predicted.mean().item():.4f}, std {predicted.std().item():.4f}, isNaN {torch.isnan(predicted).any().item()}."
+                f" Target min {target.min().item():.4f}, max {target.max().item():.4f}, mean {target.mean().item():.4f}, std {target.std().item():.4f}, isNaN {torch.isnan(target).any().item()}."
+            )
+        self.count_calls += 1
+
         return out

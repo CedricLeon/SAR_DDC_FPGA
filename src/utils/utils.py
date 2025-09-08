@@ -18,13 +18,23 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
     :param cfg: The configuration dictionary
     :return: A formatted run name string
     """
+    model = cfg.model.net.get("_target_", None)
+    if "ResidualScaleHyperprior" in model:
+        model = "ResSHyp"
+    elif "Merlin" in model:
+        model = "Merlin"
+    else:
+        raise NotImplementedError(f"Model {model} not supported!")
     seed = cfg.get("seed", None)
     lmbda = cfg.model.criterion.get("lmbda", None)
     metric = cfg.model.criterion.get("metric", None)
-    lr = cfg.model.net_optimizer.get("lr", None)
+    # Try to get learning rate from either optimizer or net_optimizer
+    lr = cfg.model.get("net_optimizer", {}).get("lr", None)
+    if lr is None:
+        lr = cfg.model.get("optimizer", {}).get("lr", None)
     batch_size = cfg.data.get("batch_size", None)
 
-    return f"ReSHyp_{seed}_{metric}ʎ{lmbda}_lr{lr}_b{batch_size}"
+    return f"{model}_{seed}_{metric}ʎ{lmbda}_lr{lr}_b{batch_size}"
 
 
 @rank_zero_only
