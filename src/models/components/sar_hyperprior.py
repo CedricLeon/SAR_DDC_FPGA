@@ -56,7 +56,7 @@ class ResidualBlock(nn.Module):
 class ResidualScaleHyperprior(CompressionModel):
     """Residual Scale Hyperprior model for SAR image despeckling and compression. Similar to CompressAI's `bmshj2018-hyperprior` the model also incorporates residual blocks within the main transforms.
 
-    The model is deisgned to take as input pre-processed and normalized SAR SLC images parts. Specifically, the model expects either the Real or Imaginary part of the SAR SLC image, squared and normalized to approximately [0, 1].
+    The model is designed to take as input pre-processed and normalized SAR SLC images parts. Specifically, the model expects either the Real or Imaginary part of the SAR SLC image, squared and normalized to approximately [0, 1].
     """
 
     def __init__(self, nb_channels_main=128):

@@ -110,7 +110,7 @@ class SARDDCModule(lightning.LightningModule):
             f"{prefix}/ssim": out_criterion["ssim"].item(),
             f"{prefix}/ms_ssim": out_criterion["ms_ssim"].item(),
             f"{prefix}/merlin": out_criterion["merlin"].item(),
-            f"{prefix}/psnr_lightning": out_criterion["psnr"].item(),
+            f"{prefix}/psnr": out_criterion["psnr"].item(),
             f"{prefix}/aux": aux_loss,
         }
 

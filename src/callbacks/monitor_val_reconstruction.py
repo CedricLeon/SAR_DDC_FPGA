@@ -39,7 +39,7 @@ class MonitorValReconstruction(Callback):
 
         # Forward pass to get reconstructions
         with torch.no_grad():
-            out_criterion, reconstructions = pl_module._model_forward(input, target)
+            criterion, reconstructions = pl_module._model_forward(input, target)
 
         # Create the visualization
         fig, axes = plt.subplots(
@@ -91,9 +91,9 @@ class MonitorValReconstruction(Callback):
         # Add overall title with metrics
         fig.suptitle(
             f"Validation Epoch {trainer.current_epoch} - "
-            f"Loss: {out_criterion['loss']:.3f}, "
-            f"MSE: {out_criterion['mse']:.4f}, "
-            f"PSNR: {out_criterion['psnr']:.2f}dB"
+            f"Loss: {criterion['loss']:.3f}, "
+            f"MSE: {criterion['mse']:.4f}, "
+            f"PSNR: {criterion['psnr']:.2f}dB"
             f"\nMetrics computed between reconstructions (real) and target (imag)"
         )
 
@@ -102,9 +102,9 @@ class MonitorValReconstruction(Callback):
         pl_module.logger.experiment.log(
             {
                 "val_reconstructions": fig,
-                "val_batch/loss": out_criterion["loss"],
-                "val_batch/mse": out_criterion["mse"],
-                "val_batch/psnr": out_criterion["psnr"],
+                "val_batch/loss": criterion["loss"],
+                "val_batch/mse": criterion["mse"],
+                "val_batch/psnr": criterion["psnr"],
             }
         )
 
