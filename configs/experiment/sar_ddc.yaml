@@ -13,7 +13,7 @@ defaults:
 
 data:
   # hdf5_dir: ${paths.data_dir}processed_hdf5/TSX_preprocessed_spatial_splits_5_256x256
-  batch_size: 32
+  batch_size: 8 # Seems way more stable than 16 or 32
   num_workers: 11
 
 model:
@@ -24,12 +24,14 @@ model:
 callbacks:
   compare_recon_to_gt:
     patch_dir: ${paths.data_dir}
-  early_stopping:
-    verbose: True
+    split_large_patch: False
+    # blend_method: "linear"
+    with_compression: true
 
 trainer:
   min_epochs: 1
-  max_epochs: 10
+  max_epochs: 30
+  deterministic: True
 
 logger:
   wandb:
