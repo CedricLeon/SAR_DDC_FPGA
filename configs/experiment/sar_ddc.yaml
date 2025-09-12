@@ -26,7 +26,6 @@ callbacks:
     patch_dir: ${paths.data_dir}
     split_large_patch: False
     # blend_method: "linear"
-    with_compression: true
 
 trainer:
   min_epochs: 1

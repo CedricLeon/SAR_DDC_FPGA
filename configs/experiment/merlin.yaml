@@ -20,7 +20,6 @@ callbacks:
   compare_recon_to_gt:
     patch_dir: ${paths.data_dir}
     split_large_patch: False
-    with_compression: false
 
 trainer:
   min_epochs: 1
