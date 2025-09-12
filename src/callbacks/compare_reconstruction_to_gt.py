@@ -9,6 +9,7 @@ from lightning import Callback, LightningModule, Trainer
 from matplotlib.ticker import FuncFormatter
 
 from src.utils.constants import amp_max, amp_min
+from src.utils.sar_utils import symmetrize
 
 
 class CompareReconstructionToGT(Callback):
@@ -19,7 +20,6 @@ class CompareReconstructionToGT(Callback):
         split_large_patch: bool = False,
         blend_method: str = "linear",
         stride: int = -1,
-        with_compression: bool = False,
     ):
         super().__init__()
         self.patch_dir = Path(patch_dir) / "visualization"
@@ -31,17 +31,28 @@ class CompareReconstructionToGT(Callback):
         self.blend_method = blend_method
         self.stride = stride
 
-        self.with_compression = with_compression
+        self.with_compression = None
 
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
         """Find the large patch and convert it to a torch tensor."""
         print(
             f"Setting CompareReconstructionToGT Callback. {self.clip_and_norm=}, {self.clip_factor=}, {self.split_large_patch=} ({self.blend_method=}, {self.stride=})"
         )
+        print(
+            f"Called with {pl_module.__class__.__name__}: net = {pl_module.net.__class__.__name__}, criterion = {pl_module.criterion.__class__.__name__}."
+        )
+        if pl_module.__class__.__name__ == "MerlinModule":
+            self.with_compression = False
+        elif pl_module.__class__.__name__ == "SARDDCModule":
+            self.with_compression = True
+        else:
+            raise ValueError(
+                f"Unsupported LightningModule class: {pl_module.__class__.__name__}"
+            )
         # ----- Load the noisy patch -----
-        # For the files in patch_dir find the one that starts with noisy_ and ends with .npy
+        # For the files in patch_dir find the one that starts with raw_ and ends with .npy
         found_patch = False
-        for file in self.patch_dir.glob("noisy_*.npy"):
+        for file in self.patch_dir.glob("raw_*.npy"):
             self.patch_path = file
             found_patch = True
             break
@@ -53,6 +64,7 @@ class CompareReconstructionToGT(Callback):
 
         # --- Read and prepare noisy patch data as numpy arrays for visualization ---
         patch_data = np.load(self.patch_path)  # [H, W, 2]
+        patch_data = symmetrize(patch_data)
         I_noisy = np.square(patch_data[:, :, 0]) + np.square(patch_data[:, :, 1])
         self.A_noisy = np.sqrt(I_noisy)
         self.logI_noisy = np.log(I_noisy + self.eps)
@@ -66,7 +78,13 @@ class CompareReconstructionToGT(Callback):
         # Normalize
         patch = torch.square(patch_tensor)
         patch = torch.log(patch + self.eps)
+        print(
+            f"    NOISY TENSOR LOG-I (shape={patch.shape}) statistics: min={patch.min():.4f}, max={patch.max():.4f}, mean={patch.mean():.4f}, std={patch.std():.4f}. Is NaN={torch.isnan(patch).any()}."
+        )
         patch = (patch - 2 * amp_max) / (2 * amp_min - 2 * amp_max)
+        print(
+            f"    NORMALIZED NOISY TENSOR LOG-I (shape={patch.shape}) statistics: min={patch.min():.4f}, max={patch.max():.4f}, mean={patch.mean():.4f}, std={patch.std():.4f}. Is NaN={torch.isnan(patch).any()}."
+        )
         # Add batch and channel dimensions
         self.real_tensor = patch[:, :, 0].unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
         self.imag_tensor = patch[:, :, 1].unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
@@ -127,14 +145,14 @@ class CompareReconstructionToGT(Callback):
         # ----- Forward pass to get reconstruction and metrics -----
         with torch.no_grad():
             if self.split_large_patch:
-                out_criterion_real, recon_real = self.process_large_patch(
+                criterion_real, recon_real = self.process_large_patch(
                     pl_module,
                     self.real_tensor,
                     self.imag_tensor,
                     stride=self.stride,
                     blend_method=self.blend_method,
                 )
-                out_criterion_imag, recon_imag = self.process_large_patch(
+                criterion_imag, recon_imag = self.process_large_patch(
                     pl_module,
                     self.imag_tensor,
                     self.real_tensor,
@@ -142,14 +160,20 @@ class CompareReconstructionToGT(Callback):
                     blend_method=self.blend_method,
                 )
             else:
-                out_criterion_real, recon_real = pl_module._model_forward(
+                criterion_real, recon_real = pl_module._model_forward(
                     self.real_tensor, self.imag_tensor
                 )
-                out_criterion_imag, recon_imag = pl_module._model_forward(
+                criterion_imag, recon_imag = pl_module._model_forward(
                     self.imag_tensor, self.real_tensor
                 )
+            print(
+                f"   RECON: min={recon_real.min().item():.4f}, max={recon_real.max().item():.4f}, mean={recon_real.mean().item():.4f}, std={recon_real.std().item():.4f}. Is NaN={torch.isnan(recon_real).any().item()}."
+            )
+            print(
+                f"    TARGET: min={self.imag_tensor.min().item():.4f}, max={self.imag_tensor.max().item():.4f}, mean={self.imag_tensor.mean().item():.4f}, std={self.imag_tensor.std().item():.4f}. Is NaN={torch.isnan(self.imag_tensor).any().item()}."
+            )
 
-        # ----- Denorm the reconstructions -----
+        # ----- Denorm the reconstructions  -----
         recon_real = torch.exp(
             recon_real.squeeze() * (2 * amp_max - 2 * amp_min) + 2 * amp_min
         )
@@ -167,15 +191,15 @@ class CompareReconstructionToGT(Callback):
 
         # fig_A, _ = self._visualize_with_histograms(
         #     A_recon,
-        #     out_criterion_real,
-        #     out_criterion_imag,
+        #     criterion_real,
+        #     criterion_imag,
         #     trainer,
         #     scale="A",
         # )
         fig_logI, metrics = self._visualize_with_histograms(
             logI_recon,
-            out_criterion_real,
-            out_criterion_imag,
+            criterion_real,
+            criterion_imag,
             trainer,
             scale="logI",
         )
@@ -396,15 +420,15 @@ class CompareReconstructionToGT(Callback):
 
                 # Process patches + Accumulate metrics
                 with torch.no_grad():
-                    out_criterion, output = pl_module._model_forward(
+                    criterion, output = pl_module._model_forward(
                         input_patch, target_patch
                     )
 
                 if patch_count == 0:
-                    output_large_criterion = out_criterion
+                    output_large_criterion = criterion
                 else:
                     for key in output_large_criterion.keys():
-                        output_large_criterion[key] += out_criterion[key]
+                        output_large_criterion[key] += criterion[key]
                 patch_count += 1
 
                 # Prepare blend
