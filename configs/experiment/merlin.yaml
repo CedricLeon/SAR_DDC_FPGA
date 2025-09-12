@@ -25,6 +25,8 @@ trainer:
   min_epochs: 1
   max_epochs: 30
   deterministic: True
+  detect_anomaly: True
+  log_every_n_steps: 10
 
 logger:
   wandb:
