@@ -166,6 +166,7 @@ class CompareReconstructionToGT(Callback):
                 criterion_imag, recon_imag = pl_module._model_forward(
                     self.imag_tensor, self.real_tensor
                 )
+            self.recon_real_as_output = recon_real
             print(
                 f"   RECON: min={recon_real.min().item():.4f}, max={recon_real.max().item():.4f}, mean={recon_real.mean().item():.4f}, std={recon_real.std().item():.4f}. Is NaN={torch.isnan(recon_real).any().item()}."
             )
@@ -238,7 +239,7 @@ class CompareReconstructionToGT(Callback):
         else:
             raise ValueError(f"Unknown scale: {scale}")
 
-        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        fig, axes = plt.subplots(2, 4, figsize=(15, 10))
         # ----- Row 1: Images -----
         # Original
         im0 = axes[0, 0].imshow(
@@ -258,27 +259,34 @@ class CompareReconstructionToGT(Callback):
         axes[0, 1].axis("off")
         fig.colorbar(im1, ax=axes[0, 1], shrink=0.8)
 
+        im2 = axes[0, 2].imshow(
+            self.recon_real_as_output.squeeze().cpu().numpy(), cmap="gray"
+        )
+        axes[0, 2].set_title("Recon Real part (exactly as output)")
+        axes[0, 2].axis("off")
+        fig.colorbar(im2, ax=axes[0, 2], shrink=0.8)
+
         # MERLIN GT (if available)
         if merlin is not None:
-            im2 = axes[0, 2].imshow(
+            im3 = axes[0, 3].imshow(
                 self._clip_and_minmax_normalize(merlin)
                 if self.clip_and_norm
                 else merlin,
                 cmap="gray",
             )
-            axes[0, 2].set_title(subtitles[2])
-            axes[0, 2].axis("off")
-            fig.colorbar(im2, ax=axes[0, 2], shrink=0.8)
+            axes[0, 3].set_title(subtitles[2])
+            axes[0, 3].axis("off")
+            fig.colorbar(im3, ax=axes[0, 3], shrink=0.8)
         else:
-            axes[0, 2].text(
+            axes[0, 3].text(
                 0.5,
                 0.5,
                 "MERLIN GT\nNot Available",
                 ha="center",
                 va="center",
-                transform=axes[0, 2].transAxes,
+                transform=axes[0, 3].transAxes,
             )
-            axes[0, 2].axis("off")
+            axes[0, 3].axis("off")
 
         # ----- Row 2: Histograms -----
         def plot_histogram(ax, data, title):
@@ -313,20 +321,25 @@ class CompareReconstructionToGT(Callback):
 
         # Reconstruction histogram
         plot_histogram(axes[1, 1], recon, "Recon Histogram")
+        plot_histogram(
+            axes[1, 2],
+            self.recon_real_as_output.squeeze().cpu().numpy(),
+            "Recon Real part Histogram",
+        )
 
         # MERLIN GT histogram (if available)
         if merlin is not None:
-            plot_histogram(axes[1, 2], merlin, "MERLIN GT Histogram")
+            plot_histogram(axes[1, 3], merlin, "MERLIN GT Histogram")
         else:
-            axes[1, 2].text(
+            axes[1, 3].text(
                 0.5,
                 0.5,
                 "MERLIN GT\nHistogram\nNot Available",
                 ha="center",
                 va="center",
-                transform=axes[1, 2].transAxes,
+                transform=axes[1, 3].transAxes,
             )
-            axes[1, 2].axis("off")
+            axes[1, 3].axis("off")
 
         # ----- Add overall title with metrics -----\
         metrics = {}
