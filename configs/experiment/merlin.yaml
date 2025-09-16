@@ -16,10 +16,22 @@ data:
   batch_size: 12 # MERLIN uses 12
   num_workers: 11
 
+model:
+  optimizer:
+    # About the learning rate: it's EXTREMELY sensible. Check sweep from September 12th, 2025 to see boundaries:
+    #  - 5e-4 is too high (diverges and recinstructs NaNs)
+    #  - 1e-4 is ok
+    #  - 1e-5 is ok
+    #  - 1e-6 is too low (starts seeing some instability)
+    # If the training diverges, first thing: lower the lr. Also @TODO, see how the batch_size affects this.
+    lr: 1e-4
+
 callbacks:
   compare_recon_to_gt:
     patch_dir: ${paths.data_dir}
-    split_large_patch: False
+    # split_large_patch: True
+    # blend_method: "count"
+    # stride: ${data.patch_size}
 
 trainer:
   min_epochs: 1
