@@ -61,7 +61,7 @@ class MerlinUNet(nn.Module):
         self.dec_conv1c = nn.Conv2d(32, nb_out, kernel_size=3, padding=1)
 
         # Leaky ReLU activation
-        self.leaky_relu = nn.LeakyReLU(negative_slope=0.1)
+        self.leaky_relu = nn.LeakyReLU(negative_slope=0.1)  # alpha in paper
 
         # Initialize weights using He initialization
         self._initialize_weights()
