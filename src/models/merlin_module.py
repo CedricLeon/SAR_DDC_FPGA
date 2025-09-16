@@ -82,6 +82,9 @@ class MerlinModule(lightning.LightningModule):
         """Log training, validation, or test metrics."""
         log_info = {
             f"{prefix}/loss": criterion["loss"].item(),
+            f"{prefix}/loss_denorm": criterion["loss_denorm"].item(),
+            f"{prefix}/loss_term1": criterion["loss_term1"].item(),
+            f"{prefix}/loss_term2": criterion["loss_term2"].item(),
             f"{prefix}/mse": criterion["mse"].item(),
             f"{prefix}/ssim": criterion["ssim"].item(),
             f"{prefix}/ms_ssim": criterion["ms_ssim"].item(),
@@ -128,13 +131,20 @@ class MerlinModule(lightning.LightningModule):
         optimizer.zero_grad()
 
         # Step scheduler if available (for step-based schedulers)
-        sch = self.lr_schedulers()
-        sch.step()
+        if self.trainer.is_last_batch:
+            sch = self.lr_schedulers()
+            sch.step()
+
+        # custom learning rate logging
+        lr = optimizer.param_groups[0]["lr"]
+        self.log(
+            "train/lr", lr, on_step=True, on_epoch=False, prog_bar=False, logger=True
+        )
 
         self._log_metrics("train", criterion)
 
         # Returning the loss not required in manual optimization
-        # return criterion["loss"]
+        return criterion["loss"]
 
     def validation_step(self, batch, batch_idx):
         """Validation step with optimized processing of both real and imaginary parts."""
@@ -148,35 +158,21 @@ class MerlinModule(lightning.LightningModule):
         criterion, _ = self._model_forward(input, target)
         self._log_metrics("test", criterion)
 
-    def on_validation_epoch_end(self) -> None:
-        """Update LR scheduler based on validation loss."""
-        lr_scheduler = self.lr_schedulers()
-        if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            lr_scheduler.step(self.trainer.callback_metrics["valid/loss"])
-
     def configure_optimizers(self):
         optimizer = self.hparams.optimizer(params=self.trainer.model.parameters())
+        print("Optimizer:", optimizer)
+        self.epoch_based_scheduler = True  # Default to epoch-based
         if self.hparams.scheduler is not None:
             scheduler = self.hparams.scheduler(optimizer=optimizer)
-            # For ReduceLROnPlateau, we must monitor a metric
-            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                return {
-                    "optimizer": optimizer,
-                    "lr_scheduler": {
-                        "scheduler": scheduler,
-                        "monitor": "valid/loss",
-                        "interval": "epoch",
-                        "frequency": 1,
-                    },
-                }
-            # For MultiStepLR and others
-            else:
-                return {
-                    "optimizer": optimizer,
-                    "lr_scheduler": {
-                        "scheduler": scheduler,
-                        "interval": "epoch",
-                        "frequency": 1,
-                    },
-                }
+            print("Scheduler:", scheduler)
+            print("Scheduler params:", scheduler.state_dict())
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    # "interval" and "frequency" not necessary in manual optimization, see https://lightning.ai/docs/pytorch/stable/common/optimization.html#learning-rate-scheduling
+                    # "interval": "epoch",
+                    # "frequency": 1,
+                },
+            }
         return {"optimizer": optimizer}

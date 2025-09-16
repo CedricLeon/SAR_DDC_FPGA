@@ -94,7 +94,8 @@ class MerlinLoss(nn.Module):
             data_range=(amp_min, amp_max)
         )
 
-        self.count_calls = 0
+        self.count_calls: int | None = None  # 0 to enable printing
+        self.print_every_n_call = 50
 
     def forward(
         self, predicted: torch.Tensor, target: torch.Tensor
@@ -111,25 +112,41 @@ class MerlinLoss(nn.Module):
         """
         out = {}
 
+        loss_denorm = 0.5 * predicted + torch.exp(2 * target - predicted)
+        out["loss_denorm"] = torch.mean(loss_denorm)
+
         # Denorm the reconstructions and target before computing losses
         predicted_denorm = predicted * (2 * amp_max - 2 * amp_min) + 2 * amp_min
         target_denorm = target * (2 * amp_max - 2 * amp_min) + 2 * amp_min
 
-        # MERLIN loss in log-scale: 0.5 * r + exp(2*b - r)
-        loss = 0.5 * predicted_denorm + torch.exp(2 * target_denorm - predicted_denorm)
-        out["loss"] = torch.mean(loss)
+        # MERLIN loss in log-scale: Sum over pixels 0.5 * r + exp(2*b - r)
+        # Use mean instead of sum for numerical stability. therefore we scale lr by HxW
+        term1 = 0.5 * predicted_denorm
+        term2 = torch.exp(2 * target_denorm - predicted_denorm)
+
+        # # TO CONSIDER: Clamp the exponential term to prevent overflow
+        # term2 = torch.clamp(term2, max=1e6)
+        if torch.isnan(term2).any():
+            print(
+                f"NaN detected in term2: pred_range=[{predicted_denorm.min()}, {predicted_denorm.max()}], target_range=[{target_denorm.min()}, {target_denorm.max()}]"
+            )
+
+        out["loss_term1"] = torch.mean(term1)
+        out["loss_term2"] = torch.mean(term2)
+        out["loss"] = torch.mean(term1 + term2)
 
         out["mse"] = self.mse(predicted_denorm, target_denorm)
         out["psnr"] = self.psnr(predicted_denorm, target_denorm)
         out["ssim"] = self.ssim(predicted_denorm, target_denorm)
         out["ms_ssim"] = self.ms_ssim(predicted_denorm, target_denorm)
 
-        # Print predicted statistics every 50th calls
-        if self.count_calls % 50 == 0:
-            print(
-                f"[MerlinLoss: {out['loss']:.3f}] Call {self.count_calls}: Predicted min {predicted.min().item():.4f}, max {predicted.max().item():.4f}, mean {predicted.mean().item():.4f}, std {predicted.std().item():.4f}, isNaN {torch.isnan(predicted).any().item()}."
-                f" Target min {target.min().item():.4f}, max {target.max().item():.4f}, mean {target.mean().item():.4f}, std {target.std().item():.4f}, isNaN {torch.isnan(target).any().item()}."
-            )
-        self.count_calls += 1
+        # Print predicted statistics every nth calls
+        if self.count_calls is not None:
+            if self.count_calls % self.print_every_n_call == 0:
+                print(
+                    f"[MerlinLoss: {out['loss']:.3f}] Call {self.count_calls}: Predicted min {predicted.min().item():.4f}, max {predicted.max().item():.4f}, mean {predicted.mean().item():.4f}, std {predicted.std().item():.4f}, isNaN {torch.isnan(predicted).any().item()}."
+                    f" Target min {target.min().item():.4f}, max {target.max().item():.4f}, mean {target.mean().item():.4f}, std {target.std().item():.4f}, isNaN {torch.isnan(target).any().item()}."
+                )
+            self.count_calls += 1
 
         return out
