@@ -39,7 +39,8 @@ class MonitorValReconstruction(Callback):
 
         # Forward pass to get reconstructions
         with torch.no_grad():
-            criterion, reconstructions = pl_module._model_forward(input, target)
+            reconstructions = pl_module(input)
+            criterion = pl_module.criterion(reconstructions, target)
 
         # Create the visualization
         fig, axes = plt.subplots(

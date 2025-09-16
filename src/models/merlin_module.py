@@ -63,21 +63,6 @@ class MerlinModule(lightning.LightningModule):
         """Forward pass through the network."""
         return self.net(x)
 
-    def _model_forward(
-        self, input: Tensor, target: Tensor
-    ) -> Tuple[Dict[str, Any], Tensor]:
-        """Forward pass through the model and criterion computation.
-        Args:
-            input: Input tensor (squared real or imaginary part) [batch_size, 1, height, width]
-            target: Target tensor (squared real or imaginary part) [batch_size, 1, height, width]
-
-        Returns:
-            (out_criterion, reconstruction): A tuple with a dictionary containing loss and metrics, and the reconstructed output tensor.
-        """
-        output = self.forward(input)
-        criterion = self.criterion(output, target)
-        return criterion, output
-
     def _log_metrics(self, prefix: str, criterion: Dict[str, Any]) -> None:
         """Log training, validation, or test metrics."""
         log_info = {
@@ -114,7 +99,8 @@ class MerlinModule(lightning.LightningModule):
         optimizer = self.optimizers()
 
         input, target = self._random_switch_Re_Im(batch)
-        criterion, _ = self._model_forward(input, target)
+        output = self.forward(input)
+        criterion = self.criterion(output, target)
 
         # Manual backward pass
         self.manual_backward(criterion["loss"])
@@ -149,13 +135,15 @@ class MerlinModule(lightning.LightningModule):
     def validation_step(self, batch, batch_idx):
         """Validation step with optimized processing of both real and imaginary parts."""
         input, target = self._random_switch_Re_Im(batch)
-        criterion, _ = self._model_forward(input, target)
+        output = self.forward(input)
+        criterion = self.criterion(output, target)
         self._log_metrics("valid", criterion)
 
     def test_step(self, batch, batch_idx):
         """Test step with optimized processing of both real and imaginary parts."""
         input, target = self._random_switch_Re_Im(batch)
-        criterion, _ = self._model_forward(input, target)
+        output = self.forward(input)
+        criterion = self.criterion(output, target)
         self._log_metrics("test", criterion)
 
     def configure_optimizers(self):

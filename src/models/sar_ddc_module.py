@@ -80,37 +80,22 @@ class SARDDCModule(lightning.LightningModule):
         """Forward pass through the network."""
         return self.net(x)
 
-    def _model_forward(
-        self, input: Tensor, target: Tensor
-    ) -> Tuple[Dict[str, Any], Tensor]:
-        """Forward pass through the model and criterion computation.
-        Args:
-            input: Input tensor (squared real or imaginary part) [batch_size, 1, height, width]
-            target: Target tensor (squared real or imaginary part) [batch_size, 1, height, width]
-
-        Returns:
-            (out_criterion, reconstruction): A tuple with a dictionary containing loss and metrics, and the reconstructed output tensor.
-        """
-        output = self.forward(input)
-        out_criterion = self.criterion(output, target)
-        return out_criterion, output["x_hat"]
-
     def _log_metrics(
         self,
         prefix: str,
-        out_criterion: Dict[str, Any],
+        criterion: Dict[str, Any],
         aux_loss: float,
     ) -> None:
         """Log training, validation, or test metrics."""
         log_info = {
-            f"{prefix}/loss": out_criterion["loss"].item(),
-            f"{prefix}/distortion": out_criterion["distortion"].item(),
-            f"{prefix}/bpp": out_criterion["bpp"].item(),
-            f"{prefix}/mse": out_criterion["mse"].item(),
-            f"{prefix}/ssim": out_criterion["ssim"].item(),
-            f"{prefix}/ms_ssim": out_criterion["ms_ssim"].item(),
-            f"{prefix}/merlin": out_criterion["merlin"].item(),
-            f"{prefix}/psnr": out_criterion["psnr"].item(),
+            f"{prefix}/loss": criterion["loss"].item(),
+            f"{prefix}/distortion": criterion["distortion"].item(),
+            f"{prefix}/bpp": criterion["bpp"].item(),
+            f"{prefix}/mse": criterion["mse"].item(),
+            f"{prefix}/ssim": criterion["ssim"].item(),
+            f"{prefix}/ms_ssim": criterion["ms_ssim"].item(),
+            f"{prefix}/merlin": criterion["merlin"].item(),
+            f"{prefix}/psnr": criterion["psnr"].item(),
             f"{prefix}/aux": aux_loss,
         }
 
@@ -148,10 +133,11 @@ class SARDDCModule(lightning.LightningModule):
 
         # Forward pass
         input, target = self._random_switch_Re_Im(batch)
-        out_criterion, _ = self._model_forward(input, target)
+        output = self.forward(input)
+        criterion = self.criterion(output["x_hat"], target)
 
         # Backward pass for the main loss
-        self.manual_backward(out_criterion["loss"])
+        self.manual_backward(criterion["loss"])
         if self.hparams.gradient_clip_norm > 0.0:  # Prevent exploding gradients
             torch.nn.utils.clip_grad_norm_(
                 self.net.parameters(), self.hparams.gradient_clip_norm
@@ -164,21 +150,23 @@ class SARDDCModule(lightning.LightningModule):
         aux_optimizer.step()
 
         # Log metrics
-        self._log_metrics("train", out_criterion, aux_loss.item())
+        self._log_metrics("train", criterion, aux_loss.item())
 
     def validation_step(self, batch, batch_idx):
         """Validation step with optimized processing of both real and imaginary parts."""
         input, target = self._random_switch_Re_Im(batch)
-        out_criterion, _ = self._model_forward(input, target)
+        output = self.forward(input)
+        criterion = self.criterion(output["x_hat"], target)
         aux_loss = self.net.aux_loss()
-        self._log_metrics("valid", out_criterion, aux_loss.item())
+        self._log_metrics("valid", criterion, aux_loss.item())
 
     def test_step(self, batch, batch_idx):
         """Test step with optimized processing of both real and imaginary parts."""
         input, target = self._random_switch_Re_Im(batch)
-        out_criterion, _ = self._model_forward(input, target)
+        output = self.forward(input)
+        criterion = self.criterion(output["x_hat"], target)
         aux_loss = self.net.aux_loss()
-        self._log_metrics("test", out_criterion, aux_loss.item())
+        self._log_metrics("test", criterion, aux_loss.item())
 
     def on_validation_epoch_end(self) -> None:
         """Update LR scheduler based on validation loss."""

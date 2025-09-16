@@ -160,12 +160,10 @@ class CompareReconstructionToGT(Callback):
                     blend_method=self.blend_method,
                 )
             else:
-                criterion_real, recon_real = pl_module._model_forward(
-                    self.real_tensor, self.imag_tensor
-                )
-                criterion_imag, recon_imag = pl_module._model_forward(
-                    self.imag_tensor, self.real_tensor
-                )
+                recon_real = pl_module(self.real_tensor)
+                criterion_real = pl_module.criterion(recon_real, self.imag_tensor)
+                recon_imag = pl_module(self.imag_tensor)
+                criterion_imag = pl_module.criterion(recon_imag, self.real_tensor)
             self.recon_real_as_output = recon_real
             print(
                 f"   RECON: min={recon_real.min().item():.4f}, max={recon_real.max().item():.4f}, mean={recon_real.mean().item():.4f}, std={recon_real.std().item():.4f}. Is NaN={torch.isnan(recon_real).any().item()}."
@@ -392,7 +390,7 @@ class CompareReconstructionToGT(Callback):
         """Process a large patch by splitting into smaller patches, processing each, then recombining.
 
         Args:
-            model: LightningModule with _model_forward method
+            model: LightningModule
             patch: Tensor of shape [B, 1, H, W]
             model_patch_size: Size of patches the model expects (e.g., 256)
             stride: Stride between patches (if -1, uses model_patch_size/2)
@@ -433,9 +431,8 @@ class CompareReconstructionToGT(Callback):
 
                 # Process patches + Accumulate metrics
                 with torch.no_grad():
-                    criterion, output = pl_module._model_forward(
-                        input_patch, target_patch
-                    )
+                    output = pl_module(input_patch)
+                    criterion = pl_module.criterion(output, target_patch)
 
                 if patch_count == 0:
                     output_large_criterion = criterion
