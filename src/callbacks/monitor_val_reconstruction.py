@@ -16,6 +16,16 @@ class MonitorValReconstruction(Callback):
         self.log_every_n_epochs = log_every_n_epochs
         self.num_images = num_images
 
+    def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
+        if pl_module.__class__.__name__ == "MerlinModule":
+            self.with_compression = False
+        elif pl_module.__class__.__name__ == "SARDDCModule":
+            self.with_compression = True
+        else:
+            raise ValueError(
+                f"Unsupported LightningModule class: {pl_module.__class__.__name__}"
+            )
+
     def on_validation_batch_end(
         self,
         trainer: Trainer,
@@ -41,6 +51,8 @@ class MonitorValReconstruction(Callback):
         with torch.no_grad():
             reconstructions = pl_module(input)
             criterion = pl_module.criterion(reconstructions, target)
+            if self.with_compression:
+                reconstructions = reconstructions["x_hat"]
 
         # Create the visualization
         fig, axes = plt.subplots(

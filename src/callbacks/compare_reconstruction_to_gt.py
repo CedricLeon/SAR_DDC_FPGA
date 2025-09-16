@@ -36,10 +36,10 @@ class CompareReconstructionToGT(Callback):
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
         """Find the large patch and convert it to a torch tensor."""
         print(
-            f"Setting CompareReconstructionToGT Callback. {self.clip_and_norm=}, {self.clip_factor=}, {self.split_large_patch=} ({self.blend_method=}, {self.stride=})"
+            f"\n[CompareReconstructionToGT] Setting up Callback. {self.clip_and_norm=}, {self.clip_factor=}, {self.split_large_patch=} ({self.blend_method=}, {self.stride=})"
         )
         print(
-            f"Called with {pl_module.__class__.__name__}: net = {pl_module.net.__class__.__name__}, criterion = {pl_module.criterion.__class__.__name__}."
+            f"    Called with {pl_module.__class__.__name__}: net = {pl_module.net.__class__.__name__}, criterion = {pl_module.criterion.__class__.__name__}."
         )
         if pl_module.__class__.__name__ == "MerlinModule":
             self.with_compression = False
@@ -62,15 +62,20 @@ class CompareReconstructionToGT(Callback):
                 "Please ensure the directory contains a file starting with 'val_' and ending with '.npy'."
             )
 
-        # --- Read and prepare noisy patch data as numpy arrays for visualization ---
+        # --- load and symmetrize ---
         patch_data = np.load(self.patch_path)  # [H, W, 2]
+        print(f"    Loaded RAW PATCH from {self.patch_path}.")
+        print(
+            f"        RAW PATCH (shape={patch_data.shape}) statistics: min={patch_data.min():.4f}, max={patch_data.max():.4f}, mean={patch_data.mean():.4f}, std={patch_data.std():.4f}. Is NaN={np.isnan(patch_data).any()}."
+        )
         patch_data = symmetrize(patch_data)
+
+        # --- Prepare noisy patch data as numpy arrays for visualization ---
         I_noisy = np.square(patch_data[:, :, 0]) + np.square(patch_data[:, :, 1])
         self.A_noisy = np.sqrt(I_noisy)
         self.logI_noisy = np.log(I_noisy + self.eps)
-        print(f"    Loaded NOISY PATCH from {self.patch_path}.")
         print(
-            f"    NOISY PATCH LOG-I (shape={self.logI_noisy.shape}) statistics: min={self.logI_noisy.min():.4f}, max={self.logI_noisy.max():.4f}, mean={self.logI_noisy.mean():.4f}, std={self.logI_noisy.std():.4f}. Is NaN={np.isnan(self.logI_noisy).any()}."
+            f"        NOISY PATCH LOG-I (shape={self.logI_noisy.shape}) statistics: min={self.logI_noisy.min():.4f}, max={self.logI_noisy.max():.4f}, mean={self.logI_noisy.mean():.4f}, std={self.logI_noisy.std():.4f}. Is NaN={np.isnan(self.logI_noisy).any()}."
         )
 
         # --- Store as torch tensors on device for forward passes ---
@@ -79,11 +84,11 @@ class CompareReconstructionToGT(Callback):
         patch = torch.square(patch_tensor)
         patch = torch.log(patch + self.eps)
         print(
-            f"    NOISY TENSOR LOG-I (shape={patch.shape}) statistics: min={patch.min():.4f}, max={patch.max():.4f}, mean={patch.mean():.4f}, std={patch.std():.4f}. Is NaN={torch.isnan(patch).any()}."
+            f"        NOISY TENSOR LOG (shape={patch.shape}) statistics: min={patch.min():.4f}, max={patch.max():.4f}, mean={patch.mean():.4f}, std={patch.std():.4f}. Is NaN={torch.isnan(patch).any()}."
         )
-        patch = (patch - 2 * amp_max) / (2 * amp_min - 2 * amp_max)
+        patch = (patch - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
         print(
-            f"    NORMALIZED NOISY TENSOR LOG-I (shape={patch.shape}) statistics: min={patch.min():.4f}, max={patch.max():.4f}, mean={patch.mean():.4f}, std={patch.std():.4f}. Is NaN={torch.isnan(patch).any()}."
+            f"        NORMALIZED NOISY TENSOR LOG (shape={patch.shape}) statistics: min={patch.min():.4f}, max={patch.max():.4f}, mean={patch.mean():.4f}, std={patch.std():.4f}. Is NaN={torch.isnan(patch).any()}."
         )
         # Add batch and channel dimensions
         self.real_tensor = patch[:, :, 0].unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
@@ -101,7 +106,7 @@ class CompareReconstructionToGT(Callback):
 
             print(f"    Loaded MERLIN GT from {self.merlin_gt_path}.")
             print(
-                f"    MERLIN LOG-INTENSITY  (shape={self.logI_merlin.shape}) statistics: min={self.logI_merlin.min():.4f}, max={self.logI_merlin.max():.4f}, mean={self.logI_merlin.mean():.4f}, std={self.logI_merlin.std():.4f}. Is NaN={np.isnan(self.logI_merlin).any()}."
+                f"        MERLIN LOG-INTENSITY  (shape={self.logI_merlin.shape}) statistics: min={self.logI_merlin.min():.4f}, max={self.logI_merlin.max():.4f}, mean={self.logI_merlin.mean():.4f}, std={self.logI_merlin.std():.4f}. Is NaN={np.isnan(self.logI_merlin).any()}."
             )
             found_merlin = True
             break
@@ -164,23 +169,32 @@ class CompareReconstructionToGT(Callback):
                 criterion_real = pl_module.criterion(recon_real, self.imag_tensor)
                 recon_imag = pl_module(self.imag_tensor)
                 criterion_imag = pl_module.criterion(recon_imag, self.real_tensor)
-            self.recon_real_as_output = recon_real
+
+            if self.with_compression:
+                recon_real = recon_real["x_hat"]
+                recon_imag = recon_imag["x_hat"]
+            self.recon_as_output = 0.5 * (recon_real + recon_imag)
             print(
-                f"   RECON: min={recon_real.min().item():.4f}, max={recon_real.max().item():.4f}, mean={recon_real.mean().item():.4f}, std={recon_real.std().item():.4f}. Is NaN={torch.isnan(recon_real).any().item()}."
+                f"    RECON: min={recon_real.min().item():.4f}, max={recon_real.max().item():.4f}, mean={recon_real.mean().item():.4f}, std={recon_real.std().item():.4f}. Is NaN={torch.isnan(recon_real).any().item()}."
             )
             print(
                 f"    TARGET: min={self.imag_tensor.min().item():.4f}, max={self.imag_tensor.max().item():.4f}, mean={self.imag_tensor.mean().item():.4f}, std={self.imag_tensor.std().item():.4f}. Is NaN={torch.isnan(self.imag_tensor).any().item()}."
             )
 
         # ----- Denorm the reconstructions  -----
-        recon_real = torch.exp(
-            recon_real.squeeze() * (2 * amp_max - 2 * amp_min) + 2 * amp_min
+        # Either I denorm with the factor 2 or I don't square when building the input
+        recon_real = torch.exp(recon_real.squeeze() * (amp_max - amp_min) + amp_min)
+        recon_imag = torch.exp(recon_imag.squeeze() * (amp_max - amp_min) + amp_min)
+        print(
+            f"    RECON DENORM LINEAR: min={recon_real.min().item():.4f}, max={recon_real.max().item():.4f}, mean={recon_real.mean().item():.4f}, std={recon_real.std().item():.4f}. Is NaN={torch.isnan(recon_real).any().item()}."
         )
-        recon_imag = torch.exp(
-            recon_imag.squeeze() * (2 * amp_max - 2 * amp_min) + 2 * amp_min
-        )
+
         # Build full amplitude reconstruction
-        I_recon = 0.5 * (torch.square(recon_real) + torch.square(recon_imag))
+        # I_recon = 0.5 * (torch.square(recon_real) + torch.square(recon_imag))
+        I_recon = 0.5 * (recon_real + recon_imag)
+        print(
+            f"    RECON INTENSITY: min={I_recon.min().item():.4f}, max={I_recon.max().item():.4f}, mean={I_recon.mean().item():.4f}, std={I_recon.std().item():.4f}. Is NaN={torch.isnan(I_recon).any().item()}."
+        )
         A_recon = torch.sqrt(I_recon)
         logI_recon = torch.log(I_recon + self.eps)
 
@@ -257,10 +271,14 @@ class CompareReconstructionToGT(Callback):
         axes[0, 1].axis("off")
         fig.colorbar(im1, ax=axes[0, 1], shrink=0.8)
 
+        recon_as_output = self.recon_as_output.squeeze().cpu().numpy()
         im2 = axes[0, 2].imshow(
-            self.recon_real_as_output.squeeze().cpu().numpy(), cmap="gray"
+            self._clip_and_minmax_normalize(recon_as_output)
+            if self.clip_and_norm
+            else recon_as_output,
+            cmap="gray",
         )
-        axes[0, 2].set_title("Recon Real part (exactly as output)")
+        axes[0, 2].set_title("Recon (exactly as output)")
         axes[0, 2].axis("off")
         fig.colorbar(im2, ax=axes[0, 2], shrink=0.8)
 
@@ -321,8 +339,8 @@ class CompareReconstructionToGT(Callback):
         plot_histogram(axes[1, 1], recon, "Recon Histogram")
         plot_histogram(
             axes[1, 2],
-            self.recon_real_as_output.squeeze().cpu().numpy(),
-            "Recon Real part Histogram",
+            self.recon_as_output.squeeze().cpu().numpy(),
+            "Recon output Histogram",
         )
 
         # MERLIN GT histogram (if available)

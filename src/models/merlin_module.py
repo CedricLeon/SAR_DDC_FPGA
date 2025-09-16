@@ -116,7 +116,7 @@ class MerlinModule(lightning.LightningModule):
         optimizer.step()
         optimizer.zero_grad()
 
-        # Step scheduler if available (for step-based schedulers)
+        # Step scheduler if available (for epoch-based schedulers)
         if self.trainer.is_last_batch:
             sch = self.lr_schedulers()
             sch.step()
@@ -149,7 +149,7 @@ class MerlinModule(lightning.LightningModule):
     def configure_optimizers(self):
         optimizer = self.hparams.optimizer(params=self.trainer.model.parameters())
         print("Optimizer:", optimizer)
-        self.epoch_based_scheduler = True  # Default to epoch-based
+
         if self.hparams.scheduler is not None:
             scheduler = self.hparams.scheduler(optimizer=optimizer)
             print("Scheduler:", scheduler)

@@ -47,22 +47,22 @@ class SARDDCModule(lightning.LightningModule):
         # Activate manual optimization, because we have two optimizers.
         self.automatic_optimization = False
 
-    def on_fit_start(self):
-        """Called at the beginning of fit."""
-        # Set up wandb watch to monitor parameters and gradients
-        if isinstance(self.trainer.logger, WandbLogger):
-            print("----------------------The WandB logger should watch gradient")
-            self.trainer.logger.watch(
-                self.net,
-                log="all",  # Track both gradients and parameters
-                log_freq=100,  # Log every 100 batches
-                log_graph=False,  # Disable logging model graph
-            )
+    # def on_fit_start(self):
+    #     """Called at the beginning of fit."""
+    #     # Set up wandb watch to monitor parameters and gradients
+    #     if isinstance(self.trainer.logger, WandbLogger):
+    #         print("----------------------The WandB logger should watch gradient")
+    #         self.trainer.logger.watch(
+    #             self.net,
+    #             log="all",  # Track both gradients and parameters
+    #             log_freq=100,  # Log every 100 batches
+    #             log_graph=False,  # Disable logging model graph
+    #         )
 
-    def on_train_end(self):
-        # Remove the hooks added by watch() to the model
-        if isinstance(self.trainer.logger, WandbLogger):
-            wandb.unwatch(self.net)
+    # def on_train_end(self):
+    #     # Remove the hooks added by watch() to the model
+    #     if isinstance(self.trainer.logger, WandbLogger):
+    #         wandb.unwatch(self.net)
 
     def _random_switch_Re_Im(self, batch: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         # Get real and imaginary parts (already squared and normalized)
@@ -89,7 +89,6 @@ class SARDDCModule(lightning.LightningModule):
         """Log training, validation, or test metrics."""
         log_info = {
             f"{prefix}/loss": criterion["loss"].item(),
-            f"{prefix}/distortion": criterion["distortion"].item(),
             f"{prefix}/bpp": criterion["bpp"].item(),
             f"{prefix}/mse": criterion["mse"].item(),
             f"{prefix}/ssim": criterion["ssim"].item(),
@@ -124,30 +123,40 @@ class SARDDCModule(lightning.LightningModule):
         optimizers = self.optimizers()
         if not isinstance(optimizers, list):
             optimizers = [optimizers]
-
         net_optimizer = optimizers[0]
         aux_optimizer = optimizers[1]
-
-        net_optimizer.zero_grad()
-        aux_optimizer.zero_grad()
 
         # Forward pass
         input, target = self._random_switch_Re_Im(batch)
         output = self.forward(input)
-        criterion = self.criterion(output["x_hat"], target)
+        criterion = self.criterion(output, target)
 
         # Backward pass for the main loss
         self.manual_backward(criterion["loss"])
-        if self.hparams.gradient_clip_norm > 0.0:  # Prevent exploding gradients
-            torch.nn.utils.clip_grad_norm_(
-                self.net.parameters(), self.hparams.gradient_clip_norm
-            )
+        self.clip_gradients(
+            net_optimizer,
+            gradient_clip_val=self.hparams.gradient_clip_norm,
+            gradient_clip_algorithm="norm",
+        )
         net_optimizer.step()
+        net_optimizer.zero_grad()
 
         # Auxiliary loss
         aux_loss = self.net.aux_loss()
         self.manual_backward(aux_loss)
         aux_optimizer.step()
+        aux_optimizer.zero_grad()
+
+        # Step scheduler if available (for epoch-based schedulers)
+        if self.trainer.is_last_batch:
+            sch = self.lr_schedulers()
+            sch.step()
+
+        # custom learning rate logging
+        lr = net_optimizer.param_groups[0]["lr"]
+        self.log(
+            "train/lr", lr, on_step=True, on_epoch=False, prog_bar=False, logger=True
+        )
 
         # Log metrics
         self._log_metrics("train", criterion, aux_loss.item())
@@ -156,7 +165,7 @@ class SARDDCModule(lightning.LightningModule):
         """Validation step with optimized processing of both real and imaginary parts."""
         input, target = self._random_switch_Re_Im(batch)
         output = self.forward(input)
-        criterion = self.criterion(output["x_hat"], target)
+        criterion = self.criterion(output, target)
         aux_loss = self.net.aux_loss()
         self._log_metrics("valid", criterion, aux_loss.item())
 
@@ -164,7 +173,7 @@ class SARDDCModule(lightning.LightningModule):
         """Test step with optimized processing of both real and imaginary parts."""
         input, target = self._random_switch_Re_Im(batch)
         output = self.forward(input)
-        criterion = self.criterion(output["x_hat"], target)
+        criterion = self.criterion(output, target)
         aux_loss = self.net.aux_loss()
         self._log_metrics("test", criterion, aux_loss.item())
 
@@ -208,13 +217,15 @@ class SARDDCModule(lightning.LightningModule):
         aux_optimizer = self.hparams.aux_optimizer(params=aux_params)
 
         # Configure the scheduler if provided
-        if self.hparams.scheduler:
-            lr_scheduler = self.hparams.scheduler(optimizer=net_optimizer)
+        if self.hparams.scheduler is not None:
+            scheduler = self.hparams.scheduler(optimizer=net_optimizer)
+            print("Scheduler:", scheduler)
+            print("Scheduler params:", scheduler.state_dict())
             return [
                 {
                     "optimizer": net_optimizer,
                     "lr_scheduler": {
-                        "scheduler": lr_scheduler,
+                        "scheduler": scheduler,
                         "name": "net_lr",  # "name" keywords are for the LearningRateMonitor callback
                         # "monitor": "valid/loss", # Unnecessary, because manual_optimization
                         # "interval": "epoch",

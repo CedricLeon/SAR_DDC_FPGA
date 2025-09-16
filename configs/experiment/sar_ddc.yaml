@@ -13,24 +13,30 @@ defaults:
 
 data:
   # hdf5_dir: ${paths.data_dir}processed_hdf5/TSX_preprocessed_spatial_splits_5_256x256
-  batch_size: 8 # Seems way more stable than 16 or 32
+  batch_size: 12 # Or 8. Seems way more stable than 16 or 32
   num_workers: 11
 
 model:
   criterion:
     metric: "merlin" # "mse" or "ssim" or "ms_ssim"
     lmbda: 100
+  net_optimizer:
+    lr: 1e-4
+  # Check if aux_optimizer.lr has good values
 
 callbacks:
   compare_recon_to_gt:
     patch_dir: ${paths.data_dir}
     split_large_patch: False
-    # blend_method: "linear"
+    blend_method: "count"
+    stride: 256
 
 trainer:
   min_epochs: 1
   max_epochs: 30
   deterministic: True
+  detect_anomaly: True
+  log_every_n_steps: 10
 
 logger:
   wandb:
@@ -43,5 +49,6 @@ logger:
 task_name: train/sar_ddc/hyperprior
 tags: ["TSX_SSC", "hyperprior"]
 seed: 42
+
 # Flatten the lmbda value because W&B custom chart expressions do not support nested dicts
 lambda: ${model.criterion.lmbda}
