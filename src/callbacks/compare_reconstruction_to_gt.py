@@ -8,6 +8,7 @@ import torch
 from lightning import Callback, LightningModule, Trainer
 from matplotlib.ticker import FuncFormatter
 
+from src.utils import process_large_patch
 from src.utils.constants import amp_max, amp_min
 from src.utils.sar_utils import symmetrize
 
@@ -150,14 +151,14 @@ class CompareReconstructionToGT(Callback):
         # ----- Forward pass to get reconstruction and metrics -----
         with torch.no_grad():
             if self.split_large_patch:
-                criterion_real, recon_real = self.process_large_patch(
+                criterion_real, recon_real = process_large_patch(
                     pl_module,
                     self.real_tensor,
                     self.imag_tensor,
                     stride=self.stride,
                     blend_method=self.blend_method,
                 )
-                criterion_imag, recon_imag = self.process_large_patch(
+                criterion_imag, recon_imag = process_large_patch(
                     pl_module,
                     self.imag_tensor,
                     self.real_tensor,
@@ -395,130 +396,3 @@ class CompareReconstructionToGT(Callback):
         plt.tight_layout()
 
         return fig, metrics
-
-    def process_large_patch(
-        self,
-        pl_module: LightningModule,
-        input: torch.Tensor,
-        target: torch.Tensor,
-        model_patch_size: int = 256,
-        stride: int = -1,
-        blend_method: str = "count",
-    ) -> tuple[dict, torch.Tensor]:
-        """Process a large patch by splitting into smaller patches, processing each, then recombining.
-
-        Args:
-            model: LightningModule
-            patch: Tensor of shape [B, 1, H, W]
-            model_patch_size: Size of patches the model expects (e.g., 256)
-            stride: Stride between patches (if -1, uses model_patch_size/2)
-            blend_method: How to blend overlapping regions - "count" (average) or "linear" (weighted blend)
-
-        Returns:
-            Dictionary with results and metrics
-        """
-        # log.info(f"Processing large patch of shape {patch.shape} with model...")
-        _, _, height, width = input.shape
-
-        # Default stride is half the patch size (50% overlap)
-        if stride == -1:
-            stride = model_patch_size // 2
-
-        # Create output tensors
-        output_large = torch.zeros_like(input)
-        counts = torch.zeros_like(input)  # Tracks number of contributions per pixel
-
-        # Metrics storage
-        output_large_criterion = {}
-        patch_count = 0
-
-        # log.info(
-        #     f"Processing {height}x{width} image in {model_patch_size}x{model_patch_size} patches with stride {stride}"
-        # )
-
-        # Process each patch
-        for y in range(0, height - model_patch_size + 1, stride):
-            for x in range(0, width - model_patch_size + 1, stride):
-                # Extract small patches (.contiguous() is necessary when doing that in torch)
-                input_patch = input[
-                    :, :, y : y + model_patch_size, x : x + model_patch_size
-                ].contiguous()
-                target_patch = target[
-                    :, :, y : y + model_patch_size, x : x + model_patch_size
-                ].contiguous()
-
-                # Process patches + Accumulate metrics
-                with torch.no_grad():
-                    output = pl_module(input_patch)
-                    criterion = pl_module.criterion(output, target_patch)
-
-                if patch_count == 0:
-                    output_large_criterion = criterion
-                else:
-                    for key in output_large_criterion.keys():
-                        output_large_criterion[key] += criterion[key]
-                patch_count += 1
-
-                # Prepare blend
-                if blend_method == "linear":
-                    # Create weight mask for smooth blending
-                    weight = torch.ones_like(output)
-
-                    if stride < model_patch_size:
-                        # Calculate overlap size
-                        overlap = model_patch_size - stride
-
-                        # Create smooth transition weights using cosine taper on same device
-                        taper = (
-                            torch.cos(
-                                torch.linspace(
-                                    0, np.pi / 2, overlap, device=weight.device
-                                )
-                            )
-                            ** 2
-                        )
-
-                        # Apply taper to overlapping regions
-                        if y > 0:  # Top edge overlap
-                            weight[:, :, :overlap, :] *= taper.view(-1, 1)
-                        if x > 0:  # Left edge overlap
-                            weight[:, :, :, :overlap] *= taper.view(1, -1)
-                        if y + model_patch_size < height:  # Bottom edge overlap
-                            weight[:, :, -overlap:, :] *= taper.flip(0).view(-1, 1)
-                        if x + model_patch_size < width:  # Right edge overlap
-                            weight[:, :, :, -overlap:] *= taper.flip(0).view(1, -1)
-
-                    # Apply weighted update
-                    output_large[
-                        :, :, y : y + model_patch_size, x : x + model_patch_size
-                    ] += output * weight
-                    counts[
-                        :, :, y : y + model_patch_size, x : x + model_patch_size
-                    ] += weight
-                elif (
-                    blend_method == "count"
-                ):  # "count" method - simple summation with counting
-                    output_large[
-                        :, :, y : y + model_patch_size, x : x + model_patch_size
-                    ] += output
-                    counts[
-                        :, :, y : y + model_patch_size, x : x + model_patch_size
-                    ] += 1
-                else:
-                    raise ValueError(
-                        f"Unknown blend method: {blend_method}. Use 'linear' or 'count'."
-                    )
-
-        # Normalize by weights for overlapping regions
-        if torch.any(counts == 0):
-            warnings.warn(
-                "Some pixels were not updated due to no contributions. This may indicate an issue with patch processing."
-            )
-        counts = counts + 1e-8  # Add small epsilon to avoid division by zero
-        output_large = output_large / counts
-
-        # Average the metrics
-        for key in output_large_criterion.keys():
-            output_large_criterion[key] /= patch_count
-
-        return output_large_criterion, output_large
