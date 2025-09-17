@@ -100,17 +100,23 @@ class MonitorValReconstruction(Callback):
                 horizontalalignment="right",
                 weight="bold",
             )
+            # Add overall title with metrics
+            title = (
+                f"Validation Epoch {trainer.current_epoch} - "
+                f"Loss: {criterion['loss']:.3f}, "
+                f"MSE: {criterion['mse']:.4f}, "
+                f"PSNR: {criterion['psnr']:.2f}dB"
+            )
 
-        # Add overall title with metrics
-        fig.suptitle(
-            f"Validation Epoch {trainer.current_epoch} - "
-            f"Loss: {criterion['loss']:.3f}, "
-            f"MSE: {criterion['mse']:.4f}, "
-            f"PSNR: {criterion['psnr']:.2f}dB"
-            f"\nMetrics computed between reconstructions (real) and target (imag)"
-        )
+            if self.with_compression:
+                title += f", BPP: {criterion['bpp']:.4f}"
 
-        plt.tight_layout()
+            title += (
+                "\nMetrics computed between reconstructions (real) and target (imag)"
+            )
+            fig.suptitle(title)
+
+            plt.tight_layout()
 
         pl_module.logger.experiment.log(
             {
