@@ -1,11 +1,11 @@
 import warnings
 from importlib.util import find_spec
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import omegaconf
 import wandb
 from lightning_utilities.core.rank_zero import rank_zero_only
+from omegaconf import DictConfig
 
 from src.utils import pylogger, rich_utils
 
@@ -38,7 +38,7 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
 
 
 @rank_zero_only
-def early_wandb_initialization(cfg: Dict[str, Any]) -> None:
+def early_wandb_initialization(cfg: DictConfig) -> None:
     """Manual initialization of the W&B run. Extra logic is called is the run is set offline, see wandb_osh.
     Usually called before the Lightning Trainer is instantiated.
     We can safely call wandb.init() here, Lightning loggers will reuse the on-going run when instantiating: https://lightning.ai/docs/pytorch/stable/_modules/lightning/pytorch/loggers/wandb.html#WandbLogger

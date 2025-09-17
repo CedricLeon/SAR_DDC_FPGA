@@ -29,12 +29,9 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # more info: https://github.com/ashleve/rootutils
 # ------------------------------------------------------------------------------------ #
 
-from src.utils import (
+from src.utils import (  # noqa: E402
     RankedLogger,
     extras,
-    instantiate_loggers,
-    log_hyperparameters,
-    task_wrapper,
 )
 
 log = RankedLogger(__name__, rank_zero_only=True)
