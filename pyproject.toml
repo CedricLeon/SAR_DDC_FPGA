@@ -23,3 +23,9 @@ exclude_lines = [
     "raise NotImplementedError()",
     "if __name__ == .__main__.:",
 ]
+
+[tool.ruff.lint]
+unfixable = ["F401"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
