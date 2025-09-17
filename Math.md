@@ -3,6 +3,8 @@
 
 ## SAR preprocessing
 
+==@TODO These equations are fully deprecated (or even false), as I have changed my way of preprocessing the data==
+
 ### Normalize SAR Image
 This function logarithmically normalizes SAR image data to a standard range.
 [normalize_sar()](src/utils/sar_utils.py)
