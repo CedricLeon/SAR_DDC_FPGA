@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Tuple
 
 import numpy as np
-import torch
 from scipy import signal
 
 
@@ -100,8 +99,8 @@ def load_cosar(path: Path, logger: Logger | None = None) -> np.ndarray | None:
 
 def symmetrize(image: np.ndarray) -> np.ndarray:
     """
-    Symmetrize the real and imaginary parts of the image and assure it's zero Doppled centered.
-    Original function from MERLIN (called `symetrisation_patch_test`).
+    Symmetrize the real and imaginary parts of the image and assure it's zero Doppler centered.
+    Original function from MERLIN (called `symetrisation_patch_test`. Yes, with one 'm').
     Added logic to support my data format.
     Args:
         image: Input image with shape [H, W, 2] (real and imaginary parts)
@@ -132,7 +131,7 @@ def symmetrize(image: np.ndarray) -> np.ndarray:
     window = signal.windows.gaussian(p.shape[0], std=0.2 * p.shape[0])
     test_1 = np.sum(window * p2_1)
     test_2 = np.sum(window * p2_2)
-    # make sure the spectrum is symetrized and zero-Doppler centered
+    # make sure the spectrum is symmetrized and zero-Doppler centered
     if test_1 >= test_2:
         p2 = p2_1
         shift_az = shift_az_1 / p.shape[0]
@@ -190,6 +189,9 @@ def preserve_point_like_scatterers(
     warnings.warn(
         "preserve_point_like_scatterers() is not necessary. See MERLIN multi-temporal despeckling paper by Ines Meraoumia in TGRS."
     )
+    warnings.warn(
+        "This function is deprecated, MERLIN already conserves point-like scatterers. See See https://arxiv.org/abs/2207.11095."
+    )
 
     real2_proc = image2[..., 0].copy()
     imag2_proc = image2[..., 1].copy()
@@ -204,40 +206,6 @@ def preserve_point_like_scatterers(
     imag2_proc[scatterer_mask] = scatterer_value
 
     return np.stack((real2_proc, imag2_proc), axis=2), scatterer_mask
-
-
-def normalize_ndarray(
-    im: np.ndarray,
-    log_base: str,
-    min_max: Tuple[float, float],
-    clip: bool = False,
-) -> np.ndarray:
-    """
-    Normalize a 3D image using log transformation and min-max scaling.
-    Args:
-        im: Input image with shape [H, W, 2]
-        log_base: The logarithm base for the normalized image. "nat" for natural base or "db" for base 10.
-        min_max: Tuple of values to use for min-max normalization, (min, max().
-        clip: Whether to clip values to [0, 1] after normalization. Default is False.
-    Returns:
-        Normalized image
-    """
-    assert im.ndim == 3, "Data must be 3D [H, W, 2]."
-    assert im.shape[-1] == 2, "Data must have 2 channels."
-    assert len(min_max) == 2, "min_max must be a tuple of length 2."
-    assert min_max[0] < min_max[1], "min_max must be in increasing order: (min, max)."
-
-    # Bring to log base
-    if log_base == "nat":
-        im_log = np.log(im + 1e-2)
-    elif log_base == "db":
-        im_log = convert_to_db(im)
-    else:
-        raise NotImplementedError(f"Normalization mode {log_base} not implemented.")
-
-    # MinMax normalization
-    im_norm = (im_log - min_max[0]) / (min_max[1] - min_max[0])
-    return np.clip(im_norm, 0, 1) if clip else im_norm
 
 
 def extract_patches(
@@ -265,64 +233,3 @@ def extract_patches(
             if patch.shape[:2] == (patch_size, patch_size):
                 patches.append(patch)
     return np.array(patches)
-
-
-def preprocess_TSX_image(
-    image_path: Path,
-    preserve_threshold: float,
-    log_base: str | None,
-    min_max: Tuple[float, float],
-    clip: bool,
-    patch_size: int,
-    logger: Logger | None = None,
-) -> np.ndarray:
-    """
-    Preprocessing pipeline for a TSX CoSAR image.
-    Loads, symmetrizes, squares, and normalizes the image.
-    Returns all the patches of the image. (@TODO: patches smaller than patch_size x patch_size are discarded)
-    """
-    # deprecated warning
-    if logger:
-        logger.warning("This function is deprecated.")
-    else:
-        print("This function is deprecated.")
-    image = load_and_symmetrize_TSX_image(image_path, logger=logger)
-    image = np.square(image)
-
-    # Preserve strong scatterers (described in ADAM paper), not mandatory, I'm not doing it for the moment.
-    if preserve_threshold is not None:
-        image, _ = preserve_point_like_scatterers(image, preserve_threshold)
-
-    if log_base is not None:
-        image = normalize_ndarray(image, log_base, min_max, clip)
-
-    return extract_patches(image, patch_size, stride=patch_size)
-
-
-def preprocess_TSX_patch(
-    path: Path,
-    crop_coordinates: Tuple[int, int],
-    patch_size: Tuple[int, int],
-    preserve_threshold: float,
-    log_base: str | None,
-    min_max: Tuple[float, float],
-    clip: bool,
-    logger: Logger | None = None,
-) -> np.ndarray:
-    image = load_cosar(path, logger=logger)
-    if image is None:
-        raise ValueError(f"Image {path} could not be loaded")
-
-    patch = image[
-        crop_coordinates[0] : crop_coordinates[0] + patch_size[0],
-        crop_coordinates[1] : crop_coordinates[1] + patch_size[1],
-        :,
-    ]
-
-    patch = symmetrize(patch)
-    patch = np.square(patch)
-    if preserve_threshold is not None:
-        patch, _ = preserve_point_like_scatterers(patch, preserve_threshold)
-    if log_base is not None:
-        patch = normalize_ndarray(patch, log_base, min_max, clip)
-    return patch
