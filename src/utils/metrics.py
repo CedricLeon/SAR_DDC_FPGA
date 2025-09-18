@@ -14,6 +14,19 @@ from torchmetrics.image import (
 from src.utils.constants import amp_max, amp_min
 
 
+def estimate_bpp(pred: Dict[str, Tensor]) -> Tensor:
+    """Compute BPP based on the estimated likelihoods (Average of the estimated number of bits needed to encode each pixel)"""
+    N, _, H, W = pred["x_hat"].size()
+    num_pixels = N * H * W
+    bpp = torch.stack(
+        [
+            torch.log(likelihoods).sum() / (-math.log(2) * num_pixels)
+            for likelihoods in pred["likelihoods"].values()
+        ]
+    ).sum()
+    return bpp
+
+
 @register_criterion("MerlinRDLoss")
 class MerlinRDLoss(nn.Module):
     """Custom rate distortion loss with a Lagrangian parameter.
@@ -37,13 +50,8 @@ class MerlinRDLoss(nn.Module):
 
     def forward(self, output: Dict[str, Tensor], target: Tensor) -> Dict[str, Tensor]:
         out = {}
-        # Compute BPP based on the estimated likelihoods (Average of the estimated number of bits needed to encode each pixel)
-        N, _, H, W = target.size()
-        num_pixels = N * H * W
-        out["bpp"] = sum(
-            (torch.log(likelihoods).sum() / (-math.log(2) * num_pixels))
-            for likelihoods in output["likelihoods"].values()
-        )
+        # Rate term (estimated bpp)
+        out["bpp"] = estimate_bpp(output)
 
         # Denorm the reconstructions and target before computing losses
         r_denorm = output["x_hat"] * (2 * amp_max - 2 * amp_min) + 2 * amp_min

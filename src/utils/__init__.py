@@ -1,6 +1,7 @@
 from src.utils.constants import amp_max, amp_min
 from src.utils.instantiators import instantiate_callbacks, instantiate_loggers
 from src.utils.logging_utils import log_hyperparameters
+from src.utils.metrics import estimate_bpp
 from src.utils.processing_utils import process_large_patch
 from src.utils.pylogger import RankedLogger
 from src.utils.rich_utils import enforce_tags, print_config_tree
