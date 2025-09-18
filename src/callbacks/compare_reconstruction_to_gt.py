@@ -152,16 +152,16 @@ class CompareReconstructionToGT(Callback):
         with torch.no_grad():
             if self.split_large_patch:
                 criterion_real, recon_real = process_large_patch(
-                    pl_module,
-                    self.real_tensor,
-                    self.imag_tensor,
+                    model=pl_module,
+                    input=self.real_tensor,
+                    target=self.imag_tensor,
                     stride=self.stride,
                     blend_method=self.blend_method,
                 )
                 criterion_imag, recon_imag = process_large_patch(
-                    pl_module,
-                    self.imag_tensor,
-                    self.real_tensor,
+                    model=pl_module,
+                    input=self.imag_tensor,
+                    target=self.real_tensor,
                     stride=self.stride,
                     blend_method=self.blend_method,
                 )

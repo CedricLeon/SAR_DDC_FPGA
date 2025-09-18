@@ -4,27 +4,30 @@ import numpy as np
 import torch
 from lightning import LightningModule
 
+from src.models import MerlinModule, SARDDCModule
+from src.utils import estimate_bpp
+
 
 def process_large_patch(
-    pl_module: LightningModule,
+    model: LightningModule,
     input: torch.Tensor,
     target: torch.Tensor | None = None,
     model_patch_size: int = 256,
     stride: int | None = None,
     blend_method: str = "count",
-) -> tuple[dict | None, torch.Tensor]:
+) -> tuple[dict, torch.Tensor]:
     """Process a large patch by splitting into smaller patches, processing each of them, then recombining.
 
     Args:
-        model: LightningModule
+        model: LightningModule (MerlinModule or SARDDCModule)
         patch: Tensor of shape [B, 1, H, W]
-        target: Optional tensor of shape [B, 1, H, W]. If None, no loss is computed.
+        target: Optional tensor of shape [B, 1, H, W]. If None, no metrics are computed for MerlinModule and only 'bpp' for SARDDCModule.
         model_patch_size: Size of patches the model expects (e.g., 256)
         stride: Optional stride between patches. If None, uses model_patch_size/2.
         blend_method: How to blend overlapping regions - "count" (average) or "linear" (weighted blend)
 
     Returns:
-        A Tuple[Dictionary with results and metrics, Reconstructed large patch tensor] or Tuple [None, Reconstruction tensor] if target is None.
+        Tuple[Dictionary with metrics, Reconstructed large patch tensor]
     """
     # log.info(f"Processing large patch of shape {patch.shape} with model...")
     _, _, height, width = input.shape
@@ -42,7 +45,7 @@ def process_large_patch(
     counts = torch.zeros_like(input)  # Tracks number of contributions per pixel
 
     # Metrics storage
-    large_criterion = {} if target is not None else None
+    large_criterion = {}
     patch_count = 0
 
     # log.info(
@@ -52,6 +55,7 @@ def process_large_patch(
     # Process each patch
     for y in range(0, height - model_patch_size + 1, stride):
         for x in range(0, width - model_patch_size + 1, stride):
+            patch_count += 1
             # Extract small patches (.contiguous() is necessary when doing that in torch)
             input_patch = input[
                 :, :, y : y + model_patch_size, x : x + model_patch_size
@@ -59,24 +63,33 @@ def process_large_patch(
 
             # Process patches
             with torch.no_grad():
-                output = pl_module(input_patch)
+                output = model(input_patch)
 
             # Compute criterion if target is provided
             if target is not None:
-                assert (
-                    large_criterion is not None
-                )  # Help type checker understand the logic, see https://stackoverflow.com/questions/68446642/how-do-i-get-pylance-to-ignore-the-possibility-of-none/68468805
                 target_patch = target[
                     :, :, y : y + model_patch_size, x : x + model_patch_size
                 ].contiguous()
-                criterion = pl_module.criterion(output, target_patch)
+                criterion = model.criterion(output, target_patch)
 
                 if patch_count == 0:
                     large_criterion = criterion
                 else:
                     for key in large_criterion.keys():
                         large_criterion[key] += criterion[key]
-            patch_count += 1
+            else:
+                if isinstance(model, SARDDCModule):
+                    if patch_count == 0:
+                        large_criterion["bpp"] = estimate_bpp(output)
+                    else:
+                        large_criterion["bpp"] += estimate_bpp(output)
+                # Rest is unnecessary logic but better safe than sorry
+                elif isinstance(model, MerlinModule):
+                    pass
+                else:
+                    raise NotImplementedError(
+                        "Model must be either SARDDCModule or MerlinModule when target is None."
+                    )
 
             # Prepare blend
             if blend_method == "linear":
@@ -132,9 +145,8 @@ def process_large_patch(
     counts = counts + 1e-8  # Add small epsilon to avoid division by zero
     output_large = output_large / counts
 
-    # Average the metrics if target was provided
-    if target is not None:
-        assert large_criterion is not None  # Help type checker understand the logic
+    # Average criterion over number of patches
+    if large_criterion:
         for key in large_criterion.keys():
             large_criterion[key] /= patch_count
 
