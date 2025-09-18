@@ -1,0 +1,46 @@
+# @package _global_
+
+defaults:
+  - paths: default
+  - hydra: default
+  - extras: default
+  - _self_
+
+# REQUIRED: path to a Lightning checkpoint to evaluate
+ckpt_path: ???
+
+# If false and the checkpoint's run dir already has evaluated.txt, stop early.
+# If true, create a new eval run and append to evaluated.txt.
+re_evaluate: false
+
+# Reference methods to compare against on the Hamburg tile (if files exist):
+# Standardized names expected in data/visualization as:
+#   denoised_by_<METHOD_NAME>_<tile_or_patch_id>.npy
+# When absent, evaluation continues and prints a clear warning.
+reference_methods:
+  - "ADAM no compression"
+  - "MERLIN"
+  - "SAR BM3D"
+
+# Tile path for consistent visualization (default provided; override as needed)
+tile_path: ${paths.data_dir}TSX_cos_files/Hamburg_TDX1_SAR__SSC______SM_S_SRA_20180112T165337_20180112T165345_IMAGE_HH_SRA_strip_004.cos
+
+# Device policy for evaluation and profiling: "auto" | "cpu" | "cuda"
+device: auto
+
+# Input size used for hardware stats (FLOPs/MACs/latency)
+input_size_for_stats: 256
+
+# Hamburg tile crop configuration
+tile_crop_size: 1024
+crop_coordinates: [11000, 8500]  # [row (y), col (x)]
+
+# Dataloader overrides (fallbacks to training cfg.data if omitted)
+test_batch_size: 16
+num_workers: 8
+
+# Control visualization generation for the Hamburg tile
+visualize: true
+
+# Visualization clipping parameter (mean +/- k*std); only clipping, no normalization for histograms
+clip_std_factor: 3
