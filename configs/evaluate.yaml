@@ -6,41 +6,53 @@ defaults:
   - extras: default
   - _self_
 
+task_name: "evaluate" # Required for hydra.run.dir
+extras:
+  enforce_tags: false
+run_name: "default_eval"
+
 # REQUIRED: path to a Lightning checkpoint to evaluate
 ckpt_path: ???
+# ADAM-NOC: logs/train/sar_ddc/hyperprior/runs/2025-09-17_08-55-41/checkpoints/last.ckpt
+# MERLIN (will crash, because no bpp): logs/train/sar_ddc/merlin/runs/2025-09-16_13-49-03/checkpoints/last.ckpt
+
+
+short_test_set: false # If true evaluates only the first 10 batches
 
 # If false and the checkpoint's run dir already has evaluated.txt, stop early.
 # If true, create a new eval run and append to evaluated.txt.
-re_evaluate: false
+re_evaluate: true
 
 # Reference methods to compare against on the Hamburg tile (if files exist):
 # Standardized names expected in data/visualization as:
 #   denoised_by_<METHOD_NAME>_<tile_or_patch_id>.npy
-# When absent, evaluation continues and prints a clear warning.
+# When absent, evaluation prints warning but continues.
 reference_methods:
-  - "ADAM no compression"
-  - "MERLIN"
-  - "SAR BM3D"
+  - "ADAM-NOC"      # ADAM no compression
+  - "MERLIN"        # MERLIN own implementation
+  - "MERLIN-DDS"    # MERLIN from deepdespeckling (Emmanuele Dalsasso)
+  # - "SAR-BM3D"    # Not yet implemented (see, https://www.grip.unina.it/download/prog/SAR-BM3D/)
 
-# Tile path for consistent visualization (default provided; override as needed)
-tile_path: ${paths.data_dir}TSX_cos_files/Hamburg_TDX1_SAR__SSC______SM_S_SRA_20180112T165337_20180112T165345_IMAGE_HH_SRA_strip_004.cos
+# Path for complete tile: tile_path: ${paths.data_dir}TSX_cos_files/Hamburg_TDX1_SAR__SSC______SM_S_SRA_20180112T165337_20180112T165345_IMAGE_HH_SRA_strip_004.cos
+# Use pre-extracted patch by default
+tile_path: ${paths.data_dir}visualization/raw_Hamburg_patch_[11000:12024;8500:9524].npy
 
+# Hamburg tile crop configuration (unused if tile_path is a patch (ends with .npy))
+tile_crop_size: 1024
+crop_coordinates: [11000, 8500]
+# Control visualization generation for the Hamburg tile
+visualize: true
+# Visualization clipping parameter (mean +/- k*std); only clipping, no normalization for histograms
+clip_std_factor: 3
+
+
+# ----- Kind of training CFG overrides -----
 # Device policy for evaluation and profiling: "auto" | "cpu" | "cuda"
 device: auto
 
-# Input size used for hardware stats (FLOPs/MACs/latency)
-input_size_for_stats: 256
-
-# Hamburg tile crop configuration
-tile_crop_size: 1024
-crop_coordinates: [11000, 8500]  # [row (y), col (x)]
-
-# Dataloader overrides (fallbacks to training cfg.data if omitted)
 test_batch_size: 16
 num_workers: 8
 
-# Control visualization generation for the Hamburg tile
-visualize: true
-
-# Visualization clipping parameter (mean +/- k*std); only clipping, no normalization for histograms
-clip_std_factor: 3
+patch_size: 256 # Input size used for hardware stats (FLOPs/MACs/latency)
+stride: 192
+blend_method: "count"
