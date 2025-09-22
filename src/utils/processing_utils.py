@@ -55,7 +55,6 @@ def process_large_patch(
     # Process each patch
     for y in range(0, height - model_patch_size + 1, stride):
         for x in range(0, width - model_patch_size + 1, stride):
-            patch_count += 1
             # Extract small patches (.contiguous() is necessary when doing that in torch)
             input_patch = input[
                 :, :, y : y + model_patch_size, x : x + model_patch_size
@@ -90,6 +89,9 @@ def process_large_patch(
                     raise NotImplementedError(
                         "Model must be either SARDDCModule or MerlinModule when target is None."
                     )
+
+            if isinstance(model, SARDDCModule):
+                output = output["x_hat"]
 
             # Prepare blend
             if blend_method == "linear":
@@ -136,6 +138,8 @@ def process_large_patch(
                 raise ValueError(
                     f"Unknown blend method: {blend_method}. Use 'linear' or 'count'."
                 )
+
+            patch_count += 1
 
     # Normalize by weights for overlapping regions
     if torch.any(counts == 0):
