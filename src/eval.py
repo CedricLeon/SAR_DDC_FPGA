@@ -32,147 +32,10 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 from src.utils import (  # noqa: E402
     RankedLogger,
     extras,
+    process_large_patch,
 )
 
 log = RankedLogger(__name__, rank_zero_only=True)
-
-
-def process_large_patch(
-    model, patch, model_patch_size=256, stride=None, blend_method="count"
-):
-    """Process a large patch by splitting into smaller patches, processing each, then recombining.
-
-    Args:
-        model: LightningModule
-        patch: Tensor of shape [B, H, W, 2] where last dim contains real/imag parts
-        model_patch_size: Size of patches the model expects (e.g., 256)
-        stride: Stride between patches (if None, uses model_patch_size/2)
-        blend_method: How to blend overlapping regions - "count" (average) or "linear" (weighted blend)
-
-    Returns:
-        Dictionary with results and metrics
-    """
-    log.info(f"Processing large patch of shape {patch.shape} with model...")
-    _, height, width, _ = patch.shape
-    device = next(model.parameters()).device
-
-    # Default stride is half the patch size (50% overlap)
-    if stride is None:
-        stride = model_patch_size // 2
-
-    # Separate real and imaginary components
-    real_large = patch[..., 0].unsqueeze(1)  # [B, 1, H, W]
-    imag_large = patch[..., 1].unsqueeze(1)  # [B, 1, H, W]
-
-    # Create output tensors
-    real_output = torch.zeros_like(real_large)
-    imag_output = torch.zeros_like(imag_large)
-    counts = torch.zeros_like(real_large)  # Tracks number of contributions per pixel
-
-    # Metrics storage
-    total_bpp_real = 0
-    total_bpp_imag = 0
-    patch_count = 0
-
-    log.info(
-        f"Processing {height}x{width} image in {model_patch_size}x{model_patch_size} patches with stride {stride}"
-    )
-
-    # Process each patch
-    for y in range(0, height - model_patch_size + 1, stride):
-        for x in range(0, width - model_patch_size + 1, stride):
-            # Extract small patches (.contiguous() is necessary when doing that in torch)
-            real_patch = real_large[
-                :, :, y : y + model_patch_size, x : x + model_patch_size
-            ].contiguous()
-            imag_patch = imag_large[
-                :, :, y : y + model_patch_size, x : x + model_patch_size
-            ].contiguous()
-
-            # Process patches
-            with torch.no_grad():
-                output_real = model.forward(real_patch)
-                criterion_real = model.criterion(output_real, imag_patch)
-
-                output_imag = model.forward(imag_patch)
-                criterion_imag = model.criterion(output_imag, real_patch)
-
-            # Track metrics
-            total_bpp_real += criterion_real["bpp"].item()
-            total_bpp_imag += criterion_imag["bpp"].item()
-            patch_count += 1
-
-            if blend_method == "linear":
-                # Create weight mask that fades near edges for smooth blending
-                weight = torch.ones_like(real_patch)
-                if stride < model_patch_size:
-                    # Create linear falloff at edges (pixels at edges have lower weight)
-                    falloff = torch.linspace(0, 1, stride, device=device)
-
-                    # Apply falloff to edges where patches will overlap
-                    if y > 0:  # Top edge
-                        for i in range(stride):
-                            weight[:, :, i, :] *= falloff[i]
-                    if y + model_patch_size < height:  # Bottom edge
-                        for i in range(stride):
-                            weight[:, :, -(i + 1), :] *= falloff[i]
-                    if x > 0:  # Left edge
-                        for i in range(stride):
-                            weight[:, :, :, i] *= falloff[i]
-                    if x + model_patch_size < width:  # Right edge
-                        for i in range(stride):
-                            weight[:, :, :, -(i + 1)] *= falloff[i]
-
-                # Apply weighted update
-                real_output[
-                    :, :, y : y + model_patch_size, x : x + model_patch_size
-                ] += output_real * weight
-                imag_output[
-                    :, :, y : y + model_patch_size, x : x + model_patch_size
-                ] += output_imag * weight
-                counts[:, :, y : y + model_patch_size, x : x + model_patch_size] += (
-                    weight
-                )
-            elif (
-                blend_method == "count"
-            ):  # "count" method - simple summation with counting
-                real_output[
-                    :, :, y : y + model_patch_size, x : x + model_patch_size
-                ] += output_real
-                imag_output[
-                    :, :, y : y + model_patch_size, x : x + model_patch_size
-                ] += output_imag
-                counts[:, :, y : y + model_patch_size, x : x + model_patch_size] += 1
-            else:
-                raise ValueError(
-                    f"Unknown blend method: {blend_method}. Use 'linear' or 'count'."
-                )
-
-    # Normalize by weights for overlapping regions
-    if torch.any(counts == 0):
-        log.warning(
-            "Some pixels were not updated due to no contributions. This may indicate an issue with patch processing."
-        )
-    counts = counts + 1e-8  # Add small epsilon to avoid division by zero
-    real_output = real_output / counts
-    imag_output = imag_output / counts
-
-    # Calculate average metrics
-    avg_bpp_real = total_bpp_real / patch_count
-    avg_bpp_imag = total_bpp_imag / patch_count
-    avg_bpp = (avg_bpp_real + avg_bpp_imag) / 2
-
-    log.info(f"Processed {patch_count} patches")
-
-    return {
-        "output_real": real_output,
-        "output_imag": imag_output,
-        "metrics": {
-            "bpp_real": avg_bpp_real,
-            "bpp_imag": avg_bpp_imag,
-            "bpp_avg": avg_bpp,
-        },
-    }
 
 
 # @task_wrapper (must return 2 objects: metric_dict and object_dict)
@@ -242,16 +105,37 @@ def custom_inference(cfg: DictConfig):
     )
 
     # Process using patch-based approach - no need for complex tensor reshaping
-    patchified_results = process_large_patch(
+    # {
+    #     "output_real": real_output,
+    #     "output_imag": imag_output,
+    #     "metrics": {
+    #         "bpp_real": avg_bpp_real,
+    #         "bpp_imag": avg_bpp_imag,
+    #         "bpp_avg": avg_bpp,
+    #     },
+    # }
+    patch_size = 256
+    metrics_real, recon_real = process_large_patch(
         model=model,
-        patch=patch,
-        model_patch_size=256,
-        stride=192,  # Sonnet default: 192
-        blend_method="linear",  # "count" or "linear"
+        input=patch[:, 0, :, :],
+        target=None,  # no image to image metrics computed
+        model_patch_size=patch_size,
+        stride=patch_size,
+        blend_method="count",  # "count" or "linear"
     )
+    metrics_imag, recon_imag = process_large_patch(
+        model=model,
+        input=patch[:, 1, :, :],
+        target=None,  # no image to image metrics computed
+        model_patch_size=patch_size,
+        stride=patch_size,
+        blend_method="count",  # "count" or "linear"
+    )
+    reflectivity = 0.5 * (recon_real + recon_imag)
+    bpp = 0.5 * (metrics_real["bpp"] + metrics_imag["bpp"])
     log.info("Inference on patchified image completed.")
     log.info(
-        f"BPP: real={patchified_results['metrics']['bpp_real']:.6f}, imag={patchified_results['metrics']['bpp_imag']:.6f}, avg={patchified_results['metrics']['bpp_avg']:.6f}"
+        f"  BPP: real={metrics_real['bpp']:.6f}, imag={metrics_imag['bpp']:.6f}, avg={bpp:.6f}"
     )
     # Move back to numpy and remove all dimensions
     real = torch.squeeze(real).cpu().numpy()
