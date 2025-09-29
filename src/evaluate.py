@@ -1,8 +1,6 @@
 import json
 import time
 from datetime import datetime
-
-# from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -11,44 +9,33 @@ import matplotlib.pyplot as plt
 import numpy as np
 import rootutils
 import torch
+import torchmetrics
+import torchmetrics.functional.image as F
 from lightning import LightningModule
 from matplotlib.ticker import FuncFormatter
 from omegaconf import DictConfig, OmegaConf
+from ptflops import get_model_complexity_info  # type: ignore
+from torch import nn
+from torchmetrics import MeanSquaredError
+from torchmetrics.image import (
+    MultiScaleStructuralSimilarityIndexMeasure,
+    PeakSignalNoiseRatio,
+    StructuralSimilarityIndexMeasure,
+)
 from tqdm import tqdm
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.data.sar_datamodule import TSXSSCDataModule  # noqa: E402
 from src.utils import RankedLogger, extras, process_large_patch  # noqa: E402
+from src.utils.constants import amp_max, amp_min  # noqa: E402
 from src.utils.sar_utils import load_cosar, symmetrize  # noqa: E402
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
 
-# Clean but too much effort for the moment
-# @dataclass
-# class EvalConfig:
-#     run_name: str
-#     ckpt_path: str
-#     re_evaluate: bool
-#     reference_methods: List[str]
-#     tile_path: str
-#     tile_crop_size: int
-#     crop_coordinates: List[int]
-#     device: str
-#     patch_size: int
-#     test_batch_size: int
-#     num_workers: int
-#     visualize: bool
-#     clip_std_factor: float
-
-
-def _resolve_device(policy: str) -> torch.device:
-    if policy == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if policy in ("cpu", "cuda"):
-        return torch.device(policy)
-    return torch.device("cpu")
+def _best_device() -> torch.device:
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _checkpoint_run_dir(ckpt_path: Path) -> Path:
@@ -79,8 +66,6 @@ def _instantiate_model_and_load_weights(
 
 
 def _count_layers(module: torch.nn.Module) -> Dict[str, int]:
-    from torch import nn
-
     counts = {
         "Conv2d": 0,
         "ConvTranspose2d": 0,
@@ -115,8 +100,6 @@ def _profile_flops_macs_latency(
     """Compute MACs/FLOPs using ptflops only, and measure latency. Fails fast if ptflops is unavailable."""
     net = getattr(module, "net", module).to(device)
     net.eval()
-
-    from ptflops import get_model_complexity_info  # type: ignore
 
     macs, params = get_model_complexity_info(
         net,
@@ -159,27 +142,48 @@ def _profile_flops_macs_latency(
     }
 
 
-def _compute_model_stats(
-    model: LightningModule, input_size: int, device: torch.device
-) -> Dict[str, Any]:
+def _compute_model_stats(model: LightningModule, input_size: int) -> Dict[str, Any]:
     net = getattr(model, "net", model)
     layer_counts = _count_layers(net)
     params_total, params_trainable, weights_size_mb = _params_and_size_mb(net)
-    hw_stats = _profile_flops_macs_latency(net, device, input_size)
+
+    # MACs/FLOPs + CPU latency
+    stats_cpu = _profile_flops_macs_latency(net, torch.device("cpu"), input_size)
+    # GPU latency (if available)
+    latency_gpu = None
+    if torch.cuda.is_available():
+        stats_gpu = _profile_flops_macs_latency(net, torch.device("cuda"), input_size)
+        latency_gpu = stats_gpu.get("latency_s")
+
     model_stats = {
         "net_class": net.__class__.__name__,
         "layers": layer_counts,
         "parameters_total": params_total,
         "parameters_trainable": params_trainable,
         "weights_size_mb": weights_size_mb,
-        **hw_stats,
+        "macs": stats_cpu.get("macs"),
+        "flops": stats_cpu.get("flops"),
+        "latency_cpu_s": stats_cpu.get("latency_s"),
+        "latency_gpu_s": latency_gpu,
+        "input": stats_cpu.get("input"),
     }
 
+    macs_str = (
+        f"{model_stats['macs']:_}" if model_stats.get("macs") is not None else "N/A"
+    )
+    flops_str = (
+        f"{model_stats['flops']:_}" if model_stats.get("flops") is not None else "N/A"
+    )
     log.info(
         f"The model {model_stats['net_class']} has {model_stats['parameters_total']:_} parameters, including {model_stats['parameters_trainable']:_} trainable, for a total memory footprint of {model_stats['weights_size_mb']:.2f}MB."
     )
+    gpu_part = (
+        f" | GPU: {model_stats['latency_gpu_s'] * 1e3:.2f} ms"
+        if model_stats["latency_gpu_s"] is not None
+        else ""
+    )
     log.info(
-        f"It runs in an average of {model_stats['latency_s'] * 1e3:.2f} ms ({model_stats['device']}). It uses MACs≈{model_stats['macs']:_} or FLOPs={model_stats['flops']:_} (times 2)."
+        f"Latencies — CPU: {model_stats['latency_cpu_s'] * 1e3:.2f} ms{gpu_part}. MACs≈{macs_str} | FLOPs={flops_str}"
     )
 
     return model_stats
@@ -209,6 +213,7 @@ def _evaluate_on_test(
     model: LightningModule,
     eval_cfg: DictConfig,
     data_dir: Path | str,
+    device: torch.device,
 ) -> Dict[str, float]:
     # Build datamodule from training cfg.data
     dm = TSXSSCDataModule(
@@ -220,14 +225,7 @@ def _evaluate_on_test(
     dm.prepare_data()
     dm.setup("test")
 
-    device = _resolve_device(eval_cfg.device)
     model = model.to(device)
-    from torchmetrics import MeanSquaredError
-    from torchmetrics.image import (
-        MultiScaleStructuralSimilarityIndexMeasure,
-        PeakSignalNoiseRatio,
-        StructuralSimilarityIndexMeasure,
-    )
 
     data_range = (0, 1)
 
@@ -311,8 +309,6 @@ def _evaluate_tile_and_visualize(
     clip_std_factor: float = float(cfg.clip_std_factor)
 
     # Load tile or pre-extracted patch and symmetrize
-    from src.utils.constants import amp_max, amp_min
-
     if tile_path.suffix == ".npy":
         patch = np.load(tile_path)
         if patch is None:
@@ -458,9 +454,6 @@ def _evaluate_tile_and_visualize(
     )
 
     # Metrics on tile vs all references (MSE/PSNR/SSIM/MS-SSIM)
-    import torchmetrics
-    import torchmetrics.functional.image as F
-
     data_range = float(recon_logI.max() - recon_logI.min())
     recon_logI = recon_logI.unsqueeze(0).unsqueeze(0).to(device).float()
 
@@ -578,15 +571,15 @@ def main(cfg: DictConfig) -> None:
     if not _mark_evaluated(ckpt, eval_out_dir, bool(cfg.re_evaluate), cfg.run_name):
         return
 
-    # Choose device
-    device = _resolve_device(cfg.device)
+    # Choose best device for evaluation (prefer GPU if available)
+    device = _best_device()
     model = model.to(device)
 
     # Model stats (on model.net if available)
-    model_stats = _compute_model_stats(model, int(cfg.patch_size), device)
+    model_stats = _compute_model_stats(model, int(cfg.patch_size))
 
     # Test-set evaluation
-    test_metrics = _evaluate_on_test(model, cfg, train_cfg.data.hdf5_dir)
+    test_metrics = _evaluate_on_test(model, cfg, train_cfg.data.hdf5_dir, device)
 
     # Tile evaluation + visuals
     tile_metrics = _evaluate_tile_and_visualize(model, cfg, eval_out_dir)

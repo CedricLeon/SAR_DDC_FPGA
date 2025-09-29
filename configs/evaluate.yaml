@@ -47,8 +47,6 @@ clip_std_factor: 3
 
 
 # ----- Kind of training CFG overrides -----
-# Device policy for evaluation and profiling: "auto" | "cpu" | "cuda"
-device: auto
 
 test_batch_size: 16
 num_workers: 8
