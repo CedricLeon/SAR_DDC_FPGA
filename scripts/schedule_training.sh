@@ -1,6 +1,7 @@
 #!/bin/bash
-# Schedule execution of many runs
-# Run from root folder with: bash scripts/schedule.sh
+
+# Schedule execution of many training runs
+# Run from root folder with: bash scripts/schedule_training.sh
 
 
 # # ---- with MERLIN normalization -----
