@@ -24,6 +24,9 @@ exclude_lines = [
     "if __name__ == .__main__.:",
 ]
 
+[tool.ruff]
+line-length = 99 # consistent with Black settings in pre-commit-config.yaml
+
 [tool.ruff.lint]
 unfixable = ["F401"]
 

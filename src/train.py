@@ -4,20 +4,24 @@ from typing import Any, Dict, List, Optional, Tuple
 import hydra
 import lightning
 import rootutils
-import torch  # Import torch at the module level for global settings
+
+# import torch  # Import torch at the module level for global settings
 import wandb
 from lightning import Callback, LightningDataModule, LightningModule, Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig, OmegaConf
 
-# Enable tensor cores for better performance (might crash on some GPUs) @TODO: add a test
-torch.set_float32_matmul_precision("high")
+# # Enable tensor cores for better performance (might crash on some GPUs) @TODO: add a test
+# torch.set_float32_matmul_precision("high")
 
-# Filter out specific warnings
-warnings.filterwarnings(
-    "ignore", message=".*torch.cuda.amp.autocast.*", category=FutureWarning
-)  # CompressAI use of deprecated torch.autocast
+# ----- Filter out specific warnings -----
+# warnings.filterwarnings(
+#     "ignore", message=".*was provided to the `Field()` function.*"
+# )  # Pydantic v2.12 in wandb: https://github.com/wandb/wandb/issues/10662
+# warnings.filterwarnings(
+#     "ignore", message=".*torch.cuda.amp.autocast.*", category=FutureWarning
+# )  # CompressAI use of deprecated torch.autocast
 # warnings.filterwarnings("ignore", message=".*This figure includes Axes that are not compatible with tight_layout.*", category=UserWarning)
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
