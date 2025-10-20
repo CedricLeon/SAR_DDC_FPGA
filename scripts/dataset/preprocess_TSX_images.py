@@ -1,11 +1,12 @@
-"""
-This script creates a pre-processed dataset from the original TSX COS files.
+"""This script creates a pre-processed dataset from the original TSX COS files.
 
-The dataset is created using spatial splits, a file stating which image belongs to which split is required (see `--split-file` argument). The size of the patches can be specified, default is 256x256. The seed can be set for reproducibility, default is 42.
-NO NORMALIZATION IS DONE.
+The dataset is created using spatial splits, a file stating which image belongs to which split is
+required (see `--split-file` argument). The size of the patches can be specified, default is
+256x256. The seed can be set for reproducibility, default is 42. NO NORMALIZATION IS DONE.
 
-Example usage (from repo root):
-$ python scripts/dataset/preprocess_TSX_images.py --input-dir data/TSX_cos_files --output-dir data/processed_hdf5/ --split-file data/TSX_cos_files/spatial_splits_5.json
+Example usage (from repo root): $ python scripts/dataset/preprocess_TSX_images.py --input-dir
+data/TSX_cos_files --output-dir data/processed_hdf5/ --split-file
+data/TSX_cos_files/spatial_splits_5.json
 """
 
 import argparse
@@ -40,15 +41,9 @@ class Colors:
 
 
 # Parse command-line arguments
-parser = argparse.ArgumentParser(
-    description="Process SAR .cos files and create HDF5 datasets."
-)
-parser.add_argument(
-    "--input-dir", type=str, required=True, help="Directory containing .cos files"
-)
-parser.add_argument(
-    "--output-dir", type=str, required=True, help="Directory to save HDF5 files"
-)
+parser = argparse.ArgumentParser(description="Process SAR .cos files and create HDF5 datasets.")
+parser.add_argument("--input-dir", type=str, required=True, help="Directory containing .cos files")
+parser.add_argument("--output-dir", type=str, required=True, help="Directory to save HDF5 files")
 parser.add_argument(
     "--split-file",
     type=str,
@@ -71,6 +66,7 @@ args = parser.parse_args()
 
 
 def setup_logging(output_dir: Path, dataset_name: str):
+    """Setup logging to file and console."""
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
     # Clear any existing handlers
@@ -96,6 +92,10 @@ def setup_logging(output_dir: Path, dataset_name: str):
 
 
 def extract_short_name_from_filepath(filepath: Path):
+    """Extract short name from the given filepath.
+
+    Assumes the short name is the substring before the first underscore.
+    """
     if "_" not in filepath.name:
         raise ValueError(
             f"File {filepath.name} does not contain an underscore '_' to extract the short name."
@@ -104,7 +104,8 @@ def extract_short_name_from_filepath(filepath: Path):
 
 
 def add_patch_for_persistent_visualization(filenames, save_dir):
-    """Preprocess and save a unique, large patch used for visualizing improvments during training."""
+    """Preprocess and save a unique, large patch used for visualizing improvements during
+    training."""
     # Cherry picked the towncenter of Hamburg (ncolumns=14686 nlines=32901)
     CROP_COORDINATES = (11000, 8500)
     PATCH_SIZE = (1024, 1024)
@@ -124,9 +125,7 @@ def add_patch_for_persistent_visualization(filenames, save_dir):
 
     patch_path = save_dir / f"val_{short_name}_{PATCH_SIZE[0]}x{PATCH_SIZE[1]}.npy"
     np.save(patch_path, patch)
-    log.info(
-        f"Successfully saved persistent visualization patch of {short_name} at {patch_path}."
-    )
+    log.info(f"Successfully saved persistent visualization patch of {short_name} at {patch_path}.")
 
 
 def add_metadata_to_dataset(
@@ -151,6 +150,7 @@ def process_dataset(
     filenames: dict[str, list[Path]],
     output_dir: Path,
 ):
+    """Process the dataset: load images, symmetrize, patchify, and save to HDF5 files."""
     # ---- Manage training files (chunked processing) ----
     log.info(
         f"{Colors.YELLOW}Processing training split with {len(filenames['train'])} files.{Colors.RESET}"
@@ -210,15 +210,11 @@ def process_dataset(
             for i in range(0, nb_patches_split["training"], chunk_size):
                 batch_indices = indices[i : i + chunk_size]
                 # Read patches in original order
-                tmp_data = patches_dataset[
-                    batch_indices.min() : batch_indices.max() + 1
-                ]
+                tmp_data = patches_dataset[batch_indices.min() : batch_indices.max() + 1]
                 # Map to the shuffled order
                 remapped_indices = batch_indices - batch_indices.min()
                 # Write to output in shuffled order
-                shuffled_dataset[i : i + len(batch_indices)] = tmp_data[
-                    remapped_indices
-                ]
+                shuffled_dataset[i : i + len(batch_indices)] = tmp_data[remapped_indices]
 
             add_metadata_to_dataset(
                 shuffled_dataset,
@@ -279,9 +275,7 @@ def process_dataset(
         total_nb_patches = sum(nb_patches_split.values())
         log.info(f"In total {total_nb_patches} patches processed:")
         for split in nb_patches_split.keys():
-            log.info(
-                f"  - {nb_patches_split[split] / total_nb_patches * 100:.2f}% {split}"
-            )
+            log.info(f"  - {nb_patches_split[split] / total_nb_patches * 100:.2f}% {split}")
 
 
 def main():
@@ -289,9 +283,7 @@ def main():
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
     split_file = Path(args.split_file)
-    dataset_name = (
-        f"TSX_preprocessed_{split_file.stem}_{args.patch_size}x{args.patch_size}"
-    )
+    dataset_name = f"TSX_preprocessed_{split_file.stem}_{args.patch_size}x{args.patch_size}"
     setup_logging(output_dir, dataset_name)
 
     # ----- Validate script arguments -----
@@ -310,7 +302,7 @@ def main():
     log.info("")
 
     # ----- Determine splits -----
-    with open(args.split_file, "r") as f:
+    with open(args.split_file) as f:
         splits = json.load(f)
     filenames = {
         "train": splits.get("train", []),
@@ -324,9 +316,7 @@ def main():
             file_path = input_dir / file
             log.info(f"  - {extract_short_name_from_filepath(file_path)}")
             if not file_path.is_file():
-                raise RuntimeError(
-                    f"Expected file for {split} split does not exist: {file_path}"
-                )
+                raise RuntimeError(f"Expected file for {split} split does not exist: {file_path}")
             filepaths.append(file_path)
         filenames[split] = filepaths
 

@@ -70,7 +70,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             cfg.seed, workers=True
         )  # workers=True makes setting `worker_init_fn` in dataloaders unnecessary
     if cfg.get("determinism"):
-        # There is a weird incompatibilty between cloudpickle and cudnn; TypeError: cannot pickle '_Deterministic' object
+        # There is a weird incompatibility between cloudpickle and cudnn; TypeError: cannot pickle '_Deterministic' object
         # You can read more about it here: https://github.com/pytorch/pytorch/issues/48832 and https://github.com/cloudpipe/cloudpickle/issues/405
         # See https://github.com/ray-project/ray/issues/8569, for different fixes
         # One solution is to import torch in the train function
@@ -93,9 +93,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     logger: List[Logger] = instantiate_loggers(cfg.get("logger"))
 
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
-    trainer: Trainer = hydra.utils.instantiate(
-        cfg.trainer, callbacks=callbacks, logger=logger
-    )
+    trainer: Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=logger)
 
     object_dict = {
         "cfg": cfg,
@@ -142,8 +140,7 @@ def main(cfg: DictConfig) -> Optional[float]:
     :return: Optional[float] with optimized metric value.
     """
     wandb_on = (
-        cfg.get("debug") is None
-        and OmegaConf.select(cfg, "logger.wandb._target_") is not None
+        cfg.get("debug") is None and OmegaConf.select(cfg, "logger.wandb._target_") is not None
     )
     # Manual and early initialization of the W&B Run if no debug is planned
     if wandb_on:

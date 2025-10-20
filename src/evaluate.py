@@ -35,16 +35,19 @@ log = RankedLogger(__name__, rank_zero_only=True)
 
 
 def _best_device() -> torch.device:
+    """Select the best available device (GPU if available, else CPU)."""
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _checkpoint_run_dir(ckpt_path: Path) -> Path:
+    """Get the run directory from the checkpoint path."""
     # ckpt lives in .../runs/<date>/checkpoints/<file>.ckpt
     # run dir = parent.parent
     return ckpt_path.parent.parent
 
 
 def _load_training_cfg_from_ckpt(ckpt_path: Path) -> Any:
+    """Load the original training configuration from the checkpoint's run directory."""
     run_dir = _checkpoint_run_dir(ckpt_path)
     training_config_path = run_dir / ".hydra" / "config.yaml"
     if not training_config_path.exists():
@@ -53,9 +56,8 @@ def _load_training_cfg_from_ckpt(ckpt_path: Path) -> Any:
     return OmegaConf.load(training_config_path)
 
 
-def _instantiate_model_and_load_weights(
-    train_cfg: DictConfig, ckpt_path: Path
-) -> LightningModule:
+def _instantiate_model_and_load_weights(train_cfg: DictConfig, ckpt_path: Path) -> LightningModule:
+    """Instantiate the model from training config and load weights from checkpoint."""
     log.info(f"Instantiating model <{train_cfg.model._target_}>")
     model: LightningModule = hydra.utils.instantiate(train_cfg.model)
     checkpoint = torch.load(str(ckpt_path), map_location="cpu")
@@ -66,6 +68,7 @@ def _instantiate_model_and_load_weights(
 
 
 def _count_layers(module: torch.nn.Module) -> Dict[str, int]:
+    """Count the number of layers in the model."""
     counts = {
         "Conv2d": 0,
         "ConvTranspose2d": 0,
@@ -87,6 +90,7 @@ def _count_layers(module: torch.nn.Module) -> Dict[str, int]:
 
 
 def _params_and_size_mb(module: torch.nn.Module) -> Tuple[int, int, float]:
+    """Compute total and trainable parameters, and size in MB."""
     total = sum(p.numel() for p in module.parameters())
     trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
     state = module.state_dict()
@@ -97,7 +101,10 @@ def _params_and_size_mb(module: torch.nn.Module) -> Tuple[int, int, float]:
 def _profile_flops_macs_latency(
     module: torch.nn.Module, device: torch.device, input_size: int
 ) -> Dict[str, Any]:
-    """Compute MACs/FLOPs using ptflops only, and measure latency. Fails fast if ptflops is unavailable."""
+    """Compute MACs/FLOPs using ptflops only, and measure latency.
+
+    Fails fast if ptflops is unavailable.
+    """
     net = getattr(module, "net", module).to(device)
     net.eval()
 
@@ -115,6 +122,7 @@ def _profile_flops_macs_latency(
 
     # Latency: warmup + measure``
     def time_forward(iters: int = 50, warmup: int = 10) -> float:
+        """Measure average forward pass time over `iters` runs after `warmup` runs."""
         x = torch.randn(1, 1, input_size, input_size, device=device)
         if device.type == "cuda":
             torch.cuda.synchronize()
@@ -143,6 +151,7 @@ def _profile_flops_macs_latency(
 
 
 def _compute_model_stats(model: LightningModule, input_size: int) -> Dict[str, Any]:
+    """Compute various model statistics: layers, parameters, size, MACs/FLOPs, latency."""
     net = getattr(model, "net", model)
     layer_counts = _count_layers(net)
     params_total, params_trainable, weights_size_mb = _params_and_size_mb(net)
@@ -168,12 +177,8 @@ def _compute_model_stats(model: LightningModule, input_size: int) -> Dict[str, A
         "input": stats_cpu.get("input"),
     }
 
-    macs_str = (
-        f"{model_stats['macs']:_}" if model_stats.get("macs") is not None else "N/A"
-    )
-    flops_str = (
-        f"{model_stats['flops']:_}" if model_stats.get("flops") is not None else "N/A"
-    )
+    macs_str = f"{model_stats['macs']:_}" if model_stats.get("macs") is not None else "N/A"
+    flops_str = f"{model_stats['flops']:_}" if model_stats.get("flops") is not None else "N/A"
     log.info(
         f"The model {model_stats['net_class']} has {model_stats['parameters_total']:_} parameters, including {model_stats['parameters_trainable']:_} trainable, for a total memory footprint of {model_stats['weights_size_mb']:.2f}MB."
     )
@@ -190,10 +195,12 @@ def _compute_model_stats(model: LightningModule, input_size: int) -> Dict[str, A
 
 
 def _standardize_reference_name(name: str) -> str:
+    """Standardize reference method name for filenames."""
     return name.replace(" ", "_")
 
 
 def _load_reference_tile_outputs(methods: List[str], tile_dir: Path) -> Dict[str, Any]:
+    """Load reference denoised outputs for given methods from tile directory."""
     refs = {}
     for m in methods:
         key = _standardize_reference_name(m)
@@ -215,6 +222,7 @@ def _evaluate_on_test(
     data_dir: Path | str,
     device: torch.device,
 ) -> Dict[str, float]:
+    """Evaluate the model on the test set and compute metrics."""
     # Build datamodule from training cfg.data
     dm = TSXSSCDataModule(
         hdf5_dir=str(data_dir),
@@ -232,9 +240,7 @@ def _evaluate_on_test(
     mse = MeanSquaredError().to(device)
     psnr = PeakSignalNoiseRatio(data_range=data_range).to(device)
     ssim = StructuralSimilarityIndexMeasure(data_range=data_range).to(device)
-    ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=data_range).to(
-        device
-    )
+    ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=data_range).to(device)
 
     bpp_list = []
     if eval_cfg.short_test_set:
@@ -271,6 +277,7 @@ def _evaluate_on_test(
                     break
 
     def to_float(val: Any) -> float:
+        """Convert metric value to float."""
         # Some torchmetrics may return Tensor, or (Tensor, Tensor)
         if isinstance(val, tuple):
             val = val[0]
@@ -305,6 +312,7 @@ def _evaluate_tile_and_visualize(
     cfg: DictConfig,
     save_dir: Path,
 ) -> Dict[str, Any]:
+    """Evaluate the model on a tile and generate visualization figure."""
     tile_path: Path = Path(cfg.tile_path)
     clip_std_factor: float = float(cfg.clip_std_factor)
 
@@ -388,20 +396,20 @@ def _evaluate_tile_and_visualize(
     fig, axes = plt.subplots(2, 2 + nb_refs, figsize=(10 + (nb_refs * 5), 10))
 
     def clip_image(x):
+        """Clip image values to <clip_std_factor> standard deviations around the mean."""
         m, s = x.mean(), x.std()
         x = np.clip(x, m - clip_std_factor * s, m + clip_std_factor * s)
         # x = (x - x.min()) / (x.max() - x.min() + 1e-8)
         return x
 
     def plot_histogram(ax, data, title):
+        """Plot histogram of data on given axis with mean and std lines."""
         ax.set_title(title)
         ax.hist(data.flatten(), bins=50, alpha=0.7, color="blue")
         ax.grid(True, alpha=0.3)
         ax.tick_params(axis="y", labelsize=8)
         ax.yaxis.set_major_formatter(
-            FuncFormatter(
-                lambda x, loc: f"{x / 1000:.0f}K" if x >= 1000 else f"{x:.0f}"
-            )
+            FuncFormatter(lambda x, loc: f"{x / 1000:.0f}K" if x >= 1000 else f"{x:.0f}")
         )
         mean = data.mean()
         std = data.std()
@@ -449,9 +457,7 @@ def _evaluate_tile_and_visualize(
 
     # Save the reconstruction image alone with high quality
     recon_save = clip_image(recon_np)
-    plt.imsave(
-        save_dir / "tile_reconstruction_logI.png", recon_save, cmap="gray", dpi=300
-    )
+    plt.imsave(save_dir / "tile_reconstruction_logI.png", recon_save, cmap="gray", dpi=300)
 
     # Metrics on tile vs all references (MSE/PSNR/SSIM/MS-SSIM)
     data_range = float(recon_logI.max() - recon_logI.min())
@@ -461,6 +467,7 @@ def _evaluate_tile_and_visualize(
     log.info(f"Tile (bpp: {bpp_avg:.4f}) metrics vs references:")
 
     def _to_scalar(val: Any) -> float:
+        """Convert metric value to float."""
         if isinstance(val, (tuple, list)):
             val = val[0]
         if hasattr(val, "detach"):
@@ -485,9 +492,7 @@ def _evaluate_tile_and_visualize(
         log.info(f"        - PSNR: {metrics[f'psnr_to_{key}']:.2f} dB")
 
         metrics[f"ssim_to_{key}"] = _to_scalar(
-            F.structural_similarity_index_measure(
-                recon_logI, ref_t, data_range=data_range
-            )
+            F.structural_similarity_index_measure(recon_logI, ref_t, data_range=data_range)
         )
         log.info(f"        - SSIM: {metrics[f'ssim_to_{key}']:.4f}")
 
@@ -509,6 +514,7 @@ def _write_artifacts(
     eval_cfg: Any,
     train_cfg: Any,
 ):
+    """Write evaluation artifacts: metrics logs and config files."""
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Create a hierarchical structure for all metrics
@@ -530,9 +536,8 @@ def _write_artifacts(
         OmegaConf.save(config=OmegaConf.create(train_cfg), f=f)
 
 
-def _mark_evaluated(
-    ckpt_path: Path, eval_out_dir: Path, re_evaluate: bool, run_name: str
-) -> bool:
+def _mark_evaluated(ckpt_path: Path, eval_out_dir: Path, re_evaluate: bool, run_name: str) -> bool:
+    """Mark the run as evaluated by creating a marker file in the checkpoint's run directory."""
     run_dir = _checkpoint_run_dir(ckpt_path)
     marker = run_dir / "evaluated.txt"
     if marker.exists() and not re_evaluate:
@@ -542,9 +547,7 @@ def _mark_evaluated(
         return False
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(marker, "a") as f:
-        f.write(
-            f"Evaluated at {timestamp} by run {run_name}, logs available at: {eval_out_dir}\n"
-        )
+        f.write(f"Evaluated at {timestamp} by run {run_name}, logs available at: {eval_out_dir}\n")
     return True
 
 

@@ -1,8 +1,6 @@
-"""
-SAR DataModule for handling TerraSAR-X data.
+"""SAR DataModule for handling TerraSAR-X data.
 
-This module handles loading, preprocessing, and splitting of SAR data
-with deterministic behavior.
+This module handles loading, preprocessing, and splitting of SAR data with deterministic behavior.
 """
 
 import logging
@@ -20,8 +18,8 @@ log = logging.getLogger(__name__)
 class TSXSSCDataModule(LightningDataModule):
     """Lightning DataModule for pre-processed SAR images in HDF5 format.
 
-    This module handles loading pre-processed SAR patches from HDF5 files
-    created by TSX_dataset_creation.py.
+    This module handles loading pre-processed SAR patches from HDF5 files created by
+    TSX_dataset_creation.py.
     """
 
     def __init__(
@@ -58,14 +56,10 @@ class TSXSSCDataModule(LightningDataModule):
         # Data transformations
         self.transform = transform
 
-    def _log_patches_per_split(
-        self, split: str, total_patches: int, patches_per_image_str: str
-    ):
+    def _log_patches_per_split(self, split: str, total_patches: int, patches_per_image_str: str):
         patches_per_image = {
             name: int(count)
-            for name, count in (
-                entry.split("-") for entry in patches_per_image_str.split("_")
-            )
+            for name, count in (entry.split("-") for entry in patches_per_image_str.split("_"))
         }
         patches_summary = ", ".join(
             f"{count} from {name}" for name, count in patches_per_image.items()

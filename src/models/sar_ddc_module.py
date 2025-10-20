@@ -10,8 +10,8 @@ from torch import Tensor
 class SARDDCModule(lightning.LightningModule):
     """Lightning Module for SAR Despeckling and Data Compression.
 
-    This module implements the training and testing logic for joint
-    despeckling and compression of SAR images using a Noise2Noise approach.
+    This module implements the training and testing logic for joint despeckling and compression of
+    SAR images using a Noise2Noise approach.
     """
 
     def __init__(
@@ -117,8 +117,10 @@ class SARDDCModule(lightning.LightningModule):
 
     def training_step(self, batch, batch_idx):
         """Training step using Noise2Noise approach.
-        Because we have two optimizers, we need to manually optimize.
-        During training, we randomly switch between real and imaginary parts."""
+
+        Because we have two optimizers, we need to manually optimize. During training, we randomly
+        switch between real and imaginary parts.
+        """
         # Get the optimizers as a list to handle properly
         optimizers = self.optimizers()
         if not isinstance(optimizers, list):
@@ -154,9 +156,7 @@ class SARDDCModule(lightning.LightningModule):
 
         # custom learning rate logging
         lr = net_optimizer.param_groups[0]["lr"]
-        self.log(
-            "train/lr", lr, on_step=True, on_epoch=False, prog_bar=False, logger=True
-        )
+        self.log("train/lr", lr, on_step=True, on_epoch=False, prog_bar=False, logger=True)
 
         # Log metrics
         self._log_metrics("train", criterion, aux_loss.item())
@@ -202,15 +202,13 @@ class SARDDCModule(lightning.LightningModule):
         ]
 
         # Validation: Ensure no parameter overlap and all parameters are accounted for
-        all_params = set(
-            param for _, param in self.net.named_parameters() if param.requires_grad
-        )
-        assert not set(main_params) & set(aux_params), (
-            "Intersection found in main and auxiliary parameters"
-        )
-        assert set(main_params) | set(aux_params) == all_params, (
-            "Union of main and auxiliary parameters does not match all model parameters"
-        )
+        all_params = {param for _, param in self.net.named_parameters() if param.requires_grad}
+        assert not set(main_params) & set(
+            aux_params
+        ), "Intersection found in main and auxiliary parameters"
+        assert (
+            set(main_params) | set(aux_params) == all_params
+        ), "Union of main and auxiliary parameters does not match all model parameters"
 
         # Instantiate optimizers from the configuration
         net_optimizer = self.hparams.net_optimizer(params=main_params)
@@ -219,8 +217,6 @@ class SARDDCModule(lightning.LightningModule):
         # Configure the scheduler if provided
         if self.hparams.scheduler is not None:
             scheduler = self.hparams.scheduler(optimizer=net_optimizer)
-            print("Scheduler:", scheduler)
-            print("Scheduler params:", scheduler.state_dict())
             return [
                 {
                     "optimizer": net_optimizer,

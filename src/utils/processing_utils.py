@@ -16,7 +16,8 @@ def process_large_patch(
     stride: int | None = None,
     blend_method: str = "count",
 ) -> tuple[dict, torch.Tensor]:
-    """Process a large patch by splitting into smaller patches, processing each of them, then recombining.
+    """Process a large patch by splitting into smaller patches, processing each of them, then
+    recombining.
 
     Args:
         model: LightningModule (MerlinModule or SARDDCModule)
@@ -36,9 +37,7 @@ def process_large_patch(
     if stride is None:
         stride = model_patch_size // 2
     elif stride <= 0 or stride > model_patch_size:
-        raise ValueError(
-            f"Invalid stride {stride}. Must be in range [1, {model_patch_size}]."
-        )
+        raise ValueError(f"Invalid stride {stride}. Must be in range [1, {model_patch_size}].")
 
     # Create output tensors
     output_large = torch.zeros_like(input)
@@ -104,10 +103,7 @@ def process_large_patch(
 
                     # Create smooth transition weights using cosine taper on same device
                     taper = (
-                        torch.cos(
-                            torch.linspace(0, np.pi / 2, overlap, device=weight.device)
-                        )
-                        ** 2
+                        torch.cos(torch.linspace(0, np.pi / 2, overlap, device=weight.device)) ** 2
                     )
 
                     # Apply taper to overlapping regions
@@ -121,23 +117,15 @@ def process_large_patch(
                         weight[:, :, :, -overlap:] *= taper.flip(0).view(1, -1)
 
                 # Apply weighted update
-                output_large[
-                    :, :, y : y + model_patch_size, x : x + model_patch_size
-                ] += output * weight
-                counts[:, :, y : y + model_patch_size, x : x + model_patch_size] += (
-                    weight
+                output_large[:, :, y : y + model_patch_size, x : x + model_patch_size] += (
+                    output * weight
                 )
-            elif (
-                blend_method == "count"
-            ):  # "count" method - simple summation with counting
-                output_large[
-                    :, :, y : y + model_patch_size, x : x + model_patch_size
-                ] += output
+                counts[:, :, y : y + model_patch_size, x : x + model_patch_size] += weight
+            elif blend_method == "count":  # "count" method - simple summation with counting
+                output_large[:, :, y : y + model_patch_size, x : x + model_patch_size] += output
                 counts[:, :, y : y + model_patch_size, x : x + model_patch_size] += 1
             else:
-                raise ValueError(
-                    f"Unknown blend method: {blend_method}. Use 'linear' or 'count'."
-                )
+                raise ValueError(f"Unknown blend method: {blend_method}. Use 'linear' or 'count'.")
 
             patch_count += 1
 

@@ -22,7 +22,7 @@ class MerlinUNet(nn.Module):
             nb_in (int): Number of input channels
             nb_out (int): Number of output channels
         """
-        super(MerlinUNet, self).__init__()
+        super().__init__()
 
         # Encoder layers
         self.enc_conv0 = nn.Conv2d(nb_in, 48, kernel_size=3, padding=1)
@@ -67,15 +67,14 @@ class MerlinUNet(nn.Module):
         self._initialize_weights()
 
     def _initialize_weights(self):
-        """Initialize weights using He initialization as in the original TensorFlow implementation"""
+        """Initialize weights using He initialization as in the original TensorFlow
+        implementation."""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 # He initialization for all conv layers except the final one
                 if m == self.dec_conv1c:
                     # Final layer uses gain=1.0
-                    nn.init.kaiming_normal_(
-                        m.weight, mode="fan_in", nonlinearity="linear"
-                    )
+                    nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="linear")
                     nn.init.constant_(m.bias, 0)
                 else:
                     # Other layers use default gain=sqrt(2)
@@ -85,6 +84,7 @@ class MerlinUNet(nn.Module):
                     nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
+        """Forward pass through the U-Net architecture."""
         # Store input for final concatenation
         input_tensor = x
 

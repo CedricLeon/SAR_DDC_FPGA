@@ -1,5 +1,5 @@
 import math
-from typing import Dict
+from typing import Dict, Literal
 
 import torch
 from compressai.registry import register_criterion
@@ -14,24 +14,25 @@ from torchmetrics.image import (
 from src.utils.constants import amp_max, amp_min
 
 
-def estimate_bpp(pred: Dict[str, Tensor]) -> Tensor:
-    """Compute BPP based on the estimated likelihoods (Average of the estimated number of bits needed to encode each pixel)"""
+def estimate_bpp(pred: Dict[str, Tensor]) -> Tensor | Literal[0]:
+    """Compute BPP based on the estimated likelihoods (Average of the estimated number of bits
+    needed to encode each pixel)"""
     N, _, H, W = pred["x_hat"].size()
     num_pixels = N * H * W
-    bpp = torch.stack(
-        [
-            torch.log(likelihoods).sum() / (-math.log(2) * num_pixels)
-            for likelihoods in pred["likelihoods"].values()
-        ]
-    ).sum()
+    bpp = sum(
+        (torch.log(likelihoods).sum() / (-math.log(2) * num_pixels))
+        for likelihoods in pred["likelihoods"].values()
+    )
     return bpp
 
 
 @register_criterion("MerlinRDLoss")
 class MerlinRDLoss(nn.Module):
     """Custom rate distortion loss with a Lagrangian parameter.
-    The distortion is replaced by the loss introduced by MERLIN
-    to reconstruct the reflectivity of the input, i.e., despeckle the SAR image."""
+
+    The distortion is replaced by the loss introduced by MERLIN to reconstruct the reflectivity of
+    the input, i.e., despeckle the SAR image.
+    """
 
     def __init__(self, lmbda: float, metric: str = "mse"):
         super().__init__()
@@ -42,10 +43,10 @@ class MerlinRDLoss(nn.Module):
         self.lmbda = lmbda
 
         self.mse = MeanSquaredError()  # nn.MSELoss(reduction="sum")
-        self.psnr = PeakSignalNoiseRatio(data_range=(amp_min, amp_max))
-        self.ssim = StructuralSimilarityIndexMeasure(data_range=(amp_min, amp_max))
+        self.psnr = PeakSignalNoiseRatio(data_range=(2 * amp_min, 2 * amp_max))
+        self.ssim = StructuralSimilarityIndexMeasure(data_range=(2 * amp_min, 2 * amp_max))
         self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(
-            data_range=(amp_min, amp_max)
+            data_range=(2 * amp_min, 2 * amp_max)
         )
 
     def forward(self, output: Dict[str, Tensor], target: Tensor) -> Dict[str, Tensor]:
@@ -83,8 +84,7 @@ class MerlinRDLoss(nn.Module):
 
 
 class MerlinLoss(nn.Module):
-    """
-    MERLIN loss function for SAR image despeckling.
+    """MERLIN loss function for SAR image despeckling.
 
     Implements the loss function from:
         Dalsasso, E., Denis, L., & Tupin, F. (2022). As if by magic: Self-supervised training of deep despeckling networks with MERLIN. IEEE Transactions on Geoscience and Remote Sensing.
@@ -98,18 +98,13 @@ class MerlinLoss(nn.Module):
         self.mse = MeanSquaredError()
         self.psnr = PeakSignalNoiseRatio(data_range=(amp_min, amp_max))
         self.ssim = StructuralSimilarityIndexMeasure(data_range=(amp_min, amp_max))
-        self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(
-            data_range=(amp_min, amp_max)
-        )
+        self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=(amp_min, amp_max))
 
         self.count_calls: int | None = None  # 0 to enable printing
         self.print_every_n_call = 50
 
-    def forward(
-        self, predicted: torch.Tensor, target: torch.Tensor
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Compute MERLIN loss.
+    def forward(self, predicted: torch.Tensor, target: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Compute MERLIN loss.
 
         Args:
             predicted (torch.Tensor): Predicted reflectivity (r) in log-scale

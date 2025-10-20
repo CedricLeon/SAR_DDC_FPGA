@@ -1,5 +1,4 @@
-"""
-SAR Preprocessing Transforms.
+"""SAR Preprocessing Transforms.
 
 This module contains the specialized transformations for SAR image processing.
 """

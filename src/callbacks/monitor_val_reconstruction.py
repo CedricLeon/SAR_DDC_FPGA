@@ -22,9 +22,7 @@ class MonitorValReconstruction(Callback):
         elif pl_module.__class__.__name__ == "SARDDCModule":
             self.with_compression = True
         else:
-            raise ValueError(
-                f"Unsupported LightningModule class: {pl_module.__class__.__name__}"
-            )
+            raise ValueError(f"Unsupported LightningModule class: {pl_module.__class__.__name__}")
 
     def on_validation_batch_end(
         self,
@@ -55,9 +53,7 @@ class MonitorValReconstruction(Callback):
                 reconstructions = reconstructions["x_hat"]
 
         # Create the visualization
-        fig, axes = plt.subplots(
-            3, num_images_to_show, figsize=(4 * num_images_to_show, 12)
-        )
+        fig, axes = plt.subplots(3, num_images_to_show, figsize=(4 * num_images_to_show, 12))
         if num_images_to_show == 1:
             axes = axes.reshape(-1, 1)
 
@@ -111,9 +107,7 @@ class MonitorValReconstruction(Callback):
             if self.with_compression:
                 title += f", BPP: {criterion['bpp']:.4f}"
 
-            title += (
-                "\nMetrics computed between reconstructions (real) and target (imag)"
-            )
+            title += "\nMetrics computed between reconstructions (real) and target (imag)"
             fig.suptitle(title)
 
             plt.tight_layout()

@@ -1,6 +1,6 @@
 """
 By nature the MERLIN method imposes no constraint on the type of neural network used.
-However, by default we use the U-Net mentionned in the orginal paper:
+However, by default we use the U-Net mentioned in the original paper:
     Dalsasso, E., Denis, L., & Tupin, F. (2022). As if by magic: Self-supervised training of deep despeckling networks with MERLIN. IEEE Transactions on Geoscience and Remote Sensing, 60, 1–13. https://doi.org/10.1109/TGRS.2021.3128621
 
 List of details from the experiments with TerraSAR-X stripmap (See page 4 and Table I):
@@ -95,7 +95,9 @@ class MerlinModule(lightning.LightningModule):
 
     def training_step(self, batch, batch_idx):
         """Training step using Noise2Noise approach.
-        With manual optimization and gradient clipping."""
+
+        With manual optimization and gradient clipping.
+        """
         optimizer = self.optimizers()
 
         input, target = self._random_switch_Re_Im(batch)
@@ -123,9 +125,7 @@ class MerlinModule(lightning.LightningModule):
 
         # custom learning rate logging
         lr = optimizer.param_groups[0]["lr"]
-        self.log(
-            "train/lr", lr, on_step=True, on_epoch=False, prog_bar=False, logger=True
-        )
+        self.log("train/lr", lr, on_step=True, on_epoch=False, prog_bar=False, logger=True)
 
         self._log_metrics("train", criterion)
 

@@ -1,4 +1,4 @@
-# Math and theoritical explanations
+# Math and theoretical explanations
 *This file intends to keep track and explain the main data transformation of the repository. I will use it for my own understanding as well as to keep consistent naming conventions.*
 
 ## SAR preprocessing

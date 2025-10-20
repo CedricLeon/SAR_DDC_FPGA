@@ -58,21 +58,21 @@ $$
 - **Misconception about the data range of the output**. As (most of) the data lies between $[0;1]$, one could expect the reconstruction of the network be in the same interval. However, the network learns to map from noisy realizations of $\tilde a \sim \mathcal{N}(0,r/2)$ to the total reflectivity $r$, not to $\frac{r}{2}$. Same for $\tilde b$.
 > This means that to compare 2 images of the same scale one must visualize the Intensity $I = \tilde{a}^2 + \tilde{b}^2$ and a single prediction , e.g., $f_\theta(\tilde{a}^2)$. During inference both network estimations are averaged to decrease the variance of the reconstructed reflectivity, but if a simple proxy is needed, one could use only one of the reconstructions.
 
-- **An $ln(2)$ offset**. @TODO. One thing I still do not undestand comes from the loss optimization. If the network tries to optimize Eq. (2b), that I simplify with $\hat x$ the reconstruction and $y$ the target:
+- **An $ln(2)$ offset**. @TODO. One thing I still do not understand comes from the loss optimization. If the network tries to optimize Eq. (2b), that I simplify with $\hat x$ the reconstruction and $y$ the target:
 $$
 \text{Optimizing}~f(\hat x, y) = \frac{\hat x}{2} + exp(2 y - \hat x) \\
 \text{Means finding where}~f'(\hat x, y): \frac{1}{2} - exp(2 y - \hat x) = 0 \\
 \Leftrightarrow 2y - \hat x = ln(\frac{1}{2}) \\
 \Leftrightarrow \hat x = 2y + ln(2)
 $$
-> Given that we reconstruct the estimated reflectivity and not half of it $2y$ makes kind of sense, however, the ln(2) offset does not have an explanation to me. 
+> Given that we reconstruct the estimated reflectivity and not half of it $2y$ makes kind of sense, however, the ln(2) offset does not have an explanation to me.
 
 ### Data
 TerraSAR-x StripMap (SM) SSC (Single Look Slant Range Complex) images downloaded from [ESA's platform](https://earth.esa.int/eogateway/catalog/terrasar-x-esa-archive).
 > Submitting a form is required to access the data (2 days max delay).
 
 #### Pre-processing
-`script/TSX_dataset_creation.py` creates `hdf5` datasets more convenient for training that re-processing and patchifying the entire TSX SSC images everytime.
+`script/TSX_dataset_creation.py` creates `hdf5` datasets more convenient for training that re-processing and patchifying the entire TSX SSC images every time.
 In particular, each .cos file present in `data/TSX_cos_files/` is open, images are patchified, symmetrized, strong scatterers are preserved, normalized, and the whole set of resulting patches is split in training/validation/test datasets.
 The data is pre-processed into train/val/test HDF5 files using the `script/TSX_dataset_creation.py`. This script has many options, use `--help` for details.
 
@@ -94,7 +94,7 @@ After downloading, unzipping, accessing the `.cos` files (deep in the archive in
 > The `data` folder is ignored by Git, but typically contains softlinks to the datasets (to avoid several copies of big files).
 
 ==To place somewhere else==:
-`dataset_creation.py` creates `hdf5` datasets more convenient for training that re-processing and patchifying the entire SAR SLC images everytime.
+`dataset_creation.py` creates `hdf5` datasets more convenient for training that re-processing and patchifying the entire SAR SLC images every time.
 In particular, each .cos file present in `data/TSX_cos_files/` is open, images are symmetrizeda and patchified, and the whole set of resulting patches is split in training/validation/test datasets.
 > Following MERLIN's pipeline: Patches are not normalized between 0 and 1. The log-normalization happens before feeding them to the network. They are also de-normalized afterwards.
 
@@ -129,7 +129,7 @@ python compute_stats.py > ../../data/analysis/dataset_stats.log
 ```
 **Dataset creation**
 Old already fully-preprocessed dataset `TSX_spatialsplit_dataset_creation.py`
-`preprocess_TSX_images.py` takes images and a 'split file' (stating which image should be part of which split). By the default processing symmetrizes and patchifies, but does not square or normalize the patches. Specifying `--normalize` addes squaring and normalization..
+`preprocess_TSX_images.py` takes images and a 'split file' (stating which image should be part of which split). By the default processing symmetrizes and patchifies, but does not square or normalize the patches. Specifying `--normalize` adds squaring and normalization..
 ```bash
 python scripts/dataset/preprocess_TSX_images.py --input-dir data/TSX_cos_files --split-file data/TSX_cos_files/spatial_splits_5.json --output-dir data/processed_hdf5/ --normalize
 ```

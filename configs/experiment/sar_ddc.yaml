@@ -21,7 +21,7 @@ model:
     metric: "merlin" # "mse" or "ssim" or "ms_ssim"
     lmbda: 100
   net_optimizer:
-    lr: 1e-4
+    lr: 5e-5
   # Check if aux_optimizer.lr has good values
 
 callbacks:
@@ -35,12 +35,12 @@ trainer:
   min_epochs: 1
   max_epochs: 30
   deterministic: True
-  detect_anomaly: True
+  detect_anomaly: False
   log_every_n_steps: 10
 
 logger:
   wandb:
-    project: "sar-ddc-test"
+    project: "SAR_DDC-RD-curve"
     offline: False
     # tags: ${tags}
     # name: ${name}

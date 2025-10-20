@@ -47,9 +47,7 @@ class CompareReconstructionToGT(Callback):
         elif pl_module.__class__.__name__ == "SARDDCModule":
             self.with_compression = True
         else:
-            raise ValueError(
-                f"Unsupported LightningModule class: {pl_module.__class__.__name__}"
-            )
+            raise ValueError(f"Unsupported LightningModule class: {pl_module.__class__.__name__}")
         # ----- Load the noisy patch -----
         # For the files in patch_dir find the one that starts with raw_ and ends with .npy
         found_patch = False
@@ -118,9 +116,7 @@ class CompareReconstructionToGT(Callback):
             )
             self.A_merlin = None
             self.logI_merlin = None
-        elif (
-            self.merlin_gt_path.name.split("_")[3] != self.patch_path.name.split("_")[1]
-        ):
+        elif self.merlin_gt_path.name.split("_")[3] != self.patch_path.name.split("_")[1]:
             warnings.warn(
                 f"Patch and MERLIN GT filenames do not match: {self.patch_path.name} vs {self.merlin_gt_path.name}. "
                 "This may lead to incorrect logging."
@@ -274,9 +270,11 @@ class CompareReconstructionToGT(Callback):
 
         recon_as_output = self.recon_as_output.squeeze().cpu().numpy()
         im2 = axes[0, 2].imshow(
-            self._clip_and_minmax_normalize(recon_as_output)
-            if self.clip_and_norm
-            else recon_as_output,
+            (
+                self._clip_and_minmax_normalize(recon_as_output)
+                if self.clip_and_norm
+                else recon_as_output
+            ),
             cmap="gray",
         )
         axes[0, 2].set_title("Recon (exactly as output)")
@@ -286,9 +284,7 @@ class CompareReconstructionToGT(Callback):
         # MERLIN GT (if available)
         if merlin is not None:
             im3 = axes[0, 3].imshow(
-                self._clip_and_minmax_normalize(merlin)
-                if self.clip_and_norm
-                else merlin,
+                self._clip_and_minmax_normalize(merlin) if self.clip_and_norm else merlin,
                 cmap="gray",
             )
             axes[0, 3].set_title(subtitles[2])
@@ -312,9 +308,7 @@ class CompareReconstructionToGT(Callback):
             ax.grid(True, alpha=0.3)
             ax.tick_params(axis="y", labelsize=8)
             ax.yaxis.set_major_formatter(
-                FuncFormatter(
-                    lambda x, loc: f"{x / 1000:.0f}K" if x >= 1000 else f"{x:.0f}"
-                )
+                FuncFormatter(lambda x, loc: f"{x / 1000:.0f}K" if x >= 1000 else f"{x:.0f}")
             )
             mean = data.mean()
             std = data.std()
@@ -360,9 +354,7 @@ class CompareReconstructionToGT(Callback):
 
         # ----- Add overall title with metrics -----\
         metrics = {}
-        metrics["loss"] = (
-            criterion_real["loss"].item() + criterion_imag["loss"].item()
-        ) / 2
+        metrics["loss"] = (criterion_real["loss"].item() + criterion_imag["loss"].item()) / 2
         # Compute MSE, PSNR between reconstructions and MERLIN GT
         if merlin is not None:
             logI_diff = recon - merlin
@@ -375,14 +367,10 @@ class CompareReconstructionToGT(Callback):
             )
             # ssim
         else:
-            metrics["mse"] = metrics[
-                "psnr"
-            ] = -1  # Not available if MERLIN GT is not loaded
+            metrics["mse"] = metrics["psnr"] = -1  # Not available if MERLIN GT is not loaded
 
         if self.with_compression:
-            metrics["bpp"] = (
-                criterion_real["bpp"].item() + criterion_imag["bpp"].item()
-            ) / 2
+            metrics["bpp"] = (criterion_real["bpp"].item() + criterion_imag["bpp"].item()) / 2
         else:
             metrics["bpp"] = -1
 

@@ -1,5 +1,4 @@
-"""
-SAR Utilities for loading and preprocessing SAR data.
+"""SAR Utilities for loading and preprocessing SAR data.
 
 This module provides utility functions for SAR data handling:
 - Loading CoSAR format files
@@ -28,7 +27,8 @@ def convert_from_db(x: np.ndarray):
 
 
 def load_cosar(path: Path, logger: Logger | None = None) -> np.ndarray | None:
-    """Convert a CoSAR image to a numpy array. Function from MERLIN (originally named `cos2mat`) 'improved' with Copilot.
+    """Convert a CoSAR image to a numpy array. Function from MERLIN (originally named `cos2mat`)
+    'improved' with Copilot.
 
     Args:
         path (Path): Path to the .cos file.
@@ -39,7 +39,7 @@ def load_cosar(path: Path, logger: Logger | None = None) -> np.ndarray | None:
     """
     try:
         fin = open(path, "rb")
-    except IOError:
+    except OSError:
         if logger:
             logger.error(f"{path}: it is a not openable file")
             logger.error("Failed to call cos2mat")
@@ -60,9 +60,7 @@ def load_cosar(path: Path, logger: Logger | None = None) -> np.ndarray | None:
     nlig = ias
 
     if logger:
-        logger.info(
-            f"      Reading image in CoSAR format. ncolumns={ncol} nlines={nlig}"
-        )
+        logger.info(f"      Reading image in CoSAR format. ncolumns={ncol} nlines={nlig}")
 
     # Reset file position and skip headers
     fin.seek(0)
@@ -80,9 +78,7 @@ def load_cosar(path: Path, logger: Logger | None = None) -> np.ndarray | None:
             break
 
         imgligne = np.ndarray(2 * ncoltot, ">h", firm)
-        imgcxs[iut, :] = (
-            imgligne[4 : 2 * ncoltot : 2] + 1j * imgligne[5 : 2 * ncoltot : 2]
-        )
+        imgcxs[iut, :] = imgligne[4 : 2 * ncoltot : 2] + 1j * imgligne[5 : 2 * ncoltot : 2]
 
     fin.close()
 
@@ -98,8 +94,8 @@ def load_cosar(path: Path, logger: Logger | None = None) -> np.ndarray | None:
 
 
 def symmetrize(image: np.ndarray) -> np.ndarray:
-    """
-    Symmetrize the real and imaginary parts of the image and assure it's zero Doppler centered.
+    """Symmetrize the real and imaginary parts of the image and assure it's zero Doppler centered.
+
     Original function from MERLIN (called `symetrisation_patch_test`. Yes, with one 'm').
     Added logic to support my data format.
     Args:
@@ -113,9 +109,9 @@ def symmetrize(image: np.ndarray) -> np.ndarray:
     real_part = real.reshape(1, *real.shape, 1)
     imag_part = imag.reshape(1, *imag.shape, 1)
 
-    ################################## MERLIN SYMETRIZATION ##################################
+    # -------------------------- MERLIN SYMETRIZATION --------------------------
     S = np.fft.fftshift(np.fft.fft2(real_part[0, :, :, 0] + 1j * imag_part[0, :, :, 0]))
-    p = np.zeros((S.shape[0]))  # azimut (ncol)
+    p = np.zeros(S.shape[0])  # azimut (ncol)
     for i in range(S.shape[0]):
         p[i] = np.mean(np.abs(S[i, :]))
     sp = p[::-1]
@@ -124,9 +120,7 @@ def symmetrize(image: np.ndarray) -> np.ndarray:
     d1 = d1[0]
     shift_az_1 = int(round(-(d1 - 1) / 2)) % p.shape[0] + int(p.shape[0] / 2)
     p2_1 = np.roll(p, shift_az_1)
-    shift_az_2 = int(round(-(d1 - 1 - p.shape[0]) / 2)) % p.shape[0] + int(
-        p.shape[0] / 2
-    )
+    shift_az_2 = int(round(-(d1 - 1 - p.shape[0]) / 2)) % p.shape[0] + int(p.shape[0] / 2)
     p2_2 = np.roll(p, shift_az_2)
     window = signal.windows.gaussian(p.shape[0], std=0.2 * p.shape[0])
     test_1 = np.sum(window * p2_1)
@@ -140,7 +134,7 @@ def symmetrize(image: np.ndarray) -> np.ndarray:
         shift_az = shift_az_2 / p.shape[0]
     S2 = np.roll(S, int(shift_az * p.shape[0]), axis=0)
 
-    q = np.zeros((S.shape[1]))  # range (nlin)
+    q = np.zeros(S.shape[1])  # range (nlin)
     for j in range(S.shape[1]):
         q[j] = np.mean(np.abs(S[:, j]))
     sq = q[::-1]
@@ -150,9 +144,7 @@ def symmetrize(image: np.ndarray) -> np.ndarray:
     d2 = d2[0]
     shift_range_1 = int(round(-(d2 - 1) / 2)) % q.shape[0] + int(q.shape[0] / 2)
     q2_1 = np.roll(q, shift_range_1)
-    shift_range_2 = int(round(-(d2 - 1 - q.shape[0]) / 2)) % q.shape[0] + int(
-        q.shape[0] / 2
-    )
+    shift_range_2 = int(round(-(d2 - 1 - q.shape[0]) / 2)) % q.shape[0] + int(q.shape[0] / 2)
     q2_2 = np.roll(q, shift_range_2)
     window_r = signal.windows.gaussian(q.shape[0], std=0.2 * q.shape[0])
     test_1 = np.sum(window_r * q2_1)
@@ -175,9 +167,8 @@ def symmetrize(image: np.ndarray) -> np.ndarray:
 def preserve_point_like_scatterers(
     image2: np.ndarray, threshold_db: float = 60.0
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Preserve point-like scatterers in a TSX image. For pixels whose intensity is above a certain threshold,
-    equally distribute their intensity between real and imaginary parts.
+    """Preserve point-like scatterers in a TSX image. For pixels whose intensity is above a certain
+    threshold, equally distribute their intensity between real and imaginary parts.
 
     Args:
         image2: Squared SAR image
@@ -187,7 +178,7 @@ def preserve_point_like_scatterers(
         Tuple of (preserved_patch, scatterer_mask) where preserved_patch is the processed image
     """
     warnings.warn(
-        "preserve_point_like_scatterers() is not necessary. See MERLIN multi-temporal despeckling paper by Ines Meraoumia in TGRS."
+        "preserve_point_like_scatterers() is not necessary. See https://ieeexplore.ieee.org/abstract/document/10021242."
     )
     warnings.warn(
         "This function is deprecated, MERLIN already conserves point-like scatterers. See See https://arxiv.org/abs/2207.11095."
@@ -208,9 +199,7 @@ def preserve_point_like_scatterers(
     return np.stack((real2_proc, imag2_proc), axis=2), scatterer_mask
 
 
-def extract_patches(
-    image: np.ndarray, patch_size: int, stride: int | None = None
-) -> np.ndarray:
+def extract_patches(image: np.ndarray, patch_size: int, stride: int | None = None) -> np.ndarray:
     """Extract patches of size patch_size from the input image.
 
     Args:

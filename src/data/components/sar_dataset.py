@@ -1,8 +1,7 @@
-"""
-SAR Dataset for loading and preprocessing SAR images.
+"""SAR Dataset for loading and preprocessing SAR images.
 
-This module contains dataset classes for handling SAR images in both CoSAR format
-and pre-processed HDF5 format with proper deterministic behavior.
+This module contains dataset classes for handling SAR images in both CoSAR format and pre-processed
+HDF5 format with proper deterministic behavior.
 """
 
 from pathlib import Path
@@ -17,8 +16,8 @@ from src.utils.constants import amp_max, amp_min
 class TSXSSCDataset(Dataset):
     """Dataset for pre-processed SAR patches in HDF5 format.
 
-    This dataset loads pre-processed SAR patches from HDF5 files created
-    by the TSX_dataset_creation.py script.
+    This dataset loads pre-processed SAR patches from HDF5 files created by the
+    TSX_dataset_creation.py script.
     """
 
     def __init__(

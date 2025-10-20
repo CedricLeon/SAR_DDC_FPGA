@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""
-Debugging script for analyzing training runs and identifying issues.
-This script helps identify common problems in neural network training by analyzing
-logs from previous runs and visualizing key patterns.
+"""Debugging script for analyzing training runs and identifying issues.
+
+This script helps identify common problems in neural network training by analyzing logs from
+previous runs and visualizing key patterns.
 """
 
 import argparse
@@ -52,8 +52,8 @@ def plot_loss_components(data, title="Loss Components Analysis"):
 def plot_gradient_analysis(grad_data, title="Gradient Analysis"):
     """Plot gradient norms by network component with filled distributions.
 
-    Creates 4 subplots for g_a (encoder), g_s (decoder), h_a (hyperprior encoder),
-    and h_s (hyperprior decoder), showing gradient evolution over training steps.
+    Creates 4 subplots for g_a (encoder), g_s (decoder), h_a (hyperprior encoder), and h_s
+    (hyperprior decoder), showing gradient evolution over training steps.
     """
     # Create a figure with 2x2 subplot layout
     fig, axes = plt.subplots(2, 2, figsize=(18, 12))
@@ -143,9 +143,7 @@ def plot_gradient_analysis(grad_data, title="Gradient Analysis"):
         ax.set_title(component_title)
 
         # Add reference lines for vanishing/exploding gradients
-        ax.axhline(
-            y=1e-7, color="r", linestyle="--", alpha=0.5, label="Vanishing Threshold"
-        )
+        ax.axhline(y=1e-7, color="r", linestyle="--", alpha=0.5, label="Vanishing Threshold")
         ax.axhline(y=100, color="r", linestyle=":", alpha=0.5, label="Explosion Risk")
 
         # Number of layers in this component
@@ -175,9 +173,9 @@ def plot_gradient_analysis(grad_data, title="Gradient Analysis"):
                 y,  # From a small value to avoid log(0)
                 alpha=0.7,
                 color=color,
-                label=layer_name
-                if i % max(1, n_layers // 5) == 0
-                else "",  # Only label every few layers
+                label=(
+                    layer_name if i % max(1, n_layers // 5) == 0 else ""
+                ),  # Only label every few layers
                 zorder=z_orders[i],  # Early layers in front
             )
 
@@ -198,9 +196,7 @@ def plot_gradient_analysis(grad_data, title="Gradient Analysis"):
     return fig
 
 
-def plot_weight_distribution_evolution(
-    weight_data, title="Weight Distribution Over Time"
-):
+def plot_weight_distribution_evolution(weight_data, title="Weight Distribution Over Time"):
     """Plot how the distribution of weights changes during training."""
     # Create a 4x4 grid to show more layers
     fig, axes = plt.subplots(4, 4, figsize=(20, 16))
@@ -243,8 +239,7 @@ def plot_weight_distribution_evolution(
             # Calculate segment boundaries
             segment_size = len(plot_data) // 4
             segments = [
-                plot_data.iloc[i * segment_size : (i + 1) * segment_size]
-                for i in range(3)
+                plot_data.iloc[i * segment_size : (i + 1) * segment_size] for i in range(3)
             ]
             # Last segment gets the remainder
             segments.append(plot_data.iloc[3 * segment_size :])
@@ -434,9 +429,7 @@ def analyze_wandb_run(run_id=None, project=None):
     # Fill missing values in gradient and weight data
     for layer in grad_data:
         if layer != "step" and len(grad_data[layer]) < len(grad_data["step"]):
-            grad_data[layer].extend(
-                [np.nan] * (len(grad_data["step"]) - len(grad_data[layer]))
-            )
+            grad_data[layer].extend([np.nan] * (len(grad_data["step"]) - len(grad_data[layer])))
 
     for layer in weight_data:
         if layer != "step" and len(weight_data[layer]) < len(weight_data["step"]):
@@ -540,9 +533,7 @@ def analyze_wandb_run(run_id=None, project=None):
 
         # Calculate loss component ratio
         if not train_df["mse"].isna().all() and not train_df["bpp"].isna().all():
-            mse_bpp_ratio = (
-                train_df["mse"].mean() / train_df["bpp"].replace(0, np.nan).mean()
-            )
+            mse_bpp_ratio = train_df["mse"].mean() / train_df["bpp"].replace(0, np.nan).mean()
             print(f"Average MSE/BPP ratio: {mse_bpp_ratio:.4f}")
 
             if mse_bpp_ratio > 100:
@@ -568,24 +559,16 @@ def analyze_wandb_run(run_id=None, project=None):
 def main():
     parser = argparse.ArgumentParser(description="Training Debug Analysis Tool")
     parser.add_argument("--run_id", type=str, help="W&B run ID to analyze")
-    parser.add_argument(
-        "--project", type=str, default="sar-ddc-test", help="W&B project name"
-    )
+    parser.add_argument("--project", type=str, default="sar-ddc-test", help="W&B project name")
     args = parser.parse_args()
 
     output_dir = analyze_wandb_run(args.run_id, args.project)
 
     print("\nSuggestions for resolving training issues:")
     print("1. Check loss ratio - if MSE/BPP is extremely high or low, adjust lambda")
-    print(
-        "2. For vanishing gradients - try different initialization or activation functions"
-    )
-    print(
-        "3. For exploding gradients - reduce learning rate or increase gradient clipping"
-    )
-    print(
-        "4. For stagnating loss - check early stopping patience or adjust learning rate"
-    )
+    print("2. For vanishing gradients - try different initialization or activation functions")
+    print("3. For exploding gradients - reduce learning rate or increase gradient clipping")
+    print("4. For stagnating loss - check early stopping patience or adjust learning rate")
     print("5. For NaN values - check for division by zero or log(0) operations")
     print(
         "6. For diverging networks - check normalization, initialization, and lambda balancen\n\n\n\n"

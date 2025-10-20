@@ -73,9 +73,9 @@ def custom_inference(cfg: DictConfig):
     # Load data
     data_dir = cfg.data.get("hdf5_dir", None)
     patch_path = Path(data_dir) / "val_Hamburg_1024x1024.npy"
-    assert patch_path.exists(), (
-        f"Patch file {patch_path} does not exist. Please check the path in the config."
-    )
+    assert (
+        patch_path.exists()
+    ), f"Patch file {patch_path} does not exist. Please check the path in the config."
 
     # Hyperparameters logging
     cfg_lambda = cfg.model.criterion["lmbda"]
@@ -90,9 +90,7 @@ def custom_inference(cfg: DictConfig):
 
     with torch.no_grad():
         log.info("Running inference on the model...")
-        log.info(
-            f"The model uses lambda={cfg_lambda} on dataset {patch_path.parent.name}."
-        )
+        log.info(f"The model uses lambda={cfg_lambda} on dataset {patch_path.parent.name}.")
 
         output_real = model.forward(real)
         criterion_real = model.criterion(output_real, imag)
@@ -146,16 +144,12 @@ def custom_inference(cfg: DictConfig):
     output_imag = torch.squeeze(output_imag).cpu().numpy()
     output_reflectivity = np.sqrt(0.5 * (output_real + output_imag))
 
-    # If patchified results are available, use them
-    output_real_patchified = (
-        torch.squeeze(patchified_results["output_real"]).cpu().numpy()
-    )
-    output_imag_patchified = (
-        torch.squeeze(patchified_results["output_imag"]).cpu().numpy()
-    )
-    output_reflectivity_patchified = np.sqrt(
-        0.5 * (output_real_patchified + output_imag_patchified)
-    )
+    # # If patchified results are available, use them
+    # output_real_patchified = torch.squeeze(patchified_results["output_real"]).cpu().numpy()
+    # output_imag_patchified = torch.squeeze(patchified_results["output_imag"]).cpu().numpy()
+    # output_reflectivity_patchified = np.sqrt(
+    #     0.5 * (output_real_patchified + output_imag_patchified)
+    # )
 
     # ------------ Saving ------------- #
     # Create new dir called "inference_results"
@@ -170,9 +164,9 @@ def custom_inference(cfg: DictConfig):
         output_real,
         output_imag,
         output_reflectivity,
-        output_real_patchified,
-        output_imag_patchified,
-        output_reflectivity_patchified,
+        # output_real_patchified,
+        # output_imag_patchified,
+        # output_reflectivity_patchified,
     ]
     img_names = [
         "input_real",
@@ -188,9 +182,7 @@ def custom_inference(cfg: DictConfig):
     log.info(f"Saving images {img_names} to {inference_dir}...")
     for img, name in zip(to_save, img_names):
         if name.startswith("input_"):
-            img_clipped = img.clip(
-                img.mean() - 3 * img.std(), img.mean() + 3 * img.std()
-            )
+            img_clipped = img.clip(img.mean() - 3 * img.std(), img.mean() + 3 * img.std())
         else:
             img_clipped = img.clip(0, img.mean() + 3 * img.std())
         plt.imsave(
@@ -203,17 +195,13 @@ def custom_inference(cfg: DictConfig):
     with open(inference_dir / "eval.logs", "w") as f:
         # Add a file header with current date and time, + the model checkpoint path, its epoch and global_step
         current_datetime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        f.write(
-            f"Evaluation of the model checkpoint: {checkpoint_path}, the {current_datetime}\n"
-        )
+        f.write(f"Evaluation of the model checkpoint: {checkpoint_path}, the {current_datetime}\n")
         f.write(
             f"Loaded at epoch: {checkpoint['epoch']} and global_step: {checkpoint['global_step']}\n"
         )
         f.write(f"Evaluated on data from: {data_dir}\n\n")
 
-        for part, criterion in zip(
-            ["Real", "Imaginary"], [criterion_real, criterion_imag]
-        ):
+        for part, criterion in zip(["Real", "Imaginary"], [criterion_real, criterion_imag]):
             f.write(f"Criterion outputs for {part} input:\n")
             for key, value in criterion.items():
                 f.write(f"{key}: {value}\n")

@@ -1,6 +1,7 @@
-"""
-Standalone script to compute statistics over all CoSAR images found in a given folder.
-The statistics are computed over the pre-processed data, i.e., each image is loaded symmetrized, squared, and log-transformed (natural basis).
+"""Standalone script to compute statistics over all CoSAR images found in a given folder.
+
+The statistics are computed over the pre-processed data, i.e., each image is loaded symmetrized,
+squared, and log-transformed (natural basis).
 """
 
 import sys
@@ -32,9 +33,7 @@ class RunningStatistics:
 
         # Track percentiles efficiently by sampling values
         self.sample_values = []
-        self.max_samples = (
-            1_000_000  # Store up to 1M samples for percentile calculation
-        )
+        self.max_samples = 1_000_000  # Store up to 1M samples for percentile calculation
         self.sample_prob = 0.05  # Sample 5% of all pixels
 
     def update(self, data):
@@ -123,9 +122,7 @@ def process_sar_image(filepath, stats_intensity_log, stats_amp_log_sqrt):
         print(f"Failed to load {filepath}")
         return False
 
-    print(
-        f"  Image shape: {sar_data.shape}, memory: {sar_data.nbytes / (1024**2):.2f} MB"
-    )
+    print(f"  Image shape: {sar_data.shape}, memory: {sar_data.nbytes / (1024**2):.2f} MB")
 
     # Apply symmetrization
     sar_data = symmetrize(sar_data)
@@ -189,18 +186,10 @@ def plot_histogram(stats, title, filename):
         p10 = stats.percentile(10)
         p90 = stats.percentile(90)
         p99 = stats.percentile(99)
-        plt.axvline(
-            p01, color="yellow", linestyle="-.", label=f"1st percentile: {p01:.4f}"
-        )
-        plt.axvline(
-            p10, color="orange", linestyle="-.", label=f"10th percentile: {p10:.4f}"
-        )
-        plt.axvline(
-            p90, color="orange", linestyle="-.", label=f"90th percentile: {p90:.4f}"
-        )
-        plt.axvline(
-            p99, color="yellow", linestyle="-.", label=f"99th percentile: {p99:.4f}"
-        )
+        plt.axvline(p01, color="yellow", linestyle="-.", label=f"1st percentile: {p01:.4f}")
+        plt.axvline(p10, color="orange", linestyle="-.", label=f"10th percentile: {p10:.4f}")
+        plt.axvline(p90, color="orange", linestyle="-.", label=f"90th percentile: {p90:.4f}")
+        plt.axvline(p99, color="yellow", linestyle="-.", label=f"99th percentile: {p99:.4f}")
 
     # Add labels and title
     plt.xlabel("Value (log scale)")

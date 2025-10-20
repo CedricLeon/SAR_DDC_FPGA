@@ -3,7 +3,7 @@ This script will be used to quantize a PyTorch model for FPGA deployment.
 It is based on Vitis-AI resnet18 PyTorch model quantization example, available at: https://xilinx.github.io/Vitis-AI/3.0/html/docs/quickstart/mpsoc.html#pytorch-tutorial
 
 @TODO:
-- I might have to have this script in Vitis-AI folder, because I ned to start the docker there
+- I might have to have this script in Vitis-AI folder, because I need to start the docker there
 - Guess the data_dir from model configuration file (to avoid messing up)
 - Write functional MerlinRDLoss function to compute the loss after evaluation
 - Write how my evaluation will work
@@ -51,9 +51,7 @@ parser.add_argument(
     default="/path/to/trained_model/",
     help="Trained model file path. Download pretrained model from the following url and put it in model_dir specified path: https://download.pytorch.org/models/resnet18-5c106cde.pth",
 )
-parser.add_argument(
-    "--config_file", default=None, help="quantization configuration file"
-)
+parser.add_argument("--config_file", default=None, help="quantization configuration file")
 parser.add_argument(
     "--subset_len",
     default=None,
@@ -78,13 +76,9 @@ parser.add_argument(
 parser.add_argument(
     "--deploy", dest="deploy", action="store_true", help="export xmodel for deployment"
 )
-parser.add_argument(
-    "--inspect", dest="inspect", action="store_true", help="inspect model"
-)
+parser.add_argument("--inspect", dest="inspect", action="store_true", help="inspect model")
 
-parser.add_argument(
-    "--target", dest="target", nargs="?", const="", help="specify target device"
-)
+parser.add_argument("--target", dest="target", nargs="?", const="", help="specify target device")
 
 args, _ = parser.parse_known_args()
 
@@ -93,6 +87,7 @@ def load_data(
     data_dir: Path,
     **kwargs,
 ):
+    """Load validation data loader."""
     dataset = TSXSSCDataset(data_dir / "val.h5", transform=None)
     if args.subset_len:  # random sampling method
         assert args.subset_len <= len(dataset)
@@ -106,6 +101,7 @@ def load_data(
 
 
 def evaluate(model, val_loader, loss_fn):
+    """Evaluate the model on validation dataset."""
     # @TODO: figure out what I want to evaluate
     model.eval()
     model = model.to(device)
@@ -138,9 +134,7 @@ if __name__ == "__main__":
     # ---- Find the model -----
     # ~/dev/DDC_FPGA/logs/train/sar_ddc/hyperprior/runs/2025-06-10_13-47-27
     model_path = Path(args.model_dir) / "last.ckpt"
-    model = (
-        ResidualScaleHyperprior().cpu()
-    )  # model is a nn.Module with a forward() method
+    model = ResidualScaleHyperprior().cpu()  # model is a nn.Module with a forward() method
     model.load_state_dict(torch.load(model_path))
 
     # ----- inspect -----
@@ -168,7 +162,7 @@ if __name__ == "__main__":
         )
         quant_model = quantizer.quant_model
 
-    # Get loss after evaluation @TODO: Write MerlinRDLoss functionnal
+    # Get loss after evaluation @TODO: Write MerlinRDLoss functional
     loss_fn = MerlinRDLoss(metric="mse", lmbda=0.01).to(device)
 
     # ----- Load data -----
