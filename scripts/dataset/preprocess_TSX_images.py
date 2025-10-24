@@ -21,18 +21,19 @@ import h5py
 import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
-from src.utils.constants import amp_max, amp_min
-
 # from src.utils.pylogger import RankedLogger
-from src.utils.sar_utils import (
+from src.utils import (
     extract_patches,
+    extract_short_name_from_TSX_filepath,
     load_cosar,
     symmetrize,
 )
+from src.utils.constants import amp_max, amp_min
 
 
-# ANSI color codes for console output
 class Colors:
+    """ANSI color codes for console output."""
+
     RED = "\033[31m"
     YELLOW = "\033[33m"
     GREEN = "\033[32m"
@@ -91,43 +92,6 @@ def setup_logging(output_dir: Path, dataset_name: str):
     log.info(f"Logging configured. Log file: {log_file}")
 
 
-def extract_short_name_from_filepath(filepath: Path):
-    """Extract short name from the given filepath.
-
-    Assumes the short name is the substring before the first underscore.
-    """
-    if "_" not in filepath.name:
-        raise ValueError(
-            f"File {filepath.name} does not contain an underscore '_' to extract the short name."
-        )
-    return filepath.name.split("_")[0]
-
-
-def add_patch_for_persistent_visualization(filenames, save_dir):
-    """Preprocess and save a unique, large patch used for visualizing improvements during
-    training."""
-    # Cherry picked the towncenter of Hamburg (ncolumns=14686 nlines=32901)
-    CROP_COORDINATES = (11000, 8500)
-    PATCH_SIZE = (1024, 1024)
-    image_path = filenames["val"][0]
-    short_name = extract_short_name_from_filepath(image_path)
-
-    image = load_cosar(image_path, logger=None)
-    if image is None:
-        raise ValueError(f"Image {image_path} could not be loaded")
-    patch = image[
-        CROP_COORDINATES[0] : CROP_COORDINATES[0] + PATCH_SIZE[0],
-        CROP_COORDINATES[1] : CROP_COORDINATES[1] + PATCH_SIZE[1],
-        :,
-    ]
-    patch = symmetrize(patch)
-    patch = np.square(patch)
-
-    patch_path = save_dir / f"val_{short_name}_{PATCH_SIZE[0]}x{PATCH_SIZE[1]}.npy"
-    np.save(patch_path, patch)
-    log.info(f"Successfully saved persistent visualization patch of {short_name} at {patch_path}.")
-
-
 def add_metadata_to_dataset(
     dset: h5py.Dataset,
     nb_patches: int,
@@ -167,7 +131,7 @@ def process_dataset(
 
         patches_per_image = {}
         for i, file_path in enumerate(filenames["train"]):
-            short_name = extract_short_name_from_filepath(file_path)
+            short_name = extract_short_name_from_TSX_filepath(file_path)
             log.info(
                 f" - {Colors.BLUE}Processing {i + 1}/{len(filenames['train'])}: {short_name}{Colors.RESET}"
             )
@@ -235,7 +199,7 @@ def process_dataset(
         patches_per_image = {}
         all_patches = []
         for i, file_path in enumerate(filenames[split]):
-            short_name = extract_short_name_from_filepath(file_path)
+            short_name = extract_short_name_from_TSX_filepath(file_path)
             log.info(f"  - {Colors.BLUE}Processing {short_name}{Colors.RESET}")
 
             # Load, symmetrize, patchify
@@ -279,6 +243,7 @@ def process_dataset(
 
 
 def main():
+    """Main function to setup logging, validate arguments, and process the dataset."""
     # ----- Setup logging -----
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
@@ -314,7 +279,7 @@ def main():
         filepaths = []
         for file in files:
             file_path = input_dir / file
-            log.info(f"  - {extract_short_name_from_filepath(file_path)}")
+            log.info(f"  - {extract_short_name_from_TSX_filepath(file_path)}")
             if not file_path.is_file():
                 raise RuntimeError(f"Expected file for {split} split does not exist: {file_path}")
             filepaths.append(file_path)
@@ -330,7 +295,7 @@ def main():
     log.info(
         f"{Colors.GREEN}Starting the creation of the dataset {dataset_name} at {start_time}{Colors.RESET}",
     )
-    # add_patch_for_persistent_visualization(filenames, output_dir / dataset_name)
+
     process_dataset(
         filenames,
         output_dir / dataset_name,

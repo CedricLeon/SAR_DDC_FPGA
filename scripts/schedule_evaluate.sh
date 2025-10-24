@@ -7,10 +7,11 @@
 # ADAM lambda = 10: 2025-09-17_20-38-04
 # ADAM lambda = 50: 2025-09-17_15-48-07
 # ADAM lambda = 100: 2025-09-17_14-32-17
-# ADAM lambda = 200: logs/train/sar_ddc/hyperprior/multiruns/2025-09-18_18-06-51/2"
-# MERLIN: 2025-09-16_13-49-03 (.../sar_ddc/merlin/...)
+# ADAM lambda = 200: logs/train/sar_ddc/hyperprior/multiruns/2025-09-18_18-06-51/2
+# MERLIN: "logs/train/sar_ddc/merlin/runs/2025-09-16_13-49-03"
+# ADAM-NOC: "logs/train/sar_ddc/hyperprior/runs/2025-09-17_08-55-41"
 
-STRIDE = 256
+STRIDE=256
 
 echo "Evaluating LAMBDA=1 model..."
 python src/evaluate.py ckpt_path=logs/train/sar_ddc/hyperprior/runs/2025-09-18_13-05-43/checkpoints/last.ckpt stride=$STRIDE

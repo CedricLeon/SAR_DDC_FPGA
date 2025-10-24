@@ -1,4 +1,5 @@
 import warnings
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -6,6 +7,18 @@ from lightning import LightningModule
 
 from src.models import MerlinModule, SARDDCModule
 from src.utils import estimate_bpp
+
+
+def extract_short_name_from_TSX_filepath(filepath: Path):
+    """Extract short name from the given filepath.
+
+    Assumes the short name is the substring before the first underscore.
+    """
+    if "_" not in filepath.name:
+        raise ValueError(
+            f"File {filepath.name} does not contain an underscore '_' to extract the short name."
+        )
+    return filepath.name.split("_")[0]
 
 
 def process_large_patch(
