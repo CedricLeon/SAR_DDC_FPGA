@@ -1,19 +1,30 @@
 # @package _global_
 
 defaults:
-  - _self_
-  - data: mnist # choose datamodule with `test_dataloader()` for evaluation
-  - model: mnist
+  - data: tsx_ssc # choose datamodule with `test_dataloader()` for evaluation
+  - model: sar_hyperprior
   - logger: wandb
-  - trainer: default
+  - trainer: gpu
   - paths: default
   - extras: default
   - hydra: default
+  - _self_
 
 # @TODO: Modify the task-name behavior so that by default, when evaluating a model, the task name is set to "eval/<dataset>/<model>" without having to duplicate the experiment config file
 task_name: "eval"
+tags: ["sar_hyperprior", "tsx_ssc"]
 
-tags: ["dev"]
+data:
+  hdf5_dir: ${paths.data_dir}processed_hdf5/spatialsplit5_nopres_norm0nat
+  batch_size: 16
+  num_workers: 11
+
+model:
+  criterion:
+    metric: "merlin" # "mse" or "ssim" or "ms_ssim"
+    lmbda: 25
+  net_optimizer:
+    lr: 1e-5 # Got infinite loss with 0.001
 
 # passing checkpoint path is necessary for evaluation
 ckpt_path: ???

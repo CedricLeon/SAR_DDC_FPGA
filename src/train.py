@@ -4,19 +4,24 @@ from typing import Any, Dict, List, Optional, Tuple
 import hydra
 import lightning
 import rootutils
-import torch  # Import torch at the module level for global settings
+
+# import torch  # Import torch at the module level for global settings
 import wandb
 from lightning import Callback, LightningDataModule, LightningModule, Trainer
+from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig, OmegaConf
 
-# Enable tensor cores for better performance (might crash on some GPUs) @TODO: add a test
-torch.set_float32_matmul_precision("high")
+# # Enable tensor cores for better performance (might crash on some GPUs) @TODO: add a test
+# torch.set_float32_matmul_precision("high")
 
-# Filter out specific warnings
-warnings.filterwarnings(
-    "ignore", message=".*torch.cuda.amp.autocast.*", category=FutureWarning
-)  # CompressAI use of deprecated torch.autocast
+# ----- Filter out specific warnings -----
+# warnings.filterwarnings(
+#     "ignore", message=".*was provided to the `Field()` function.*"
+# )  # Pydantic v2.12 in wandb: https://github.com/wandb/wandb/issues/10662
+# warnings.filterwarnings(
+#     "ignore", message=".*torch.cuda.amp.autocast.*", category=FutureWarning
+# )  # CompressAI use of deprecated torch.autocast
 # warnings.filterwarnings("ignore", message=".*This figure includes Axes that are not compatible with tight_layout.*", category=UserWarning)
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
@@ -38,7 +43,7 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # more info: https://github.com/ashleve/rootutils
 # ------------------------------------------------------------------------------------ #
 
-from src.utils import (
+from src.utils import (  # noqa: E402
     RankedLogger,
     early_wandb_initialization,
     extras,
@@ -69,7 +74,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             cfg.seed, workers=True
         )  # workers=True makes setting `worker_init_fn` in dataloaders unnecessary
     if cfg.get("determinism"):
-        # There is a weird incompatibilty between cloudpickle and cudnn; TypeError: cannot pickle '_Deterministic' object
+        # There is a weird incompatibility between cloudpickle and cudnn; TypeError: cannot pickle '_Deterministic' object
         # You can read more about it here: https://github.com/pytorch/pytorch/issues/48832 and https://github.com/cloudpipe/cloudpickle/issues/405
         # See https://github.com/ray-project/ray/issues/8569, for different fixes
         # One solution is to import torch in the train function
@@ -92,9 +97,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     logger: List[Logger] = instantiate_loggers(cfg.get("logger"))
 
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
-    trainer: Trainer = hydra.utils.instantiate(
-        cfg.trainer, callbacks=callbacks, logger=logger
-    )
+    trainer: Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=logger)
 
     object_dict = {
         "cfg": cfg,
@@ -117,6 +120,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     if cfg.get("test"):
         log.info("Starting testing!")
+        assert isinstance(trainer.checkpoint_callback, ModelCheckpoint)
         ckpt_path = trainer.checkpoint_callback.best_model_path
         if ckpt_path == "":
             log.warning("Best ckpt not found! Using current weights for testing...")
@@ -140,8 +144,7 @@ def main(cfg: DictConfig) -> Optional[float]:
     :return: Optional[float] with optimized metric value.
     """
     wandb_on = (
-        cfg.get("debug") is None
-        and OmegaConf.select(cfg, "logger.wandb._target_") is not None
+        cfg.get("debug") is None and OmegaConf.select(cfg, "logger.wandb._target_") is not None
     )
     # Manual and early initialization of the W&B Run if no debug is planned
     if wandb_on:

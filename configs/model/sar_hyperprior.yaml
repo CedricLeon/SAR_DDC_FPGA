@@ -3,17 +3,18 @@ _target_: src.models.sar_ddc_module.SARDDCModule
 net:
   _target_: src.models.components.sar_hyperprior.ResidualScaleHyperprior
   nb_channels_main: 128  # Number of channels for main transform
+  # DPU_compile: False # Always false, only set when quantizing the netwrk with Vitis-AI
   # No need to specify th number of channel of the hyperprior, by the model architecture it has to be twice the number of channels of the main transform
 
 criterion:
-  _target_: src.utils.metrics.UnitaryRDLoss #compressai.losses.RateDistortionLoss
-  metric: "mse" # "ssim", "ms_ssim", or "merlin"
-  lmbda: 1000
+  _target_: src.utils.metrics.MerlinRDLoss #compressai.losses.RateDistortionLoss
+  metric: "merlin" # "ssim", "ms_ssim", or "mse"
+  lmbda: 1
 
 net_optimizer:
   _target_: torch.optim.Adam
   _partial_: true
-  lr: 0.0001          # Default: 0.001, compressai: 0.0001
+  lr: 5e-5
   weight_decay: 0.0   # Default: 0.0
 
 aux_optimizer:
@@ -23,14 +24,18 @@ aux_optimizer:
   weight_decay: 0.0   # Default: 0.0
 
 scheduler:
-  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+  _target_: torch.optim.lr_scheduler.MultiStepLR
   _partial_: true
-  mode: min
-  factor: 0.1         # Default: 0.1, compressai: 0.5
-  patience: 5         # Default: 10, compressai: 20
-  threshold: 0.001     # Default: 1e-4
+  milestones: [4, 20]  # Reduce LR at epochs 4 and 20
+  gamma: 0.1           # Multiply LR by 0.1 at each milestone
+
+# scheduler:
+#   _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+#   _partial_: true
+#   mode: min
+#   factor: 0.1         # Default: 0.1, compressai: 0.5
+#   patience: 5         # Default: 10, compressai: 20
+#   threshold: 0.001     # Default: 1e-4
 
 gradient_clip_norm: 1.0 # https://github.com/ali-zafari/TBTC/blob/master/lit_model.py
 compile: False          # compile model for faster training with pytorch 2.0
-
-anomalies_log_dir: ${paths.output_dir}/anomalies

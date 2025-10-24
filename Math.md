@@ -1,7 +1,9 @@
-# Math and theoritical explanations
+# Math and theoretical explanations
 *This file intends to keep track and explain the main data transformation of the repository. I will use it for my own understanding as well as to keep consistent naming conventions.*
 
 ## SAR preprocessing
+
+==@TODO These equations are fully deprecated (or even false), as I have changed my way of preprocessing the data==
 
 ### Normalize SAR Image
 This function logarithmically normalizes SAR image data to a standard range.

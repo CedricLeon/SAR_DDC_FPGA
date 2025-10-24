@@ -1,0 +1,31 @@
+program: src/train.py
+method: bayes
+project: sar-ddc-test
+entity: cedric-leonard
+metric:
+  goal: minimize
+  name: valid/loss
+parameters:
+  # Simple names here; we translate them to Hydra overrides in the command below
+  batch_size:
+    values: [8, 16, 32]
+  net_lr:
+    distribution: log_uniform
+    min: 1e-6
+    max: 1e-4
+  aux_lr:
+    distribution: log_uniform
+    min: 1e-6
+    max: 1e-4
+  epochs:
+    value: 8
+
+# Explicitly map sweep params to Hydra config keys using "key=value" style
+command:
+  - ${interpreter}
+  - ${program}
+  - experiment=sar_ddc
+  - data.batch_size=${args:batch_size}
+  - model.net_optimizer.lr=${args:net_lr}
+  - model.aux_optimizer.lr=${args:aux_lr}
+  - trainer.max_epochs=${args:epochs}

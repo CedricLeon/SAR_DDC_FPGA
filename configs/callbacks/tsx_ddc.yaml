@@ -3,20 +3,16 @@ defaults:
   - model_summary
   - rich_progress_bar
   - learning_rate_monitor
-  - log_val_batch_plot
-  - log_val_patch
-  - early_stopping
+  - compare_recon_to_gt
+  - monitor_val_recon
+  # - early_stopping
   - _self_
 
 # Configuration for callbacks
-log_val_batch_plot:
-  log_every_n_epochs: 5
-  num_images: 2
-
-log_val_patch:
-  patch_dir: ${data.hdf5_dir}
+compare_recon_to_gt:
   log_every_n_epochs: 1
-  add_residuals: True
+monitor_val_recon:
+  log_every_n_epochs: 1
 
 model_checkpoint:
   dirpath: ${paths.output_dir}/checkpoints
@@ -26,14 +22,14 @@ model_checkpoint:
   save_last: True
   auto_insert_metric_name: True
 
-early_stopping:
-  monitor: "valid/loss"
-  mode: "min"
-  min_delta: 0.0001 # @TODO: Experiment with this value
-  patience: 10
+# early_stopping:
+#   monitor: "valid/loss"
+#   mode: "min"
+#   min_delta: 0.0001 # @TODO: Experiment with this value
+#   patience: 10
 
 model_summary:
   max_depth: 3
 
 learning_rate_monitor:
-  logging_interval: "epoch"
+  logging_interval: "step"

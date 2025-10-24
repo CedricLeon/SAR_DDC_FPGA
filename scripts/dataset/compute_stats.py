@@ -1,9 +1,9 @@
-"""
-Standalone script to compute statistics over all CoSAR images found in a given folder.
-The statistics are computed over the pre-processed data, i.e., each image is loaded symmetrized, squared, and log-transformed (natural basis).
+"""Standalone script to compute statistics over all CoSAR images found in a given folder.
+
+The statistics are computed over the pre-processed data, i.e., each image is loaded symmetrized,
+squared, and log-transformed (natural basis).
 """
 
-import gc
 import sys
 import time
 from pathlib import Path
@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Add parent directory to path to import from src
-sys.path.append("..")
+sys.path.append("../..")
 from src.utils.sar_utils import load_cosar, symmetrize
 
 
@@ -33,9 +33,7 @@ class RunningStatistics:
 
         # Track percentiles efficiently by sampling values
         self.sample_values = []
-        self.max_samples = (
-            1_000_000  # Store up to 1M samples for percentile calculation
-        )
+        self.max_samples = 1_000_000  # Store up to 1M samples for percentile calculation
         self.sample_prob = 0.05  # Sample 5% of all pixels
 
     def update(self, data):
@@ -50,7 +48,7 @@ class RunningStatistics:
         self.min_val = min(self.min_val, np.min(flat_data))
         self.max_val = max(self.max_val, np.max(flat_data))
 
-        # Update mean and M2 using Welford's online algorithm
+        # Update mean and M2 using Welford's online algorithm, see https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Welford's_online_algorithm
         delta = flat_data - self.mean
         self.mean += np.sum(delta) / self.n
         delta2 = flat_data - self.mean
@@ -90,10 +88,10 @@ class RunningStatistics:
     def report(self):
         """Generate a report of the statistics."""
         print(f"Statistics for {self.name} ({self.n:,} values):")
-        print(f"  Mean: {self.mean:.4f}")
-        print(f"  Std dev: {self.std:.4f}")
-        print(f"  Min: {self.min_val:.4f}")
-        print(f"  Max: {self.max_val:.4f}")
+        print(f"  Mean: {self.mean}")
+        print(f"  Std dev: {self.std}")
+        print(f"  Min: {self.min_val}")
+        print(f"  Max: {self.max_val}")
 
         # Calculate percentiles if we have samples
         if self.sample_values:
@@ -114,44 +112,35 @@ class RunningStatistics:
         }
 
 
-def process_sar_image(filepath, stats_inten, stats_amp, stats_inten_log):
+def process_sar_image(filepath, stats_intensity_log, stats_amp_log_sqrt):
     """Process a single SAR image and update statistics."""
     print(f"Processing {filepath.name}...")
 
     # Load the image
-    sar_data = load_cosar(filepath, verbose=False)
+    sar_data = load_cosar(filepath)
     if sar_data is None:
         print(f"Failed to load {filepath}")
         return False
 
-    print(
-        f"  Image shape: {sar_data.shape}, memory: {sar_data.nbytes / (1024**2):.2f} MB"
-    )
+    print(f"  Image shape: {sar_data.shape}, memory: {sar_data.nbytes / (1024**2):.2f} MB")
 
     # Apply symmetrization
     sar_data = symmetrize(sar_data)
 
     # Square the components
     sar_data = np.square(sar_data)
+    intensity = sar_data[:, :, 0] + sar_data[:, :, 1]
 
     # Apply log transformation
-    intensity = sar_data[:, :, 0] + sar_data[:, :, 1]
-    amp = np.sqrt(intensity)
-    inten_log = np.log(intensity + np.spacing(1))
+    inten_log = np.log(intensity + 1e-2)
+    amp_log_sqrt = np.log(np.sqrt(intensity) + 1e-2)
 
-    # # Update statistics
-    # stats_real.update(sar_data[:, :, 0])
-    # stats_imag.update(sar_data[:, :, 1])
-    # stats_whole.update(sar_data)
-    stats_inten.update(intensity)
-    stats_amp.update(amp)
-    stats_inten_log.update(inten_log)
+    # Update statistics
+    stats_intensity_log.update(inten_log)
+    stats_amp_log_sqrt.update(amp_log_sqrt)
 
     # Free memory
-    del sar_data, intensity, inten_log, amp
-    gc.collect()
-
-    return True
+    del sar_data, intensity, inten_log, amp_log_sqrt
 
 
 def plot_histogram(stats, title, filename):
@@ -197,18 +186,10 @@ def plot_histogram(stats, title, filename):
         p10 = stats.percentile(10)
         p90 = stats.percentile(90)
         p99 = stats.percentile(99)
-        plt.axvline(
-            p01, color="yellow", linestyle="-.", label=f"1st percentile: {p01:.4f}"
-        )
-        plt.axvline(
-            p10, color="orange", linestyle="-.", label=f"10th percentile: {p10:.4f}"
-        )
-        plt.axvline(
-            p90, color="orange", linestyle="-.", label=f"90th percentile: {p90:.4f}"
-        )
-        plt.axvline(
-            p99, color="yellow", linestyle="-.", label=f"99th percentile: {p99:.4f}"
-        )
+        plt.axvline(p01, color="yellow", linestyle="-.", label=f"1st percentile: {p01:.4f}")
+        plt.axvline(p10, color="orange", linestyle="-.", label=f"10th percentile: {p10:.4f}")
+        plt.axvline(p90, color="orange", linestyle="-.", label=f"90th percentile: {p90:.4f}")
+        plt.axvline(p99, color="yellow", linestyle="-.", label=f"99th percentile: {p99:.4f}")
 
     # Add labels and title
     plt.xlabel("Value (log scale)")
@@ -223,8 +204,8 @@ def plot_histogram(stats, title, filename):
 
 def main():
     # Configuration
-    data_dir = Path("../data/TSX_cos_files")
-    output_dir = Path("../data/analysis")
+    data_dir = Path("../../data/TSX_cos_files")
+    output_dir = Path("../../data/analysis")
     output_dir.mkdir(exist_ok=True, parents=True)
 
     # List .cos files
@@ -232,55 +213,29 @@ def main():
     print(f"Found {len(cos_files)} .cos files in {data_dir}")
 
     # Create statistics trackers
-    # stats_real = RunningStatistics("Real Component (log-squared)")
-    # stats_imag = RunningStatistics("Imaginary Component (log-squared)")
-    # stats = RunningStatistics("Whole image (log-squared)")
-    stats_inten = RunningStatistics("Intensity")
-    stats_amp = RunningStatistics("Amplitude")
-    stats_inten_log = RunningStatistics("Intensity (log)")
+    stats_intensity_log = RunningStatistics("Intensity (log + 1e-2)")
+    stats_amp_log_sqrt = RunningStatistics("Amplitude (log(sqrt(intensity) + 1e-2))")
 
     # Process each image
     for file_path in cos_files:
-        process_sar_image(file_path, stats_inten, stats_amp, stats_inten_log)
+        process_sar_image(file_path, stats_intensity_log, stats_amp_log_sqrt)
 
     # Generate reports
-    print("\n=== INTENSITY STATISTICS ===")
-    stats_inten.report()
+    print("\n=== INTENSITY STATISTICS (log + 1e-2) ===")
+    stats_intensity_log.report()
     plot_histogram(
-        stats_inten,
-        "Log-transformed Intensity Distribution",
-        output_dir / "intensity_histogram.png",
+        stats_intensity_log,
+        "Intensity (log + 1e-2) Distribution",
+        output_dir / "intensity_log_1e-2_histogram.png",
     )
 
-    print("\n=== AMPLITUDE STATISTICS ===")
-    stats_amp.report()
+    print("\n=== AMPLITUDE STATISTICS (log(sqrt(intensity) + 1e-2)) ===")
+    stats_amp_log_sqrt.report()
     plot_histogram(
-        stats_amp,
-        "Log-transformed Amplitude Distribution",
-        output_dir / "amplitude_histogram.png",
+        stats_amp_log_sqrt,
+        "Amplitude (log(sqrt(intensity) + 1e-2)) Distribution",
+        output_dir / "amplitude_log-sqrt_1e-2_histogram.png",
     )
-    print("\n=== INTENSITY (LOG) STATISTICS ===")
-    stats_inten_log.report()
-    plot_histogram(
-        stats_inten_log,
-        "Intensity (log) Distribution",
-        output_dir / "intensity_log_histogram.png",
-    )
-    # # Print final conclusion
-    # print(
-    #     "\nDataset Analysis Complete. Summary of the Intensity (log(Re^2 + Im^2)) Statistics:"
-    # )
-    # print(f"  - Mean: {stats_inten.mean}")
-    # print(f"  - Std: {stats_inten.std}")
-    # print(
-    #     f"  - Range: [{stats_inten.percentile(1)}, {stats_inten.percentile(99)}] (1st-99th percentile)"
-    # )
-    # print(
-    #     f"  - Range: [{stats_inten.percentile(10)}, {stats_inten.percentile(90)}] (10th-90th percentile)"
-    # )
-    # print(
-    #     f"The analyzed dataset contains values from {stats_inten.min_val} to {stats_inten.max_val}"
-    # )
 
 
 if __name__ == "__main__":

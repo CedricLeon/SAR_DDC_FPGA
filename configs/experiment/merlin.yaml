@@ -1,11 +1,11 @@
 # @package _global_
 
 # to execute this experiment run:
-# python src/train.py experiment=sar_ddc
+# python src/train.py experiment=merlin
 
 defaults:
   - override /data: tsx_ssc.yaml
-  - override /model: sar_hyperprior.yaml
+  - override /model: merlin.yaml
   - override /callbacks: tsx_ddc.yaml
   - override /logger: wandb.yaml
   - override /trainer: gpu.yaml
@@ -13,21 +13,23 @@ defaults:
 
 data:
   # hdf5_dir: ${paths.data_dir}processed_hdf5/TSX_preprocessed_spatial_splits_5_256x256
-  batch_size: 12 # Or 8. Seems way more stable than 16 or 32
+  batch_size: 12 # MERLIN uses 12
   num_workers: 11
 
 model:
-  criterion:
-    metric: "merlin" # "mse" or "ssim" or "ms_ssim"
-    lmbda: 100
-  net_optimizer:
-    lr: 5e-5
-  # Check if aux_optimizer.lr has good values
+  optimizer:
+    # About the learning rate: it's EXTREMELY sensible. Check sweep from September 12th, 2025 to see boundaries:
+    #  - 5e-4 is too high (diverges and recinstructs NaNs)
+    #  - 1e-4 is ok
+    #  - 1e-5 is ok
+    #  - 1e-6 is too low (starts seeing some instability)
+    # If the training diverges, first thing: lower the lr. Also @TODO, see how the batch_size affects this.
+    lr: 1e-4
 
 callbacks:
   compare_recon_to_gt:
     patch_dir: ${paths.data_dir}
-    split_large_patch: False
+    split_large_patch: True
     blend_method: "count"
     stride: 256
 
@@ -35,20 +37,17 @@ trainer:
   min_epochs: 1
   max_epochs: 30
   deterministic: True
-  detect_anomaly: False
+  detect_anomaly: True
   log_every_n_steps: 10
 
 logger:
   wandb:
-    project: "SAR_DDC-RD-curve"
+    project: "sar-ddc-test"
     offline: False
     # tags: ${tags}
     # name: ${name}
 
 # The task name determines the logs path, by convention use <task>/<dataset>/<model>
-task_name: train/sar_ddc/hyperprior
-tags: ["TSX_SSC", "hyperprior"]
+task_name: train/sar_ddc/merlin
+tags: ["TSX_SSC", "Merlin"]
 seed: 42
-
-# Flatten the lmbda value because W&B custom chart expressions do not support nested dicts
-lambda: ${model.criterion.lmbda}

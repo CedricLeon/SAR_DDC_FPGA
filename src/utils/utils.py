@@ -1,11 +1,11 @@
 import warnings
 from importlib.util import find_spec
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import omegaconf
 import wandb
 from lightning_utilities.core.rank_zero import rank_zero_only
+from omegaconf import DictConfig
 
 from src.utils import pylogger, rich_utils
 
@@ -18,24 +18,27 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
     :param cfg: The configuration dictionary
     :return: A formatted run name string
     """
+    model = cfg.model.net.get("_target_", None)
+    if "ResidualScaleHyperprior" in model:
+        model = "ResSHyp"
+    elif "Merlin" in model:
+        model = "Merlin"
+    else:
+        raise NotImplementedError(f"Model {model} not supported!")
     seed = cfg.get("seed", None)
     lmbda = cfg.model.criterion.get("lmbda", None)
     metric = cfg.model.criterion.get("metric", None)
-    lr = cfg.model.net_optimizer.get("lr", None)
-    split = cfg.data.get("hdf5_dir", None).split("/")[-1].split("_")[0][-5:]
-    data_dir = cfg.data.get("hdf5_dir", None)
+    # Try to get learning rate from either optimizer or net_optimizer
+    lr = cfg.model.get("net_optimizer", {}).get("lr", None)
+    if lr is None:
+        lr = cfg.model.get("optimizer", {}).get("lr", None)
+    batch_size = cfg.data.get("batch_size", None)
 
-    data_norm = "default"
-    if data_norm is not None:
-        dataset_name = Path(data_dir).name
-        dataset_type = "sp" if dataset_name.startswith("spatial") else "rd"
-        data_norm = dataset_type + "-" + dataset_name.split("_")[-1]
-
-    return f"ReSHyp_{seed}_{metric}ʎ{lmbda}_lr{lr}_{split}{data_norm}"
+    return f"{model}_{seed}_{metric}ʎ{lmbda}_lr{lr}_b{batch_size}"
 
 
 @rank_zero_only
-def early_wandb_initialization(cfg: Dict[str, Any]) -> None:
+def early_wandb_initialization(cfg: DictConfig) -> None:
     """Manual initialization of the W&B run. Extra logic is called is the run is set offline, see wandb_osh.
     Usually called before the Lightning Trainer is instantiated.
     We can safely call wandb.init() here, Lightning loggers will reuse the on-going run when instantiating: https://lightning.ai/docs/pytorch/stable/_modules/lightning/pytorch/loggers/wandb.html#WandbLogger
@@ -66,9 +69,7 @@ def early_wandb_initialization(cfg: Dict[str, Any]) -> None:
         else cfg.logger.wandb.get("run_name")
     )
     # Manual cast of the config from a DictConfig to a regular dict (should be supported by W&B by now)
-    config_dict = omegaconf.OmegaConf.to_container(
-        cfg, resolve=True, throw_on_missing=True
-    )
+    config_dict = omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
 
     wandb.init(
         entity=cfg.logger.wandb.entity,
@@ -168,9 +169,7 @@ def task_wrapper(task_func: Callable) -> Callable:
     return wrap
 
 
-def get_metric_value(
-    metric_dict: Dict[str, Any], metric_name: Optional[str]
-) -> Optional[float]:
+def get_metric_value(metric_dict: Dict[str, Any], metric_name: Optional[str]) -> Optional[float]:
     """Safely retrieves value of the metric logged in LightningModule.
 
     :param metric_dict: A dict containing metric values.

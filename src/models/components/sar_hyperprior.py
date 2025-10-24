@@ -1,8 +1,7 @@
-"""
-SAR Hyperprior Model for compression and despeckling.
+"""SAR Hyperprior Model for compression and despeckling.
 
-This module implements a scale hyperprior architecture for SAR image compression
-and despeckling based on CompressAI framework.
+This module implements a scale hyperprior architecture for SAR image compression and despeckling
+based on CompressAI framework.
 """
 
 from typing import Dict, Tuple
@@ -54,9 +53,13 @@ class ResidualBlock(nn.Module):
 
 
 class ResidualScaleHyperprior(CompressionModel):
-    """Residual Scale Hyperprior model for SAR image despeckling and compression. Similar to CompressAI's `bmshj2018-hyperprior` the model also incorporates residual blocks within the main transforms.
+    """Residual Scale Hyperprior model for SAR image despeckling and compression. Similar to
+    CompressAI's `bmshj2018-hyperprior` the model also incorporates residual blocks within the main
+    transforms.
 
-    The model is deisgned to take as input pre-processed and normalized SAR SLC images parts. Specifically, the model expects either the Real or Imaginary part of the SAR SLC image, squared and normalized to approximately [0, 1].
+    The model is designed to take as input pre-processed and normalized SAR SLC images parts.
+    Specifically, the model expects either the Real or Imaginary part of the SAR SLC image, squared
+    and normalized to approximately [0, 1].
     """
 
     def __init__(self, nb_channels_main=128):
@@ -74,15 +77,9 @@ class ResidualScaleHyperprior(CompressionModel):
 
         # Main analysis transform (encoder g_a)
         self.g_a = nn.Sequential(
-            nn.Sequential(
-                conv(1, N, kernel_size=5, stride=2), GDN(N), ResidualBlock(N)
-            ),
-            nn.Sequential(
-                conv(N, N, kernel_size=5, stride=2), GDN(N), ResidualBlock(N)
-            ),
-            nn.Sequential(
-                conv(N, N, kernel_size=5, stride=2), GDN(N), ResidualBlock(N)
-            ),
+            nn.Sequential(conv(1, N, kernel_size=5, stride=2), GDN(N), ResidualBlock(N)),
+            nn.Sequential(conv(N, N, kernel_size=5, stride=2), GDN(N), ResidualBlock(N)),
+            nn.Sequential(conv(N, N, kernel_size=5, stride=2), GDN(N), ResidualBlock(N)),
             conv(N, N, kernel_size=5, stride=2),
             # No GDN after final layer before bottleneck
         )
@@ -187,9 +184,9 @@ class ResidualScaleHyperprior(CompressionModel):
 
     def decompress(self, strings, shape):
         """Decode latent representation to image space."""
-        assert isinstance(strings, list) and len(strings) == 2, (
-            "Invalid input format: strings must be a list containing y and z strings."
-        )
+        assert (
+            isinstance(strings, list) and len(strings) == 2
+        ), "Invalid input format: strings must be a list containing y and z strings."
         y_strings, z_strings = strings
 
         # Get the scales from z_strings
@@ -204,9 +201,7 @@ class ResidualScaleHyperprior(CompressionModel):
         return {"x_hat": x_hat}
 
     def aux_loss(self) -> Tensor:
-        """
-        Return the EntropyBottleneck's auxiliary loss for training.
-        """
+        """Return the EntropyBottleneck's auxiliary loss for training."""
         return self.entropy_bottleneck.loss()
 
     # def load_state_dict(self, state_dict, strict=True):

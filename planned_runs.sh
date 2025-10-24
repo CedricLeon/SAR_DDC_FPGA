@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # ---- Create missing datasets -----
 python scripts/TSX_dataset_creation.py --input-dir data/TSX_cos_files --output-dir data/processed_hdf5/ --max-files 2 --norm-mode nat --norm-minmax 1 --clip --verbose
 
