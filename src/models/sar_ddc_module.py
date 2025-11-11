@@ -65,14 +65,14 @@ class SARDDCModule(lightning.LightningModule):
     #         wandb.unwatch(self.net)
 
     def _random_switch_Re_Im(self, batch: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-        # Get real and imaginary parts (already squared and normalized)
-        real_squared, imag_squared = batch["real"], batch["imag"]
+        # Get real and imaginary parts
+        real, imag = batch["real"], batch["imag"]
 
         # Deterministic random switching of inputs/targets using seeded generator
         if torch.rand(1).item() > 0.5:
-            input_data, target_data = real_squared, imag_squared
+            input_data, target_data = real, imag
         else:
-            input_data, target_data = imag_squared, real_squared
+            input_data, target_data = imag, real
 
         return input_data, target_data
 
