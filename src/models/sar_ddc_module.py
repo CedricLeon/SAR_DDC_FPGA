@@ -2,9 +2,15 @@ from typing import Any, Dict, Optional, Tuple
 
 import lightning
 import torch
+import torchmetrics.functional as TMF
+import torchmetrics.functional.image as F
 import wandb
 from pytorch_lightning.loggers import WandbLogger
 from torch import Tensor
+
+from src.utils.constants import amp_max, amp_min
+
+EPS = 1e-2
 
 
 class SARDDCModule(lightning.LightningModule):
@@ -170,12 +176,66 @@ class SARDDCModule(lightning.LightningModule):
         self._log_metrics("valid", criterion, aux_loss.item())
 
     def test_step(self, batch, batch_idx):
-        """Test step with optimized processing of both real and imaginary parts."""
-        input, target = self._random_switch_Re_Im(batch)
-        output = self.forward(input)
-        criterion = self.criterion(output, target)
-        aux_loss = self.net.aux_loss()
-        self._log_metrics("test", criterion, aux_loss.item())
+        """Test step: keep original metrics and, if references are available, compute GT metrics.
+
+        - Logs standard criterion metrics (as before) using a random Re/Im switch.
+        - Additionally, when batch contains 'adam_ref' and 'merlin_ref', computes reconstruction
+          from both real and imag inputs, converts to log-intensity, and logs PSNR/SSIM/MS-SSIM/MSE
+          against each reference.
+        """
+        real = batch["real"]
+        imag = batch["imag"]
+        adam_noc_ref = batch["adam_noc_ref"]
+        merlin_ref = batch["merlin_ref"]
+
+        out_r = self.forward(real)
+        out_i = self.forward(imag)
+
+        # SARDDC returns a dict with x_hat, while MERLIN returns just a tensor
+        if isinstance(out_r, dict) and "x_hat" in out_r:
+            out_r = out_r["x_hat"]
+            out_i = out_i["x_hat"]
+
+        # Convert to log-intensity like in evaluation
+        recon_r_lin = torch.exp(out_r.squeeze(1) * (amp_max - amp_min) + amp_min)
+        recon_i_lin = torch.exp(out_i.squeeze(1) * (amp_max - amp_min) + amp_min)
+        I_recon = 0.5 * (recon_r_lin + recon_i_lin)
+        recon_logI = torch.log(I_recon + EPS).unsqueeze(1)  # [B,1,H,W]
+
+        all_metrics = {}
+        data_range = float((recon_logI.max() - recon_logI.min()).detach().cpu())
+        # MSE
+        all_metrics["mse_adam_noc"] = TMF.mean_squared_error(recon_logI, adam_noc_ref)
+        all_metrics["mse_merlin"] = TMF.mean_squared_error(recon_logI, merlin_ref)
+        # PSNR
+        all_metrics["psnr_adam_noc"] = F.peak_signal_noise_ratio(
+            recon_logI, adam_noc_ref, data_range=data_range
+        )
+        all_metrics["psnr_merlin"] = F.peak_signal_noise_ratio(
+            recon_logI, merlin_ref, data_range=data_range
+        )
+        # SSIM
+        all_metrics["ssim_adam_noc"] = F.structural_similarity_index_measure(
+            recon_logI, adam_noc_ref, data_range=data_range
+        )
+        all_metrics["ssim_merlin"] = F.structural_similarity_index_measure(
+            recon_logI, merlin_ref, data_range=data_range
+        )
+        # MS-SSIM
+        all_metrics["ms_ssim_adam_noc"] = F.multiscale_structural_similarity_index_measure(
+            recon_logI, adam_noc_ref, data_range=data_range
+        )
+        all_metrics["ms_ssim_merlin"] = F.multiscale_structural_similarity_index_measure(
+            recon_logI, merlin_ref, data_range=data_range
+        )
+
+        # Log extra metrics
+        self.log_dict(
+            all_metrics,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=False,
+        )
 
     def on_validation_epoch_end(self) -> None:
         """Update LR scheduler based on validation loss."""

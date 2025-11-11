@@ -51,7 +51,9 @@ class TSXSSCDataModule(LightningDataModule):
         # Set file paths as Path objects
         self.train_path = self.hdf5_root_dir / "train.h5"
         self.val_path = self.hdf5_root_dir / "val.h5"
-        self.test_path = self.hdf5_root_dir / "test.h5"
+        self.test_path = (
+            self.hdf5_root_dir.parent / "test_with_GT" / self.hdf5_root_dir.name / "test.h5"
+        )
 
         # Data transformations
         self.transform = transform
@@ -110,7 +112,7 @@ class TSXSSCDataModule(LightningDataModule):
 
         if stage == "test" or stage is None:
             # Create test dataset
-            self.data_test = TSXSSCDataset(self.test_path)
+            self.data_test = TSXSSCDataset(self.test_path, with_refs=True)
 
     def train_dataloader(self):
         """Create train dataloader."""
