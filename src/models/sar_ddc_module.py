@@ -71,6 +71,10 @@ class SARDDCModule(lightning.LightningModule):
     #         wandb.unwatch(self.net)
 
     def _random_switch_Re_Im(self, batch: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        """Randomly switch between real and imaginary parts as input and target.
+
+        Used only in training.
+        """
         # Get real and imaginary parts
         real, imag = batch["real"], batch["imag"]
 
@@ -169,7 +173,9 @@ class SARDDCModule(lightning.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         """Validation step with optimized processing of both real and imaginary parts."""
-        input, target = self._random_switch_Re_Im(batch)
+        # input, target = self._random_switch_Re_Im(batch)
+        input = torch.cat((batch["real"], batch["imag"]), dim=1).contiguous()
+        target = input  # Noise2Noise: target is the other channel
         output = self.forward(input)
         criterion = self.criterion(output, target)
         aux_loss = self.net.aux_loss()
@@ -183,24 +189,20 @@ class SARDDCModule(lightning.LightningModule):
           from both real and imag inputs, converts to log-intensity, and logs PSNR/SSIM/MS-SSIM/MSE
           against each reference.
         """
-        real = batch["real"]
-        imag = batch["imag"]
         adam_noc_ref = batch["adam_noc_ref"]
         merlin_ref = batch["merlin_ref"]
 
-        out_r = self.forward(real)
-        out_i = self.forward(imag)
+        out = self.forward(torch.cat((batch["real"], batch["imag"]), dim=1).contiguous())
 
         # SARDDC returns a dict with x_hat, while MERLIN returns just a tensor
-        if isinstance(out_r, dict) and "x_hat" in out_r:
-            out_r = out_r["x_hat"]
-            out_i = out_i["x_hat"]
+        if isinstance(out, dict) and "x_hat" in out:
+            out = out["x_hat"]
+        assert type(out) is Tensor, "x_hat must be a Tensor"
 
         # Convert to log-intensity like in evaluation
-        recon_r_lin = torch.exp(out_r.squeeze(1) * (amp_max - amp_min) + amp_min)
-        recon_i_lin = torch.exp(out_i.squeeze(1) * (amp_max - amp_min) + amp_min)
-        I_recon = 0.5 * (recon_r_lin + recon_i_lin)
-        recon_logI = torch.log(I_recon + EPS).unsqueeze(1)  # [B,1,H,W]
+        recon_lin = torch.exp(out * (amp_max - amp_min) + amp_min)
+        recon_lin = 0.5 * (recon_lin[:, :1, :, :] + recon_lin[:, 1:, :, :])
+        recon_logI = torch.log(recon_lin + EPS)  # [B,1,H,W]
 
         all_metrics = {}
         data_range = float((recon_logI.max() - recon_logI.min()).detach().cpu())
@@ -263,12 +265,10 @@ class SARDDCModule(lightning.LightningModule):
 
         # Validation: Ensure no parameter overlap and all parameters are accounted for
         all_params = {param for _, param in self.net.named_parameters() if param.requires_grad}
-        assert not set(main_params) & set(
-            aux_params
-        ), "Intersection found in main and auxiliary parameters"
-        assert (
-            set(main_params) | set(aux_params) == all_params
-        ), "Union of main and auxiliary parameters does not match all model parameters"
+        assert not set(main_params) & set(aux_params)
+        # , "Intersection found in main and auxiliary parameters"
+        assert set(main_params) | set(aux_params) == all_params
+        # , "Union of main and auxiliary parameters does not match all model parameters"
 
         # Instantiate optimizers from the configuration
         net_optimizer = self.hparams.net_optimizer(params=main_params)

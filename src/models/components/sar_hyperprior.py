@@ -16,6 +16,7 @@ from torch import Tensor
 
 # Helper functions for convolution and transposed convolution layers
 def conv(in_channels, out_channels, kernel_size=5, stride=1):
+    """Helper conv layer."""
     return nn.Conv2d(
         in_channels,
         out_channels,
@@ -26,6 +27,7 @@ def conv(in_channels, out_channels, kernel_size=5, stride=1):
 
 
 def deconv(in_channels, out_channels, kernel_size=5, stride=1):
+    """Helper deconv layer."""
     return nn.ConvTranspose2d(
         in_channels,
         out_channels,
@@ -46,6 +48,7 @@ class ResidualBlock(nn.Module):
         self.conv2 = conv(channels, channels, kernel_size=5)
 
     def forward(self, x):
+        """Forward pass through the residual block."""
         residual = x
         out = self.gdn(self.conv1(x))
         out = self.conv2(out)
@@ -141,22 +144,50 @@ class ResidualScaleHyperprior(CompressionModel):
         Returns:
             Dictionary with model outputs
         """
-        # Analysis transform to get latent representation
-        y = self.g_a(x)
-        # Concatenate y with itself along channel dimension
-        y = torch.cat((y, y), dim=1)
+        if self.training:
+            assert x.shape[1] == 1, "Training: Input tensor must have 1 channel"
 
-        # Apply hyperprior to get scales
-        scales, z_likelihoods = self.scale_hyperprior(y)
+            # Analysis transform to get latent representation
+            y = self.g_a(x)
+            # Concatenate y with itself along channel dimension
+            y = torch.cat((y, y), dim=1)
 
-        # Apply entropy coding
-        y_hat, y_likelihoods = self.gaussian_conditional(y, scales)
+            # Apply hyperprior to get scales
+            scales, z_likelihoods = self.scale_hyperprior(y)
 
-        # Split: discard second half of y_hat
-        y_hat = y_hat[:, : y_hat.shape[1] // 2, :, :]
+            # Apply entropy coding
+            y_hat, y_likelihoods = self.gaussian_conditional(y, scales)
 
-        # Apply synthesis transform to reconstruct
-        x_hat = self.g_s(y_hat)
+            # Split: discard second half of y_hat
+            y_hat = y_hat[:, : y_hat.shape[1] // 2, :, :]
+
+            # Apply synthesis transform to reconstruct
+            x_hat = self.g_s(y_hat)
+        else:
+            assert x.shape[1] == 2, "Inference: Input tensor must have 2 channels"
+            x_real = x[:, :1, :, :]
+            x_imag = x[:, 1:, :, :]
+
+            # Analysis transform to get latent representation
+            y_real = self.g_a(x_real)
+            y_imag = self.g_a(x_imag)
+            # Concatenate y_real and y_imag along channel dimension
+            y = torch.cat((y_real, y_imag), dim=1)
+
+            # Apply hyperprior to get scales
+            scales, z_likelihoods = self.scale_hyperprior(y)
+
+            # Apply entropy coding
+            y_hat, y_likelihoods = self.gaussian_conditional(y, scales)
+
+            # Split: discard second half of y_hat
+            y_hat_real = y_hat[:, : y_hat.shape[1] // 2, :, :]
+            y_hat_imag = y_hat[:, y_hat.shape[1] // 2 :, :, :]
+
+            # Apply synthesis transform to reconstruct
+            x_hat_real = self.g_s(y_hat_real)
+            x_hat_imag = self.g_s(y_hat_imag)
+            x_hat = torch.cat((x_hat_real, x_hat_imag), dim=1)
 
         return {
             "x_hat": x_hat,
@@ -184,9 +215,8 @@ class ResidualScaleHyperprior(CompressionModel):
 
     def decompress(self, strings, shape):
         """Decode latent representation to image space."""
-        assert (
-            isinstance(strings, list) and len(strings) == 2
-        ), "Invalid input format: strings must be a list containing y and z strings."
+        assert isinstance(strings, list) and len(strings) == 2
+        # , "Invalid input format: strings must be a list containing y and z strings."
         y_strings, z_strings = strings
 
         # Get the scales from z_strings

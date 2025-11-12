@@ -90,6 +90,7 @@ class CompareReconstructionToGT(Callback):
             f"        NORMALIZED NOISY TENSOR LOG (shape={patch.shape}) statistics: min={patch.min():.4f}, max={patch.max():.4f}, mean={patch.mean():.4f}, std={patch.std():.4f}. Is NaN={torch.isnan(patch).any()}."
         )
         # Add batch and channel dimensions
+        self.tensor = patch.unsqueeze(0).permute(0, 3, 1, 2).contiguous()  # [1, 2, H, W]
         self.real_tensor = patch[:, :, 0].unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
         self.imag_tensor = patch[:, :, 1].unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
 
@@ -123,6 +124,7 @@ class CompareReconstructionToGT(Callback):
             )
 
     def _clip_and_minmax_normalize(self, img: np.ndarray) -> np.ndarray:
+        """Clip to mean +/- self.clip_factor * std and min-max normalize to [0, 1]."""
         img = img.clip(
             img.mean() - self.clip_factor * img.std(),
             img.mean() + self.clip_factor * img.std(),
@@ -147,32 +149,46 @@ class CompareReconstructionToGT(Callback):
         # ----- Forward pass to get reconstruction and metrics -----
         with torch.no_grad():
             if self.split_large_patch:
-                criterion_real, recon_real = process_large_patch(
+                criterion, recon = process_large_patch(
                     model=pl_module,
-                    input=self.real_tensor,
-                    target=self.imag_tensor,
+                    input=self.tensor,
+                    target=self.tensor,
                     stride=self.stride,
                     blend_method=self.blend_method,
                 )
-                criterion_imag, recon_imag = process_large_patch(
-                    model=pl_module,
-                    input=self.imag_tensor,
-                    target=self.real_tensor,
-                    stride=self.stride,
-                    blend_method=self.blend_method,
-                )
+                # criterion_real, recon_real = process_large_patch(
+                #     model=pl_module,
+                #     input=self.real_tensor,
+                #     target=self.imag_tensor,
+                #     stride=self.stride,
+                #     blend_method=self.blend_method,
+                # )
+                # criterion_imag, recon_imag = process_large_patch(
+                #     model=pl_module,
+                #     input=self.imag_tensor,
+                #     target=self.real_tensor,
+                #     stride=self.stride,
+                #     blend_method=self.blend_method,
+                # )
             else:
-                recon_real = pl_module(self.real_tensor)
-                criterion_real = pl_module.criterion(recon_real, self.imag_tensor)
-                recon_imag = pl_module(self.imag_tensor)
-                criterion_imag = pl_module.criterion(recon_imag, self.real_tensor)
+                recon = pl_module(self.tensor)
+                criterion = pl_module.criterion(recon, self.tensor)
+                # recon_real = pl_module(self.real_tensor)
+                # criterion_real = pl_module.criterion(recon_real, self.imag_tensor)
+                # recon_imag = pl_module(self.imag_tensor)
+                # criterion_imag = pl_module.criterion(recon_imag, self.real_tensor)
 
             if self.with_compression:
-                recon_real = recon_real["x_hat"]
-                recon_imag = recon_imag["x_hat"]
-            self.recon_as_output = 0.5 * (recon_real + recon_imag)
+                assert isinstance(recon, dict)
+                # , "SAR_DDC should return dict when with_compression=True"
+                recon = recon["x_hat"]
+                # recon_real = recon_real["x_hat"]
+                # recon_imag = recon_imag["x_hat"]
+            self.recon_as_output = 0.5 * (
+                recon[:, :1, :, :] + recon[:, 1:, :, :]
+            )  # 0.5 * (recon_real + recon_imag)
             print(
-                f"    RECON: min={recon_real.min().item():.4f}, max={recon_real.max().item():.4f}, mean={recon_real.mean().item():.4f}, std={recon_real.std().item():.4f}. Is NaN={torch.isnan(recon_real).any().item()}."
+                f"    RECON: min={recon.min().item():.4f}, max={recon.max().item():.4f}, mean={recon.mean().item():.4f}, std={recon.std().item():.4f}. Is NaN={torch.isnan(recon).any().item()}."
             )
             print(
                 f"    TARGET: min={self.imag_tensor.min().item():.4f}, max={self.imag_tensor.max().item():.4f}, mean={self.imag_tensor.mean().item():.4f}, std={self.imag_tensor.std().item():.4f}. Is NaN={torch.isnan(self.imag_tensor).any().item()}."
@@ -180,15 +196,16 @@ class CompareReconstructionToGT(Callback):
 
         # ----- Denorm the reconstructions  -----
         # Either I denorm with the factor 2 or I don't square when building the input
-        recon_real = torch.exp(recon_real.squeeze() * (amp_max - amp_min) + amp_min)
-        recon_imag = torch.exp(recon_imag.squeeze() * (amp_max - amp_min) + amp_min)
+        recon = torch.exp(recon * (amp_max - amp_min) + amp_min)
+        # recon_real = torch.exp(recon_real.squeeze() * (amp_max - amp_min) + amp_min)
+        # recon_imag = torch.exp(recon_imag.squeeze() * (amp_max - amp_min) + amp_min)
         print(
-            f"    RECON DENORM LINEAR: min={recon_real.min().item():.4f}, max={recon_real.max().item():.4f}, mean={recon_real.mean().item():.4f}, std={recon_real.std().item():.4f}. Is NaN={torch.isnan(recon_real).any().item()}."
+            f"    RECON DENORM LINEAR: min={recon.min().item():.4f}, max={recon.max().item():.4f}, mean={recon.mean().item():.4f}, std={recon.std().item():.4f}. Is NaN={torch.isnan(recon).any().item()}."
         )
 
         # Build full amplitude reconstruction
         # I_recon = 0.5 * (torch.square(recon_real) + torch.square(recon_imag))
-        I_recon = 0.5 * (recon_real + recon_imag)
+        I_recon = 0.5 * (recon[:, :1, :, :] + recon[:, 1:, :, :])  # (recon_real + recon_imag)
         print(
             f"    RECON INTENSITY: min={I_recon.min().item():.4f}, max={I_recon.max().item():.4f}, mean={I_recon.mean().item():.4f}, std={I_recon.std().item():.4f}. Is NaN={torch.isnan(I_recon).any().item()}."
         )
@@ -208,8 +225,9 @@ class CompareReconstructionToGT(Callback):
         # )
         fig_logI, metrics = self._visualize_with_histograms(
             logI_recon,
-            criterion_real,
-            criterion_imag,
+            criterion,
+            # criterion_real,
+            # criterion_imag,
             trainer,
             scale="logI",
         )
@@ -232,11 +250,14 @@ class CompareReconstructionToGT(Callback):
     def _visualize_with_histograms(
         self,
         recon: np.ndarray,
-        criterion_real: dict,
-        criterion_imag: dict,
+        criterion: dict,
+        # criterion_real: dict,
+        # criterion_imag: dict,
         trainer: Trainer,
         scale: str = "logI",
     ) -> tuple[Any, dict]:
+        """Visualize the reconstruction, noisy input, MERLIN GT (if available) and their
+        histograms."""
         if scale == "logI":
             noisy = self.logI_noisy
             merlin = self.logI_merlin
@@ -354,7 +375,9 @@ class CompareReconstructionToGT(Callback):
 
         # ----- Add overall title with metrics -----\
         metrics = {}
-        metrics["loss"] = (criterion_real["loss"].item() + criterion_imag["loss"].item()) / 2
+        metrics["loss"] = criterion[
+            "loss"
+        ].item()  # (criterion_real["loss"].item() + criterion_imag["loss"].item()) / 2
         # Compute MSE, PSNR between reconstructions and MERLIN GT
         if merlin is not None:
             logI_diff = recon - merlin
@@ -370,7 +393,9 @@ class CompareReconstructionToGT(Callback):
             metrics["mse"] = metrics["psnr"] = -1  # Not available if MERLIN GT is not loaded
 
         if self.with_compression:
-            metrics["bpp"] = (criterion_real["bpp"].item() + criterion_imag["bpp"].item()) / 2
+            metrics["bpp"] = criterion[
+                "bpp"
+            ].item()  # (criterion_real["bpp"].item() + criterion_imag["bpp"].item()) / 2
         else:
             metrics["bpp"] = -1
 

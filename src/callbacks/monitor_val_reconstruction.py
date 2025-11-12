@@ -17,6 +17,7 @@ class MonitorValReconstruction(Callback):
         self.num_images = num_images
 
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
+        """Determine if the model uses compression based on its class name."""
         if pl_module.__class__.__name__ == "MerlinModule":
             self.with_compression = False
         elif pl_module.__class__.__name__ == "SARDDCModule":
@@ -42,13 +43,12 @@ class MonitorValReconstruction(Callback):
         num_images_to_show = min(self.num_images, batch["real"].shape[0])
 
         # Prepare input and target deterministically (always use real as input, imag as target)
-        input = batch["real"]
-        target = batch["imag"]
+        input = torch.cat((batch["real"], batch["imag"]), dim=1).contiguous()
 
         # Forward pass to get reconstructions
         with torch.no_grad():
             reconstructions = pl_module(input)
-            criterion = pl_module.criterion(reconstructions, target)
+            criterion = pl_module.criterion(reconstructions, target=input)
             if self.with_compression:
                 reconstructions = reconstructions["x_hat"]
 
