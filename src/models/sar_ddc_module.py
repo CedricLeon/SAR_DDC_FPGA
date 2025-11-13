@@ -199,6 +199,10 @@ class SARDDCModule(lightning.LightningModule):
             "test/bpp": criterion["bpp"].item(),
             "test/loss": criterion["loss"].item(),
             "test/aux": self.net.aux_loss(),
+            "test/mse": criterion["mse"].item(),
+            "test/ssim": criterion["ssim"].item(),
+            "test/ms_ssim": criterion["ms_ssim"].item(),
+            "test/psnr": criterion["psnr"].item(),
         }
 
         # Convert to log-intensity like in evaluation
