@@ -175,9 +175,10 @@ class SARDDCModule(lightning.LightningModule):
         """Validation step with optimized processing of both real and imaginary parts."""
         # input, target = self._random_switch_Re_Im(batch)
         input = torch.cat((batch["real"], batch["imag"]), dim=1).contiguous()
-        target = input  # Noise2Noise: target is the other channel
         output = self.forward(input)
-        criterion = self.criterion(output, target)
+        criterion = self.criterion(
+            output, target=input
+        )  # Noise2Noise: target is the other channel
         aux_loss = self.net.aux_loss()
         self._log_metrics("valid", criterion, aux_loss.item())
 
@@ -189,45 +190,49 @@ class SARDDCModule(lightning.LightningModule):
           from both real and imag inputs, converts to log-intensity, and logs PSNR/SSIM/MS-SSIM/MSE
           against each reference.
         """
-        adam_noc_ref = batch["adam_noc_ref"]
-        merlin_ref = batch["merlin_ref"]
+        input = torch.cat((batch["real"], batch["imag"]), dim=1).contiguous()
+        output = self.forward(input)
 
-        out = self.forward(torch.cat((batch["real"], batch["imag"]), dim=1).contiguous())
-
-        # SARDDC returns a dict with x_hat, while MERLIN returns just a tensor
-        if isinstance(out, dict) and "x_hat" in out:
-            out = out["x_hat"]
-        assert type(out) is Tensor, "x_hat must be a Tensor"
+        # Compute normal losses with Noise2Noise approach
+        criterion = self.criterion(output, target=input)
+        all_metrics = {
+            "test/bpp": criterion["bpp"].item(),
+            "test/loss": criterion["loss"].item(),
+            "test/aux": self.net.aux_loss(),
+        }
 
         # Convert to log-intensity like in evaluation
-        recon_lin = torch.exp(out * (amp_max - amp_min) + amp_min)
+        recon_lin = torch.exp(output * (amp_max - amp_min) + amp_min)
         recon_lin = 0.5 * (recon_lin[:, :1, :, :] + recon_lin[:, 1:, :, :])
         recon_logI = torch.log(recon_lin + EPS)  # [B,1,H,W]
 
-        all_metrics = {}
+        # Load GTs references
+        adam_noc_ref = batch["adam_noc_ref"]
+        merlin_ref = batch["merlin_ref"]
         data_range = float((recon_logI.max() - recon_logI.min()).detach().cpu())
+
         # MSE
-        all_metrics["mse_adam_noc"] = TMF.mean_squared_error(recon_logI, adam_noc_ref)
-        all_metrics["mse_merlin"] = TMF.mean_squared_error(recon_logI, merlin_ref)
+        all_metrics["test/mse_adam_noc"] = TMF.mean_squared_error(recon_logI, adam_noc_ref)
+        all_metrics["test/mse_merlin"] = TMF.mean_squared_error(recon_logI, merlin_ref)
         # PSNR
-        all_metrics["psnr_adam_noc"] = F.peak_signal_noise_ratio(
+        all_metrics["test/psnr_adam_noc"] = F.peak_signal_noise_ratio(
             recon_logI, adam_noc_ref, data_range=data_range
         )
-        all_metrics["psnr_merlin"] = F.peak_signal_noise_ratio(
+        all_metrics["test/psnr_merlin"] = F.peak_signal_noise_ratio(
             recon_logI, merlin_ref, data_range=data_range
         )
         # SSIM
-        all_metrics["ssim_adam_noc"] = F.structural_similarity_index_measure(
+        all_metrics["test/ssim_adam_noc"] = F.structural_similarity_index_measure(
             recon_logI, adam_noc_ref, data_range=data_range
         )
-        all_metrics["ssim_merlin"] = F.structural_similarity_index_measure(
+        all_metrics["test/ssim_merlin"] = F.structural_similarity_index_measure(
             recon_logI, merlin_ref, data_range=data_range
         )
         # MS-SSIM
-        all_metrics["ms_ssim_adam_noc"] = F.multiscale_structural_similarity_index_measure(
+        all_metrics["test/ms_ssim_adam_noc"] = F.multiscale_structural_similarity_index_measure(
             recon_logI, adam_noc_ref, data_range=data_range
         )
-        all_metrics["ms_ssim_merlin"] = F.multiscale_structural_similarity_index_measure(
+        all_metrics["test/ms_ssim_merlin"] = F.multiscale_structural_similarity_index_measure(
             recon_logI, merlin_ref, data_range=data_range
         )
 
