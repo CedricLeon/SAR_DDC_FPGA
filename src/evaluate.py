@@ -27,9 +27,15 @@ from tqdm import tqdm
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.data.sar_datamodule import TSXSSCDataModule  # noqa: E402
-from src.utils import RankedLogger, extras, process_large_patch  # noqa: E402
-from src.utils.constants import amp_max, amp_min  # noqa: E402
-from src.utils.sar_utils import load_cosar, symmetrize  # noqa: E402
+from src.utils import (  # noqa: E402
+    RankedLogger,
+    amp_max,
+    amp_min,
+    extras,
+    load_cosar,
+    symmetrize,
+)
+from src.utils.processing_utils import process_large_patch  # noqa: E402
 
 log = RankedLogger(__name__, rank_zero_only=True)
 

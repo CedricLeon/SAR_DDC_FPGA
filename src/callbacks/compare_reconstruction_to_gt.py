@@ -8,9 +8,8 @@ import torch
 from lightning import Callback, LightningModule, Trainer
 from matplotlib.ticker import FuncFormatter
 
-from src.utils import process_large_patch
-from src.utils.constants import amp_max, amp_min
-from src.utils.sar_utils import symmetrize
+from src.utils import amp_max, amp_min, symmetrize
+from src.utils.processing_utils import process_large_patch
 
 
 class CompareReconstructionToGT(Callback):

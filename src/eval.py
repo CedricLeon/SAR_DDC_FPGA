@@ -32,8 +32,8 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 from src.utils import (  # noqa: E402
     RankedLogger,
     extras,
-    process_large_patch,
 )
+from src.utils.processing_utils import process_large_patch  # noqa: E402
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
@@ -73,9 +73,8 @@ def custom_inference(cfg: DictConfig):
     # Load data
     data_dir = cfg.data.get("hdf5_dir", None)
     patch_path = Path(data_dir) / "val_Hamburg_1024x1024.npy"
-    assert (
-        patch_path.exists()
-    ), f"Patch file {patch_path} does not exist. Please check the path in the config."
+    assert patch_path.exists()
+    # f"Patch file {patch_path} does not exist. Please check the path in the config."
 
     # Hyperparameters logging
     cfg_lambda = cfg.model.criterion["lmbda"]
