@@ -45,6 +45,7 @@ FILTERS_CONFIG = [
     ("retested_on", "is_none", None),  # skip already re-tested runs
     # ("_timestamp", ">", datetime(2024, 10, 1).timestamp()),  # skip too old runs
 ]
+# For other filters add them directly to the main
 # ============================================
 
 
@@ -142,9 +143,11 @@ def main():
     runs = api.runs(f"{ENTITY}/{PROJECT}")
     print(f"Found {len(runs)} total runs in {ENTITY}/{PROJECT}")
 
+    # ----- Filtering -----
+    # Apply FILTERS_CONFIG
     matching_runs = [r for r in runs if run_matches_config_filters(r.config)]
-    # matching_runs = [r for r in runs if r.id == "tmbzj6t9"]
-
+    # Individual skips by run id
+    # matching_runs = [r for r in matching_runs if r.id in ["bo73yess"]]
     print(f"{len(matching_runs)} runs match the filters: {FILTERS_CONFIG}")
 
     for run in matching_runs:
