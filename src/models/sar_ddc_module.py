@@ -4,8 +4,6 @@ import lightning
 import torch
 import torchmetrics.functional as TMF
 import torchmetrics.functional.image as F
-import wandb
-from pytorch_lightning.loggers import WandbLogger
 from torch import Tensor
 
 from src.utils.constants import amp_max, amp_min
@@ -204,6 +202,8 @@ class SARDDCModule(lightning.LightningModule):
             "test/ms_ssim": criterion["ms_ssim"].item(),
             "test/psnr": criterion["psnr"].item(),
         }
+
+        output = output["x_hat"]
 
         # Convert to log-intensity like in evaluation
         recon_lin = torch.exp(output * (amp_max - amp_min) + amp_min)
