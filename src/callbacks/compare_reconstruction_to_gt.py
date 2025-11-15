@@ -323,6 +323,19 @@ class CompareReconstructionToGT(Callback):
 
         # ----- Row 2: Histograms -----
         def plot_histogram(ax, data, title):
+            # Add a small check for NaN
+            if np.isnan(data).any():
+                ax.text(
+                    0.5,
+                    0.5,
+                    "Data contains NaN\nHistogram cannot be displayed",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                )
+                ax.axis("off")
+                return
+
             ax.set_title(title)
             ax.hist(data.flatten(), bins=50, alpha=0.7, color="blue")
             ax.grid(True, alpha=0.3)
