@@ -15,7 +15,7 @@ This project implements the solution presented by Amao-Oliva et al. [1] availabl
 *I'll use this section as a TODO list, including ideas for future projects.*
 - [ ] "NWML" warning, see [NVML is the NVIDIA Management Library and is used on NVIDIA GPUs](https://discuss.pytorch.org/t/cant-initialize-nvml-error-with-rvc-project/194206)
 - [ ] Next runs:
-  - [ ] One run of the swipe 2025-10-01_09-32-04 crashed, restart "ResSHyp_0_merlinʎ200_lr5e-05_b12"
+  - [ ] Move it to correct project. One run of the swipe 2025-10-01_09-32-04 crashed, restart "ResSHyp_0_merlinʎ200_lr5e-05_b12"
 
 ### Long-term Experiments/Upgrades
 - [ ] Maybe there is a way to avoid the concatenation and average latent representations before hyperprior ???

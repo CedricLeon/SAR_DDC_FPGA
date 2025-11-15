@@ -40,7 +40,7 @@ trainer:
 
 logger:
   wandb:
-    project: "sar-ddc-test" # "SAR_DDC-RD-curve"
+    project: "SAR_DDC-RD-curve" # "SAR_DDC-RD-curve"
     offline: False
     # tags: ${tags}
     # name: ${name}
