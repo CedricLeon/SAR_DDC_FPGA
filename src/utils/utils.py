@@ -21,10 +21,13 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
     model = cfg.model.net.get("_target_", None)
     if "ResidualScaleHyperprior" in model:
         model = "ResSHyp"
+    elif "ResidualSimpleAE" in model:
+        model = "ResAE"
     elif "Merlin" in model:
         model = "Merlin"
     else:
         raise NotImplementedError(f"Model {model} not supported!")
+    activation = cfg.model.net.get("activation", "gdn")
     seed = cfg.get("seed", None)
     lmbda = cfg.model.criterion.get("lmbda", None)
     metric = cfg.model.criterion.get("metric", None)
@@ -34,7 +37,7 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
         lr = cfg.model.get("optimizer", {}).get("lr", None)
     batch_size = cfg.data.get("batch_size", None)
 
-    return f"{model}_{seed}_{metric}ʎ{lmbda}_lr{lr}_b{batch_size}"
+    return f"{model}{activation}_{seed}_{metric}ʎ{lmbda}_lr{lr}_b{batch_size}"
 
 
 @rank_zero_only

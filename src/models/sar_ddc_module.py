@@ -129,12 +129,12 @@ class SARDDCModule(lightning.LightningModule):
         Because we have two optimizers, we need to manually optimize. During training, we randomly
         switch between real and imaginary parts.
         """
-        # Get the optimizers as a list to handle properly
+        # Get optimizers (simple AE may only provide one)
         optimizers = self.optimizers()
         if not isinstance(optimizers, list):
             optimizers = [optimizers]
         net_optimizer = optimizers[0]
-        aux_optimizer = optimizers[1]
+        aux_optimizer = optimizers[1] if len(optimizers) > 1 else None
 
         # Forward pass
         input, target = self._random_switch_Re_Im(batch)
@@ -144,23 +144,28 @@ class SARDDCModule(lightning.LightningModule):
         # Backward pass for the main loss
         self.manual_backward(criterion["loss"])
         self.clip_gradients(
-            net_optimizer,
-            gradient_clip_val=self.hparams.gradient_clip_norm,
+            net_optimizer,  # type: ignore[attr-defined]
+            gradient_clip_val=self.hparams.gradient_clip_norm,  # type: ignore[attr-defined]
             gradient_clip_algorithm="norm",
         )
         net_optimizer.step()
         net_optimizer.zero_grad()
 
-        # Auxiliary loss
-        aux_loss = self.net.aux_loss()
-        self.manual_backward(aux_loss)
-        aux_optimizer.step()
-        aux_optimizer.zero_grad()
+        # Auxiliary loss (entropy bottleneck) if available
+        aux_loss = (
+            self.net.aux_loss()
+            if hasattr(self.net, "aux_loss")
+            else torch.zeros((), device=output["x_hat"].device)
+        )
+        if aux_optimizer is not None and aux_loss.requires_grad:
+            self.manual_backward(aux_loss)
+            aux_optimizer.step()
+            aux_optimizer.zero_grad()
 
         # Step scheduler if available (for epoch-based schedulers)
         if self.trainer.is_last_batch:
             sch = self.lr_schedulers()
-            sch.step()
+            sch.step()  # type: ignore[attr-defined]
 
         # custom learning rate logging
         lr = net_optimizer.param_groups[0]["lr"]
@@ -279,25 +284,27 @@ class SARDDCModule(lightning.LightningModule):
         assert set(main_params) | set(aux_params) == all_params
         # , "Union of main and auxiliary parameters does not match all model parameters"
 
-        # Instantiate optimizers from the configuration
-        net_optimizer = self.hparams.net_optimizer(params=main_params)
-        aux_optimizer = self.hparams.aux_optimizer(params=aux_params)
+        # Instantiate optimizer(s)
+        net_optimizer = self.hparams.net_optimizer(params=main_params)  # type: ignore[attr-defined]
+        optimizers_cfg = []
 
-        # Configure the scheduler if provided
-        if self.hparams.scheduler is not None:
-            scheduler = self.hparams.scheduler(optimizer=net_optimizer)
-            return [
+        if getattr(self.hparams, "scheduler", None) is not None:
+            scheduler = self.hparams.scheduler(optimizer=net_optimizer)  # type: ignore[attr-defined]
+            optimizers_cfg.append(
                 {
                     "optimizer": net_optimizer,
                     "lr_scheduler": {
                         "scheduler": scheduler,
-                        "name": "net_lr",  # "name" keywords are for the LearningRateMonitor callback
-                        # "monitor": "valid/loss", # Unnecessary, because manual_optimization
-                        # "interval": "epoch",
-                        # "frequency": 1,
+                        "name": "net_lr",
                     },
-                },
-                {"optimizer": aux_optimizer},
-            ]
+                }
+            )
+        else:
+            optimizers_cfg.append({"optimizer": net_optimizer})
 
-        return [{"optimizer": net_optimizer}, {"optimizer": aux_optimizer}]
+        # Only add auxiliary optimizer if there are auxiliary params (hyperprior model case)
+        if len(aux_params) > 0:
+            aux_optimizer = self.hparams.aux_optimizer(params=aux_params)  # type: ignore[attr-defined]
+            optimizers_cfg.append({"optimizer": aux_optimizer})
+
+        return optimizers_cfg

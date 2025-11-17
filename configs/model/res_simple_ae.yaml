@@ -1,0 +1,33 @@
+_target_: src.models.sar_ddc_module.SARDDCModule
+
+net:
+  _target_: src.models.components.sar_simple_autoencoder.ResidualSimpleAE
+  nb_channels_main: 128
+  activation: gdn   # gdn | relu | leaky_relu | silu | gelu | gn_relu | identity
+
+criterion:
+  _target_: src.utils.metrics.MerlinRDLoss
+  metric: "merlin"   # or "mse", "ssim", "ms_ssim"
+  lmbda: 1
+
+net_optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 5e-5
+  weight_decay: 0.0
+
+# Kept for constructor compatibility; unused since there are no .quantiles params
+aux_optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 0.0001
+  weight_decay: 0.0
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.MultiStepLR
+  _partial_: true
+  milestones: [4, 20]
+  gamma: 0.1
+
+gradient_clip_norm: 1.0
+compile: False
