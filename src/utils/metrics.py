@@ -14,7 +14,9 @@ from torchmetrics.image import (
 from src.utils.constants import amp_max, amp_min
 
 
-def estimate_bpp(pred: Dict[str, Tensor]) -> Tensor | Literal[0]:
+def estimate_bpp(
+    pred: Dict[str, Tensor],
+) -> Tensor:  # | Literal[0]: is not supported by Python 3.8
     """Compute BPP based on the estimated likelihoods (Average of the estimated number of bits
     needed to encode each pixel)"""
     N, _, H, W = pred["x_hat"].size()

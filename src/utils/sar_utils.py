@@ -10,7 +10,7 @@ import struct
 import warnings
 from logging import Logger
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 from scipy import signal
@@ -26,7 +26,7 @@ def convert_from_db(x: np.ndarray):
     return pow(10, x / 10)
 
 
-def load_cosar(path: Path, logger: Logger | None = None) -> np.ndarray | None:
+def load_cosar(path: Path, logger: Optional[Logger] = None) -> Optional[np.ndarray]:
     """Convert a CoSAR image to a numpy array. Function from MERLIN (originally named `cos2mat`)
     'improved' with Copilot.
 
@@ -199,7 +199,9 @@ def preserve_point_like_scatterers(
     return np.stack((real2_proc, imag2_proc), axis=2), scatterer_mask
 
 
-def extract_patches(image: np.ndarray, patch_size: int, stride: int | None = None) -> np.ndarray:
+def extract_patches(
+    image: np.ndarray, patch_size: int, stride: Optional[int] = None
+) -> np.ndarray:
     """Extract patches of size patch_size from the input image.
 
     Args:
