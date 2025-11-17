@@ -17,6 +17,7 @@ This project implements the solution presented by Amao-Oliva et al. [1] availabl
 - [ ] Next runs:
   - [x] Move it to correct project. One run of the swipe 2025-10-01_09-32-04 crashed, restart "ResSHyp_0_merlinʎ200_lr5e-05_b12"
   - [ ] "ResSHyp_0_merlinʎ0.1_lr5e-05_b12" crashed
+- [ ] Explain that the syntax is Python 3.8 compatible because it is used by the Vitis-AI container and we can't bump it. (It mostly implies using `Option[]` and `Union[]` from `typing` instead of `|`)
 
 ### Long-term Experiments/Upgrades
 **About SAR_DDC**

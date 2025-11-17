@@ -4,7 +4,7 @@ This module implements a scale hyperprior architecture for SAR image compression
 based on CompressAI framework.
 """
 
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -134,7 +134,7 @@ class ResidualScaleHyperprior(CompressionModel):
 
         return scales, z_likelihoods
 
-    def forward(self, x: Tensor) -> Dict[str, Tensor | Dict[str, Tensor]]:
+    def forward(self, x: Tensor) -> Dict[str, Union[Tensor, Dict[str, Tensor]]]:
         """Forward pass through the model.
 
         Args:
