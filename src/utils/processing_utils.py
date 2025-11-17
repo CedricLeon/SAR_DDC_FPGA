@@ -5,8 +5,9 @@ import numpy as np
 import torch
 from lightning import LightningModule
 
-from src.models import MerlinModule, SARDDCModule
-from src.utils import estimate_bpp
+from src.models.merlin_module import MerlinModule
+from src.models.sar_ddc_module import SARDDCModule
+from src.utils.metrics import estimate_bpp
 
 
 def extract_short_name_from_TSX_filepath(filepath: Path):

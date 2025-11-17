@@ -43,14 +43,16 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # more info: https://github.com/ashleve/rootutils
 # ------------------------------------------------------------------------------------ #
 
-from src.utils import (  # noqa: E402
-    RankedLogger,
+from src.utils.instantiators import (  # noqa: E402
+    instantiate_callbacks,
+    instantiate_loggers,
+)
+from src.utils.logging_utils import log_hyperparameters  # noqa: E402
+from src.utils.pylogger import RankedLogger  # noqa: E402
+from src.utils.utils import (  # noqa: E402
     early_wandb_initialization,
     extras,
     get_metric_value,
-    instantiate_callbacks,
-    instantiate_loggers,
-    log_hyperparameters,
     task_wrapper,
 )
 
