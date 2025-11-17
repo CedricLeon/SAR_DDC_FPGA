@@ -1,3 +1,8 @@
+# ----- Project specific ignores -----
+# Tmp files used for Copilot context
+compressai_original.py
+docker_run.sh
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
