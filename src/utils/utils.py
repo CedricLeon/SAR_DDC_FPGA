@@ -37,7 +37,7 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
         lr = cfg.model.get("optimizer", {}).get("lr", None)
     batch_size = cfg.data.get("batch_size", None)
 
-    return f"{model}{activation}_{seed}_{metric}ʎ{lmbda}_lr{lr}_b{batch_size}"
+    return f"{model}-{activation}_{seed}_{metric}ʎ{lmbda}_lr{lr}_b{batch_size}"
 
 
 @rank_zero_only

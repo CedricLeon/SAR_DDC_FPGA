@@ -24,64 +24,9 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from compressai.layers import GDN
 from torch import Tensor
 
-
-def conv(in_channels: int, out_channels: int, kernel_size: int = 5, stride: int = 1) -> nn.Conv2d:
-    return nn.Conv2d(
-        in_channels,
-        out_channels,
-        kernel_size=kernel_size,
-        stride=stride,
-        padding=kernel_size // 2,
-    )
-
-
-def deconv(
-    in_channels: int, out_channels: int, kernel_size: int = 5, stride: int = 1
-) -> nn.ConvTranspose2d:
-    return nn.ConvTranspose2d(
-        in_channels,
-        out_channels,
-        kernel_size=kernel_size,
-        stride=stride,
-        padding=kernel_size // 2,
-        output_padding=stride - 1,
-    )
-
-
-class ResidualBlock(nn.Module):
-    def __init__(self, channels: int, act_type: str = "gdn"):
-        super().__init__()
-        self.conv1 = conv(channels, channels, kernel_size=5)
-        self.act = _make_activation(act_type, channels, inverse=False)
-        self.conv2 = conv(channels, channels, kernel_size=5)
-
-    def forward(self, x: Tensor) -> Tensor:
-        residual = x
-        out = self.act(self.conv1(x))
-        out = self.conv2(out)
-        return out + residual
-
-
-def _make_activation(act_type: str, channels: int, inverse: bool = False) -> nn.Module:
-    t = (act_type or "gdn").lower()
-    if t == "gdn":
-        return GDN(channels, inverse=inverse)
-    if t == "relu":
-        return nn.ReLU(inplace=True)
-    if t in ("lrelu", "leaky_relu"):
-        return nn.LeakyReLU(0.1, inplace=True)
-    if t == "silu":
-        return nn.SiLU(inplace=True)
-    if t == "gelu":
-        return nn.GELU()
-    if t in ("identity", "none"):
-        return nn.Identity()
-    if t in ("gn_relu", "groupnorm_relu"):
-        return nn.Sequential(nn.GroupNorm(8, channels), nn.ReLU(inplace=True))
-    raise ValueError(f"Unknown activation type: {act_type}")
+from src.models.components.layers import ResidualBlock, conv, deconv, make_activation
 
 
 class ResidualSimpleAE(nn.Module):
@@ -101,17 +46,17 @@ class ResidualSimpleAE(nn.Module):
         self.g_a = nn.Sequential(
             nn.Sequential(
                 conv(1, N, kernel_size=5, stride=2),
-                _make_activation(activation, N, inverse=False),
+                make_activation(activation, N, inverse=False),
                 ResidualBlock(N, activation),
             ),
             nn.Sequential(
                 conv(N, N, kernel_size=5, stride=2),
-                _make_activation(activation, N, inverse=False),
+                make_activation(activation, N, inverse=False),
                 ResidualBlock(N, activation),
             ),
             nn.Sequential(
                 conv(N, N, kernel_size=5, stride=2),
-                _make_activation(activation, N, inverse=False),
+                make_activation(activation, N, inverse=False),
                 ResidualBlock(N, activation),
             ),
             conv(N, N, kernel_size=5, stride=2),
@@ -121,17 +66,17 @@ class ResidualSimpleAE(nn.Module):
         self.g_s = nn.Sequential(
             nn.Sequential(
                 deconv(N, N, kernel_size=5, stride=2),
-                _make_activation(activation, N, inverse=True),
+                make_activation(activation, N, inverse=True),
                 ResidualBlock(N, activation),
             ),
             nn.Sequential(
                 deconv(N, N, kernel_size=5, stride=2),
-                _make_activation(activation, N, inverse=True),
+                make_activation(activation, N, inverse=True),
                 ResidualBlock(N, activation),
             ),
             nn.Sequential(
                 deconv(N, N, kernel_size=5, stride=2),
-                _make_activation(activation, N, inverse=True),
+                make_activation(activation, N, inverse=True),
                 ResidualBlock(N, activation),
             ),
             deconv(N, 1, kernel_size=5, stride=2),

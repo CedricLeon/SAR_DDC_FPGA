@@ -3,7 +3,7 @@ _target_: src.models.sar_ddc_module.SARDDCModule
 net:
   _target_: src.models.components.sar_simple_autoencoder.ResidualSimpleAE
   nb_channels_main: 128
-  activation: gdn   # gdn | relu | leaky_relu | silu | gelu | gn_relu | identity
+  activation: gdn
 
 criterion:
   _target_: src.utils.metrics.MerlinRDLoss

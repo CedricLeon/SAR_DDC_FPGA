@@ -9,50 +9,10 @@ from typing import Dict, Tuple, Union
 import torch
 import torch.nn as nn
 from compressai.entropy_models import EntropyBottleneck, GaussianConditional
-from compressai.layers import GDN
 from compressai.models import CompressionModel
 from torch import Tensor
 
-
-# Helper functions for convolution and transposed convolution layers
-def conv(in_channels, out_channels, kernel_size=5, stride=1):
-    """Helper conv layer."""
-    return nn.Conv2d(
-        in_channels,
-        out_channels,
-        kernel_size=kernel_size,
-        stride=stride,
-        padding=kernel_size // 2,
-    )
-
-
-def deconv(in_channels, out_channels, kernel_size=5, stride=1):
-    """Helper deconv layer."""
-    return nn.ConvTranspose2d(
-        in_channels,
-        out_channels,
-        kernel_size=kernel_size,
-        stride=stride,
-        padding=kernel_size // 2,
-        output_padding=stride - 1,
-    )
-
-
-class ResidualBlock(nn.Module):
-    """Residual block with skip connections."""
-
-    def __init__(self, channels):
-        super().__init__()
-        self.conv1 = conv(channels, channels, kernel_size=5)
-        self.gdn = GDN(channels)
-        self.conv2 = conv(channels, channels, kernel_size=5)
-
-    def forward(self, x):
-        """Forward pass through the residual block."""
-        residual = x
-        out = self.gdn(self.conv1(x))
-        out = self.conv2(out)
-        return out + residual
+from src.models.components.layers import ResidualBlock, conv, deconv, make_activation
 
 
 class ResidualScaleHyperprior(CompressionModel):
@@ -65,7 +25,7 @@ class ResidualScaleHyperprior(CompressionModel):
     and normalized to approximately [0, 1].
     """
 
-    def __init__(self, nb_channels_main=128):
+    def __init__(self, nb_channels_main=128, activation: str = "gdn"):
         """Initialize the SAR hyperprior model.
 
         Args:
@@ -74,15 +34,28 @@ class ResidualScaleHyperprior(CompressionModel):
         super().__init__()
         N = nb_channels_main
         M = 2 * N  # Number of channels for hyperprior
+        self.activation = activation
 
         self.entropy_bottleneck = EntropyBottleneck(M)
         self.gaussian_conditional = GaussianConditional(None)
 
         # Main analysis transform (encoder g_a)
         self.g_a = nn.Sequential(
-            nn.Sequential(conv(1, N, kernel_size=5, stride=2), GDN(N), ResidualBlock(N)),
-            nn.Sequential(conv(N, N, kernel_size=5, stride=2), GDN(N), ResidualBlock(N)),
-            nn.Sequential(conv(N, N, kernel_size=5, stride=2), GDN(N), ResidualBlock(N)),
+            nn.Sequential(
+                conv(1, N, kernel_size=5, stride=2),
+                make_activation(activation, N),
+                ResidualBlock(N),
+            ),
+            nn.Sequential(
+                conv(N, N, kernel_size=5, stride=2),
+                make_activation(activation, N),
+                ResidualBlock(N),
+            ),
+            nn.Sequential(
+                conv(N, N, kernel_size=5, stride=2),
+                make_activation(activation, N),
+                ResidualBlock(N),
+            ),
             conv(N, N, kernel_size=5, stride=2),
             # No GDN after final layer before bottleneck
         )
@@ -91,17 +64,17 @@ class ResidualScaleHyperprior(CompressionModel):
         self.g_s = nn.Sequential(
             nn.Sequential(
                 deconv(N, N, kernel_size=5, stride=2),
-                GDN(N, inverse=True),
+                make_activation(activation, N, inverse=True),
                 ResidualBlock(N),
             ),
             nn.Sequential(
                 deconv(N, N, kernel_size=5, stride=2),
-                GDN(N, inverse=True),
+                make_activation(activation, N, inverse=True),
                 ResidualBlock(N),
             ),
             nn.Sequential(
                 deconv(N, N, kernel_size=5, stride=2),
-                GDN(N, inverse=True),
+                make_activation(activation, N, inverse=True),
                 ResidualBlock(N),
             ),
             deconv(N, 1, kernel_size=5, stride=2),
