@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from src.models.components.layers import ResidualBlock, conv, deconv, make_activation
+from src.models.components.layers import ResidualBlock, make_activation
 
 
 class ResidualSimpleAE(nn.Module):
@@ -37,49 +37,90 @@ class ResidualSimpleAE(nn.Module):
     independently through the encoder/decoder and re-concatenated.
     """
 
-    def __init__(self, nb_channels_main: int = 128, activation: str = "gdn"):
+    def __init__(
+        self, nb_channels_main: int = 128, activation: str = "gdn", no_output_padding: bool = True
+    ):
         super().__init__()
         N = nb_channels_main
         self.activation = activation
 
-        # Analysis transform (encoder)
+        # Vitis-AI DPU has a problem with `output_padding=1` in ConvTranspose2d layers. See Vitis-AI_journey.md for details.
+        if no_output_padding:
+            # nn.ConvTranspose2d(N, N, kernel_size=4, stride=2, padding=2, output_padding=0)
+            convT_kernel = 4
+            convT_out_pad = 0
+        else:
+            # nn.ConvTranspose2d(N, N, kernel_size=5, stride=2, padding=2, output_padding=1)
+            convT_kernel = 5
+            convT_out_pad = 1
+
+        # Main analysis transform (encoder g_a)
         self.g_a = nn.Sequential(
             nn.Sequential(
-                conv(1, N, kernel_size=5, stride=2),
+                nn.Conv2d(1, N, kernel_size=5, stride=2, padding=2),
                 make_activation(activation, N, inverse=False),
                 ResidualBlock(N, activation),
             ),
             nn.Sequential(
-                conv(N, N, kernel_size=5, stride=2),
+                nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2),
                 make_activation(activation, N, inverse=False),
                 ResidualBlock(N, activation),
             ),
             nn.Sequential(
-                conv(N, N, kernel_size=5, stride=2),
+                nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2),
                 make_activation(activation, N, inverse=False),
                 ResidualBlock(N, activation),
             ),
-            conv(N, N, kernel_size=5, stride=2),
+            nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2),
+            # No GDN after final layer before bottleneck
         )
 
-        # Synthesis transform (decoder)
+        # Main synthesis transform (decoder g_s)
         self.g_s = nn.Sequential(
             nn.Sequential(
-                deconv(N, N, kernel_size=5, stride=2),
+                nn.ConvTranspose2d(
+                    N,
+                    N,
+                    kernel_size=convT_kernel,
+                    stride=2,
+                    padding=1,
+                    output_padding=convT_out_pad,
+                ),
                 make_activation(activation, N, inverse=True),
                 ResidualBlock(N, activation),
             ),
             nn.Sequential(
-                deconv(N, N, kernel_size=5, stride=2),
+                nn.ConvTranspose2d(
+                    N,
+                    N,
+                    kernel_size=convT_kernel,
+                    stride=2,
+                    padding=1,
+                    output_padding=convT_out_pad,
+                ),
                 make_activation(activation, N, inverse=True),
                 ResidualBlock(N, activation),
             ),
             nn.Sequential(
-                deconv(N, N, kernel_size=5, stride=2),
+                nn.ConvTranspose2d(
+                    N,
+                    N,
+                    kernel_size=convT_kernel,
+                    stride=2,
+                    padding=1,
+                    output_padding=convT_out_pad,
+                ),
                 make_activation(activation, N, inverse=True),
                 ResidualBlock(N, activation),
             ),
-            deconv(N, 1, kernel_size=5, stride=2),
+            nn.ConvTranspose2d(
+                N,
+                1,
+                kernel_size=convT_kernel,
+                stride=2,
+                padding=1,
+                output_padding=convT_out_pad,
+            ),
         )
 
     @staticmethod

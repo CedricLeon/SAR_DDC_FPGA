@@ -25,7 +25,9 @@ class ResidualScaleHyperprior(CompressionModel):
     and normalized to approximately [0, 1].
     """
 
-    def __init__(self, nb_channels_main=128, activation: str = "gdn"):
+    def __init__(
+        self, nb_channels_main=128, activation: str = "gdn", no_output_padding: bool = True
+    ):
         """Initialize the SAR hyperprior model.
 
         Args:
@@ -36,66 +38,103 @@ class ResidualScaleHyperprior(CompressionModel):
         M = 2 * N  # Number of channels for hyperprior
         self.activation = activation
 
+        # Vitis-AI DPU has a problem with `output_padding=1` in ConvTranspose2d layers. See Vitis-AI_journey.md for details.
+        if no_output_padding:
+            # nn.ConvTranspose2d(N, N, kernel_size=4, stride=2, padding=2, output_padding=0)
+            convT_kernel = 4
+            convT_out_pad = 0
+        else:
+            # nn.ConvTranspose2d(N, N, kernel_size=5, stride=2, padding=2, output_padding=1)
+            convT_kernel = 5
+            convT_out_pad = 1
+
         self.entropy_bottleneck = EntropyBottleneck(M)
         self.gaussian_conditional = GaussianConditional(None)
 
         # Main analysis transform (encoder g_a)
         self.g_a = nn.Sequential(
             nn.Sequential(
-                conv(1, N, kernel_size=5, stride=2),
+                nn.Conv2d(1, N, kernel_size=5, stride=2, padding=2),
                 make_activation(activation, N),
-                ResidualBlock(N),
+                ResidualBlock(N, activation),
             ),
             nn.Sequential(
-                conv(N, N, kernel_size=5, stride=2),
+                nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2),
                 make_activation(activation, N),
-                ResidualBlock(N),
+                ResidualBlock(N, activation),
             ),
             nn.Sequential(
-                conv(N, N, kernel_size=5, stride=2),
+                nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2),
                 make_activation(activation, N),
-                ResidualBlock(N),
+                ResidualBlock(N, activation),
             ),
-            conv(N, N, kernel_size=5, stride=2),
+            nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2),
             # No GDN after final layer before bottleneck
         )
 
         # Main synthesis transform (decoder g_s)
         self.g_s = nn.Sequential(
             nn.Sequential(
-                deconv(N, N, kernel_size=5, stride=2),
+                nn.ConvTranspose2d(
+                    N,
+                    N,
+                    kernel_size=convT_kernel,
+                    stride=2,
+                    padding=1,
+                    output_padding=convT_out_pad,
+                ),
                 make_activation(activation, N, inverse=True),
-                ResidualBlock(N),
+                ResidualBlock(N, activation),
             ),
             nn.Sequential(
-                deconv(N, N, kernel_size=5, stride=2),
+                nn.ConvTranspose2d(
+                    N,
+                    N,
+                    kernel_size=convT_kernel,
+                    stride=2,
+                    padding=1,
+                    output_padding=convT_out_pad,
+                ),
                 make_activation(activation, N, inverse=True),
-                ResidualBlock(N),
+                ResidualBlock(N, activation),
             ),
-            nn.Sequential(
-                deconv(N, N, kernel_size=5, stride=2),
-                make_activation(activation, N, inverse=True),
-                ResidualBlock(N),
+            nn.ConvTranspose2d(
+                N,
+                1,
+                kernel_size=convT_kernel,
+                stride=2,
+                padding=1,
+                output_padding=convT_out_pad,
             ),
-            deconv(N, 1, kernel_size=5, stride=2),
         )
 
         # Hyperprior analysis transform (h_a)
         self.h_a = nn.Sequential(
-            conv(M, M, kernel_size=3, stride=2),
+            nn.Conv2d(M, M, kernel_size=5, stride=2, padding=2),
             nn.ReLU(inplace=True),
-            conv(M, M, kernel_size=5, stride=2),
+            nn.Conv2d(M, M, kernel_size=5, stride=2, padding=2),
             nn.ReLU(inplace=True),
-            conv(M, M, kernel_size=5, stride=2),
+            nn.Conv2d(M, M, kernel_size=5, stride=2, padding=2),
+            # conv(M, M, kernel_size=3, stride=2),
         )
 
         # Hyperprior synthesis transform (h_s)
         self.h_s = nn.Sequential(
-            deconv(M, M, kernel_size=5, stride=2),
+            nn.ConvTranspose2d(
+                M, M, kernel_size=convT_kernel, stride=2, padding=1, output_padding=convT_out_pad
+            ),
             nn.ReLU(inplace=True),
-            deconv(M, M, kernel_size=5, stride=2),
+            nn.ConvTranspose2d(
+                M, M, kernel_size=convT_kernel, stride=2, padding=1, output_padding=convT_out_pad
+            ),
             nn.ReLU(inplace=True),
-            deconv(M, M, kernel_size=3, stride=2),
+            nn.ConvTranspose2d(
+                M, M, kernel_size=convT_kernel, stride=2, padding=1, output_padding=convT_out_pad
+            ),
+            # deconv(M, M, kernel_size=3, stride=2),
+            # nn.ConvTranspose2d(
+            #     M, M, kernel_size=3, stride=2, padding=1, output_padding=1
+            # ),
         )
 
     def scale_hyperprior(self, y: Tensor) -> Tuple[Tensor, Tensor]:

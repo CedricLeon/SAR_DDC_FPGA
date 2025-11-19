@@ -4,6 +4,7 @@ net:
   _target_: src.models.components.sar_simple_autoencoder.ResidualSimpleAE
   nb_channels_main: 128
   activation: gdn
+  no_output_padding: true
 
 criterion:
   _target_: src.utils.metrics.MerlinRDLoss
