@@ -12,7 +12,7 @@ from compressai.entropy_models import EntropyBottleneck, GaussianConditional
 from compressai.models import CompressionModel
 from torch import Tensor
 
-from src.models.components.layers import ResidualBlock, conv, deconv, make_activation
+from src.models.components.layers import ResidualBlock, make_activation
 
 
 class ResidualScaleHyperprior(CompressionModel):
@@ -39,14 +39,9 @@ class ResidualScaleHyperprior(CompressionModel):
         self.activation = activation
 
         # Vitis-AI DPU has a problem with `output_padding=1` in ConvTranspose2d layers. See Vitis-AI_journey.md for details.
-        if no_output_padding:
-            # nn.ConvTranspose2d(N, N, kernel_size=4, stride=2, padding=2, output_padding=0)
-            convT_kernel = 4
-            convT_out_pad = 0
-        else:
-            # nn.ConvTranspose2d(N, N, kernel_size=5, stride=2, padding=2, output_padding=1)
-            convT_kernel = 5
-            convT_out_pad = 1
+        convT_kernel = 4 if no_output_padding else 5
+        convT_out_pad = 0 if no_output_padding else 1
+        convT_padding = 1 if no_output_padding else 2
 
         self.entropy_bottleneck = EntropyBottleneck(M)
         self.gaussian_conditional = GaussianConditional(None)
@@ -80,7 +75,7 @@ class ResidualScaleHyperprior(CompressionModel):
                     N,
                     kernel_size=convT_kernel,
                     stride=2,
-                    padding=1,
+                    padding=convT_padding,
                     output_padding=convT_out_pad,
                 ),
                 make_activation(activation, N, inverse=True),
@@ -92,7 +87,19 @@ class ResidualScaleHyperprior(CompressionModel):
                     N,
                     kernel_size=convT_kernel,
                     stride=2,
-                    padding=1,
+                    padding=convT_padding,
+                    output_padding=convT_out_pad,
+                ),
+                make_activation(activation, N, inverse=True),
+                ResidualBlock(N, activation),
+            ),
+            nn.Sequential(
+                nn.ConvTranspose2d(
+                    N,
+                    N,
+                    kernel_size=convT_kernel,
+                    stride=2,
+                    padding=convT_padding,
                     output_padding=convT_out_pad,
                 ),
                 make_activation(activation, N, inverse=True),
@@ -103,38 +110,54 @@ class ResidualScaleHyperprior(CompressionModel):
                 1,
                 kernel_size=convT_kernel,
                 stride=2,
-                padding=1,
+                padding=convT_padding,
                 output_padding=convT_out_pad,
             ),
         )
 
         # Hyperprior analysis transform (h_a)
         self.h_a = nn.Sequential(
-            nn.Conv2d(M, M, kernel_size=5, stride=2, padding=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(M, M, kernel_size=5, stride=2, padding=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(M, M, kernel_size=5, stride=2, padding=2),
             # conv(M, M, kernel_size=3, stride=2),
+            # conv(M, M, kernel_size=5, stride=2),
+            # conv(M, M, kernel_size=5, stride=2),
+            nn.Conv2d(M, M, kernel_size=5, stride=2, padding=2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(M, M, kernel_size=5, stride=2, padding=2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(M, M, kernel_size=5, stride=2, padding=2),
         )
 
         # Hyperprior synthesis transform (h_s)
         self.h_s = nn.Sequential(
-            nn.ConvTranspose2d(
-                M, M, kernel_size=convT_kernel, stride=2, padding=1, output_padding=convT_out_pad
-            ),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(
-                M, M, kernel_size=convT_kernel, stride=2, padding=1, output_padding=convT_out_pad
-            ),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(
-                M, M, kernel_size=convT_kernel, stride=2, padding=1, output_padding=convT_out_pad
-            ),
+            # deconv(M, M, kernel_size=5, stride=2),
+            # deconv(M, M, kernel_size=5, stride=2),
             # deconv(M, M, kernel_size=3, stride=2),
-            # nn.ConvTranspose2d(
-            #     M, M, kernel_size=3, stride=2, padding=1, output_padding=1
-            # ),
+            nn.ConvTranspose2d(
+                M,
+                M,
+                kernel_size=convT_kernel,
+                stride=2,
+                padding=convT_padding,
+                output_padding=convT_out_pad,
+            ),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(
+                M,
+                M,
+                kernel_size=convT_kernel,
+                stride=2,
+                padding=convT_padding,
+                output_padding=convT_out_pad,
+            ),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(
+                M,
+                M,
+                kernel_size=convT_kernel,
+                stride=2,
+                padding=convT_padding,
+                output_padding=convT_out_pad,
+            ),
         )
 
     def scale_hyperprior(self, y: Tensor) -> Tuple[Tensor, Tensor]:

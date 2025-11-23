@@ -28,6 +28,7 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
     else:
         raise NotImplementedError(f"Model {model} not supported!")
     activation = cfg.model.net.get("activation", "gdn")
+    no_output_padding = "_no_out_pad" if cfg.model.net.get("no_output_padding", False) else ""
     seed = cfg.get("seed", None)
     lmbda = cfg.model.criterion.get("lmbda", None)
     metric = cfg.model.criterion.get("metric", None)
@@ -37,7 +38,7 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
         lr = cfg.model.get("optimizer", {}).get("lr", None)
     batch_size = cfg.data.get("batch_size", None)
 
-    return f"{model}-{activation}_{seed}_{metric}ʎ{lmbda}_lr{lr}_b{batch_size}"
+    return f"{model}-{activation}_{seed}_{metric}ʎ{lmbda}_lr{lr}_b{batch_size}{no_output_padding}"
 
 
 @rank_zero_only
