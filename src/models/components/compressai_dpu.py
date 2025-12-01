@@ -10,7 +10,7 @@ Provided classes:
   - GDNPatched
   - EntropyModelPatched
   - EntropyBottleneckPatched
-  - GaussianConditionalPatched
+  - src/models/components/res_scale_hyperprior_dpu.py
 """
 
 from __future__ import annotations
@@ -662,7 +662,7 @@ class EntropyBottleneck(EntropyModelPatched):
         return super().decompress(strings, indexes, medians.dtype, medians)
 
 
-class GaussianConditional(EntropyModelPatched):
+class GaussianConditionalPatched(EntropyModelPatched):
     r"""Gaussian conditional layer, introduced by J. Ballé, D. Minnen, S. Singh,
     S. J. Hwang, N. Johnston, in `"Variational image compression with a scale
     hyperprior" <https://arxiv.org/abs/1802.01436>`_.
