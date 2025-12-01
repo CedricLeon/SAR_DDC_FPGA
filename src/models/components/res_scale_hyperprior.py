@@ -170,11 +170,12 @@ class ResidualScaleHyperprior(CompressionModel):
         return scales, z_likelihoods
 
     def forward(self, x: Tensor) -> Dict[str, Union[Tensor, Dict[str, Tensor]]]:
-        """Forward pass through the model.
+        """Forward pass.
 
-        Args:
-            x: Input tensor (squared real or imaginary part) [batch_size, 1, height, width]
-            training: Whether the model is in training mode
+        Training:
+            - x: [B, 1, H, W]
+        Eval / inference:
+            - x: [B, 2, H, W] (real, imag)
 
         Returns:
             Dictionary with model outputs
@@ -260,6 +261,7 @@ class ResidualScaleHyperprior(CompressionModel):
 
         # Decompress y
         indexes = self.gaussian_conditional.build_indexes(scales)
+        assert isinstance(indexes, torch.IntTensor)
         y_hat = self.gaussian_conditional.decompress(y_strings, indexes, shape)
         y_hat = y_hat[:, : y_hat.shape[1] // 2, :, :]
         x_hat = self.g_s(y_hat)

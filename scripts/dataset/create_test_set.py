@@ -15,6 +15,8 @@ from tqdm import tqdm
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 # from src.utils.pylogger import RankedLogger
+from src.models.merlin_module import MerlinModule
+from src.models.sar_ddc_module import SARDDCModule
 from src.utils.constants import amp_max, amp_min
 from src.utils.processing_utils import extract_short_name_from_TSX_filepath
 from src.utils.sar_utils import (
@@ -127,12 +129,15 @@ def _predict_logI_from_real_imag(
     Returns:
       - recon_logI: tensor [B,1,H,W] in log-intensity domain.
     """
-    # Forward can return dict for SARDDC, tensor for MERLIN
-    out_r = model(real_b)
-    out_i = model(imag_b)
-    if isinstance(out_r, dict) and "x_hat" in out_r:
-        out_r = out_r["x_hat"]
-        out_i = out_i["x_hat"]
+    # ADAM forward passes in evaluation takes input with 2 channels
+    if isinstance(model, SARDDCModule):
+        input = torch.cat((real_b, imag_b), dim=1).contiguous()
+        output = model(input)
+        out_r = output["x_hat"][:, 0:1, :, :]
+        out_i = output["x_hat"][:, 1:2, :, :]
+    elif isinstance(model, MerlinModule):
+        out_r = model(real_b)
+        out_i = model(imag_b)
     # Type guard for linters
     assert isinstance(out_r, torch.Tensor), "Model output must be a Tensor or dict with 'x_hat'"
     assert isinstance(out_i, torch.Tensor), "Model output must be a Tensor or dict with 'x_hat'"
@@ -233,13 +238,11 @@ def process_test_dataset(
             batch_log = np.log(batch_sq + EPS)
             batch_norm = (batch_log - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
 
-            real_b = (
-                torch.from_numpy(batch_norm[:, :, :, 0]).to(device).unsqueeze(1).float()
-            )  # [B,1,H,W]
+            real_b = torch.from_numpy(batch_norm[:, :, :, 0]).to(device).unsqueeze(1).float()
             imag_b = torch.from_numpy(batch_norm[:, :, :, 1]).to(device).unsqueeze(1).float()
 
             # Predictions (log-intensity)
-            adam_logI = _predict_logI_from_real_imag(adam_model, real_b, imag_b)  # [B,1,H,W]
+            adam_logI = _predict_logI_from_real_imag(adam_model, real_b, imag_b)
             merlin_logI = _predict_logI_from_real_imag(merlin_model, real_b, imag_b)
 
             out_file[start:end, :, :, 2] = adam_logI.squeeze(1).cpu().numpy()

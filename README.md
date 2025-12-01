@@ -13,12 +13,9 @@ This project implements the solution presented by Amao-Oliva et al. [1] availabl
 
 ### TODOs
 *I'll use this section as a TODO list, including ideas for future projects.*
-- Implement smart forward pass for MERLIN
-- Adapt all inference usages to the smart pass (no post concatenation needed), in `create_test_set.py` and search others.
 - [ ] "NWML" warning, see [NVML is the NVIDIA Management Library and is used on NVIDIA GPUs](https://discuss.pytorch.org/t/cant-initialize-nvml-error-with-rvc-project/194206)
 - [ ] Next runs:
-  - [x] Move it to correct project. One run of the swipe 2025-10-01_09-32-04 crashed, restart "ResSHyp_0_merlinʎ200_lr5e-05_b12"
-  - [ ] "ResSHyp_0_merlinʎ0.1_lr5e-05_b12" crashed
+  - ...
 - [ ] Explain that the syntax is Python 3.8 compatible because it is used by the Vitis-AI container and we can't bump it. (It mostly implies using `Option[]` and `Union[]` from `typing` instead of `|`)
 
 ### Long-term Experiments/Upgrades

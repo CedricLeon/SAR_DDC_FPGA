@@ -11,8 +11,10 @@ from datetime import datetime
 from typing import Callable, Dict, Iterable
 
 import numpy as np
-import vart  # Vitis AI Runtime
-import xir  # Xilinx Intermediate Representation
+
+# These imports are from Vitis AI and are only present in the Docker container (or on the FPGA)
+import vart  # type: ignore
+import xir  # type: ignore
 
 # ---------------------------------------------------------
 # ---------- Code "duplicates" to avoid imports -----------
