@@ -5,36 +5,22 @@
 
 defaults:
   - override /data: tsx_ssc.yaml
-  - override /model: res_simple_ae.yaml
+  - override /model: res_scale_hyperprior.yaml # res_simple_ae.yaml
   - override /callbacks: tsx_ddc.yaml
   - override /logger: wandb.yaml
   - override /trainer: gpu.yaml
   - override /hydra: default.yaml
 
-data:
-  batch_size: 12
-  num_workers: 11
-
-model:
-  criterion:
-    metric: "merlin"
-    lmbda: 100
-  net_optimizer:
-    lr: 5e-5
-
 callbacks:
   compare_recon_to_gt:
     patch_dir: ${paths.data_dir}
-    split_large_patch: False
-    blend_method: "count"
-    stride: 256
 
 trainer:
   min_epochs: 1
   max_epochs: 30
   deterministic: True
   detect_anomaly: False
-  log_every_n_steps: 10
+  log_every_n_steps: 5
 
 logger:
   wandb:
@@ -42,8 +28,8 @@ logger:
     offline: False
 
 # The task name determines the logs path, by convention use <task>/<dataset>/<model>
-task_name: train/sar_ddc/simple_ae
-tags: ["TSX_SSC", "simple_ae"]
+task_name: train/sar_ddc/hyperprior_dpu
+tags: ["TSX_SSC", "res_scale_hyperprior"]
 seed: 42
 
 # Flatten the lmbda value because W&B custom chart expressions do not support nested dicts

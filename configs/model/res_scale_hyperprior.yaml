@@ -1,17 +1,16 @@
 _target_: src.models.sar_ddc_module.SARDDCModule
 
 net:
-  _target_: src.models.components.res_scale_hyperprior.ResidualScaleHyperprior
+  _target_: src.models.components.res_scale_hyperprior_dpu.ResidualScaleHyperpriorPatched
   nb_channels_main: 128  # Number of channels for main transform
   activation: "gdn"   # gdn | relu | leaky_relu | silu | gelu | gn_relu | identity
   no_output_padding: true
-  # DPU_compile: False # Always false, only set when quantizing the netwrk with Vitis-AI
-  # No need to specify th number of channel of the hyperprior, by the model architecture it has to be twice the number of channels of the main transform
+  export_dpu: False # Always false, only set when quantizing the network with Vitis-AI
 
 criterion:
-  _target_: src.utils.metrics.MerlinRDLoss #compressai.losses.RateDistortionLoss
+  _target_: src.utils.metrics.MerlinRDLoss
   metric: "merlin" # "ssim", "ms_ssim", or "mse"
-  lmbda: 1
+  lmbda: 100
 
 net_optimizer:
   _target_: torch.optim.Adam

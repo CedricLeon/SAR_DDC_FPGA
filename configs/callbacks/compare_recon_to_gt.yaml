@@ -4,4 +4,4 @@ compare_recon_to_gt:
   log_every_n_epochs: 5
   split_large_patch: False
   blend_method: "linear"
-  stride:  -1
+  stride: 256
