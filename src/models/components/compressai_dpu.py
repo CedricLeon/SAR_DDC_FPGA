@@ -401,7 +401,7 @@ class EntropyModelPatched(nn.Module):
         return outputs
 
 
-class EntropyBottleneck(EntropyModelPatched):
+class EntropyBottleneckPatched(EntropyModelPatched):
     r"""Entropy bottleneck layer, introduced by J. Ballé, D. Minnen, S. Singh,
     S. J. Hwang, N. Johnston, in `"Variational image compression with a scale
     hyperprior" <https://arxiv.org/abs/1802.01436>`_.

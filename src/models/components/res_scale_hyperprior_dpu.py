@@ -15,40 +15,18 @@ from typing import Dict, Tuple, Union
 
 import torch
 import torch.nn as nn
-from compressai.entropy_models import EntropyBottleneck, GaussianConditional
 from compressai.models import CompressionModel
 from torch import Tensor
 
+from context.compressai_original import (  # from compressai.entropy_models
+    EntropyBottleneck,
+    GaussianConditional,
+)
 from src.models.components.compressai_dpu import (
-    EntropyModelPatched,
+    EntropyBottleneckPatched,
     GaussianConditionalPatched,
-    GDNPatched,
 )
 from src.models.components.layers import ResidualBlock, make_activation
-
-# -------------------------------------------------------------------------
-# Small helper: activation factory switching between GDN and GDNPatched
-# -------------------------------------------------------------------------
-
-
-def make_activation_patched(
-    name: str, num_channels: int, inverse: bool = False, use_patched_gdn: bool = False
-) -> nn.Module:
-    """Activation factory that can route `gdn` through GDNPatched when requested.
-
-    Args:
-        name: activation name ("relu", "leaky_relu", "elu", "gdn", ...)
-        num_channels: number of channels for GDN
-        inverse: whether to use inverse GDN
-        use_patched_gdn: if True and name == "gdn", use GDNPatched; otherwise
-                         delegate to the standard `make_activation`.
-    """
-    name = name.lower()
-    if name == "gdn" and use_patched_gdn:
-        return GDNPatched(num_channels, inverse=inverse)
-    # Fallback to original activation factory (includes original GDN)
-    return make_activation(name, num_channels, inverse=inverse)
-
 
 # -------------------------------------------------------------------------
 # DPU-friendly ResidualScaleHyperprior
@@ -85,7 +63,7 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
 
         # NOTE: keep entropy models unpatched for now
         if self.export_dpu:
-            self.entropy_bottleneck = EntropyModelPatched(M)
+            self.entropy_bottleneck = EntropyBottleneckPatched(M)
             self.gaussian_conditional = GaussianConditionalPatched(None)
         else:
             self.entropy_bottleneck = EntropyBottleneck(M)
@@ -95,24 +73,18 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
         self.g_a = nn.Sequential(
             nn.Sequential(
                 nn.Conv2d(1, N, kernel_size=5, stride=2, padding=2),
-                make_activation_patched(
-                    activation, N, inverse=False, use_patched_gdn=self.export_dpu
-                ),
-                ResidualBlock(N, activation),
+                make_activation(activation, N, inverse=False, use_patched_gdn=self.export_dpu),
+                ResidualBlock(N, activation, use_patched_gdn=self.export_dpu),
             ),
             nn.Sequential(
                 nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2),
-                make_activation_patched(
-                    activation, N, inverse=False, use_patched_gdn=self.export_dpu
-                ),
-                ResidualBlock(N, activation),
+                make_activation(activation, N, inverse=False, use_patched_gdn=self.export_dpu),
+                ResidualBlock(N, activation, use_patched_gdn=self.export_dpu),
             ),
             nn.Sequential(
                 nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2),
-                make_activation_patched(
-                    activation, N, inverse=False, use_patched_gdn=self.export_dpu
-                ),
-                ResidualBlock(N, activation),
+                make_activation(activation, N, inverse=False, use_patched_gdn=self.export_dpu),
+                ResidualBlock(N, activation, use_patched_gdn=self.export_dpu),
             ),
             nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2),
         )
@@ -128,10 +100,8 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
                     padding=convT_padding,
                     output_padding=convT_out_pad,
                 ),
-                make_activation_patched(
-                    activation, N, inverse=True, use_patched_gdn=self.export_dpu
-                ),
-                ResidualBlock(N, activation),
+                make_activation(activation, N, inverse=True, use_patched_gdn=self.export_dpu),
+                ResidualBlock(N, activation, use_patched_gdn=self.export_dpu),
             ),
             nn.Sequential(
                 nn.ConvTranspose2d(
@@ -142,10 +112,8 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
                     padding=convT_padding,
                     output_padding=convT_out_pad,
                 ),
-                make_activation_patched(
-                    activation, N, inverse=True, use_patched_gdn=self.export_dpu
-                ),
-                ResidualBlock(N, activation),
+                make_activation(activation, N, inverse=True, use_patched_gdn=self.export_dpu),
+                ResidualBlock(N, activation, use_patched_gdn=self.export_dpu),
             ),
             nn.Sequential(
                 nn.ConvTranspose2d(
@@ -156,10 +124,8 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
                     padding=convT_padding,
                     output_padding=convT_out_pad,
                 ),
-                make_activation_patched(
-                    activation, N, inverse=True, use_patched_gdn=self.export_dpu
-                ),
-                ResidualBlock(N, activation),
+                make_activation(activation, N, inverse=True, use_patched_gdn=self.export_dpu),
+                ResidualBlock(N, activation, use_patched_gdn=self.export_dpu),
             ),
             nn.ConvTranspose2d(
                 N,

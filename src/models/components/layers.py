@@ -2,6 +2,8 @@ import torch.nn as nn
 from compressai.layers import GDN
 from torch import Tensor
 
+from src.models.components.compressai_dpu import GDNPatched
+
 
 def conv(in_channels: int, out_channels: int, kernel_size: int = 5, stride: int = 1) -> nn.Conv2d:
     """Helper conv layer."""
@@ -31,10 +33,18 @@ def deconv(
 class ResidualBlock(nn.Module):
     """Residual block with skip connections and custom activation."""
 
-    def __init__(self, channels: int, act_type: str = "gdn", kernel_size: int = 5):
+    def __init__(
+        self,
+        channels: int,
+        act_name: str = "gdn",
+        kernel_size: int = 5,
+        use_patched_gdn: bool = False,
+    ):
         super().__init__()
         self.conv1 = conv(channels, channels, kernel_size=kernel_size)
-        self.act = make_activation(act_type, channels, inverse=False)
+        self.act = make_activation(
+            act_name, channels, inverse=False, use_patched_gdn=use_patched_gdn
+        )
         self.conv2 = conv(channels, channels, kernel_size=kernel_size)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -45,10 +55,15 @@ class ResidualBlock(nn.Module):
         return out + residual
 
 
-def make_activation(act_type: str, channels: int, inverse: bool = False) -> nn.Module:
-    t = (act_type or "gdn").lower()
+def make_activation(
+    act_name: str, channels: int, inverse: bool = False, use_patched_gdn: bool = False
+) -> nn.Module:
+    t = act_name.lower()
     if t == "gdn":
-        return GDN(channels, inverse=inverse)
+        if use_patched_gdn:
+            return GDNPatched(channels, inverse=inverse)
+        else:
+            return GDN(channels, inverse=inverse)
     if t == "relu":
         return nn.ReLU(inplace=True)
     if t in ("lrelu", "leaky_relu"):
@@ -61,4 +76,4 @@ def make_activation(act_type: str, channels: int, inverse: bool = False) -> nn.M
         return nn.Identity()
     if t in ("gn_relu", "groupnorm_relu"):
         return nn.Sequential(nn.GroupNorm(8, channels), nn.ReLU(inplace=True))
-    raise ValueError(f"Unknown activation type: {act_type}")
+    raise ValueError(f"Unknown activation type: {act_name}")
