@@ -78,7 +78,7 @@ class CompareReconstructionToGT(Callback):
         )
 
         # --- Store as torch tensors on device for forward passes ---
-        patch_tensor = torch.from_numpy(patch_data).to(pl_module.device)
+        patch_tensor = torch.from_numpy(patch_data).to(pl_module.device).float()
         # Normalize
         patch = torch.square(patch_tensor)
         patch = torch.log(patch + self.eps)
@@ -234,7 +234,7 @@ class CompareReconstructionToGT(Callback):
 
         # Log to WandB if available
         if pl_module.logger is not None and hasattr(pl_module.logger, "experiment"):
-            pl_module.logger.experiment.log(
+            pl_module.logger.experiment.log(  # type: ignore[attr-defined]
                 {
                     "val_large_patch_comparison": fig_logI,
                     "val_large_patch/loss": metrics["loss"],
