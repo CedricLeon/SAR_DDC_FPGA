@@ -3,6 +3,53 @@
 I'll use this file as a journal, just to keep track of what I tried and when.
 Once I understand the toolchain and its processes better, I'll make a step-by-step instructions for deployment.
 
+## Running the model on the ZC102
+So I realized (a bit late) that, it's not enough to compile the model. In their tutorial, Vitis AI uses some additional scripts to run inference of the compiled model on specific task/images. Because these scripts are not suitable for my application I need to write my own.
+I found barely any documentation about the features these scripts should implement or functions from `xir` or `vart` they should call, so I will proceed brute-force: have an LLm (perplexity) hallucinate some procedure/script and iteratively debug that thing, just so I start from somewhere.
+
+==@TODO for the moment I'm going for python as inference language, but as soon as my understanding of the board gets better, I can switch to C++==
+
+### 23.11.2025
+
+#### Setup and dependencies
+Below is the intended project structure on the Target:
+```text
+/root/home/SAR_DDC/
+├── model/
+│   ├── <your_model>.xmodel           # Compiled model
+│   └── <your_model>.prototxt         # Optional config file
+├── data/
+│   └── val.h5                        # Your test dataset
+├── scripts/
+│   ├── inference.py                  # Main inference script
+│   └── metrics.py                    # Your metrics module
+└── libs/
+    └── (any custom modules needed)
+```
+==@TODO Didn't check that `.prototxt` file yet, see [this tuto](https://xilinx.github.io/Vitis-AI/3.0/html/docs/quickstart/mpsoc.html#compile-the-model) about it, I don't know how to adapt it for my application.==
+
+I couldn't find a smart way to install `h5py` on the Target, even using AMD package manager `dnf`. So I created a new script `convert_h5_to_np.py`:
+```bash
+python scripts/dataset/convert_h5_to_np.py --dataset_path data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test.h5 --subset 500
+# Afterwards transfer the dataset to the Target (It also took 6:41 mins)
+scp DDC_FPGA/data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test_500.npy root@10.0.0.2:/home/root/SAR_DDC/data/test_500.npy
+```
+
+> Be careful, the Zynq US+ does not have infinite RAM, so choose the subset smartly. Or implement a better loading function in `inference.py`.
+
+#### Inference script
+Because I don't want to create a VSCode server on the FPGA directly and I don't know how to open a file from a "recursive" SSH session inside of the Remote Explorer extension, I will develop the script "locally" (on BART) and `scp` it every time. The script will be in `scripts/fpga/inference.py`.
+*Move the script to the Target*:
+```bash
+[HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ scp scripts/fpga/inference.py root@10.0.0.2:/home/root/SAR_DDC/scripts/inference.py
+```
+
+*Perform inference*:
+```bash
+[TARGET]root@xilinx-zcu102-20222:~/SAR_DDC# python3 scripts/inference.py --xmodel model/ResAE_pt.xmodel --data data/test_500.npy --subset 100
+```
+
+
 ## Updating the model to be Vitis-AI-friendly (~ 23/06/2025)
 *Vitis-AI has a problem with `output_padding`, I detailed below how I **tried** to solve that.*
 ### Convolution settings
