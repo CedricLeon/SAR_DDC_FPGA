@@ -24,33 +24,49 @@ What I will do in this script:
 """
 
 import argparse
+import os
 import random
 import sys
+import warnings
 from pathlib import Path
 
 import torch
+from omegaconf import DictConfig, OmegaConf
 from pytorch_nndct.apis import torch_quantizer
 from tqdm import tqdm
 
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
-from src.data.components.sar_dataset import TSXSSCDataset
-from src.models.components.sar_hyperprior import ResidualScaleHyperprior
-from src.utils.metrics import MerlinRDLoss
+project_root = Path(__file__).resolve().parent.parent.parent
+os.environ["PROJECT_ROOT"] = str(project_root)
+sys.path.append(str(project_root))
+from src.data.components.sar_dataset import TSXSSCDataset  # noqa: E402
+from src.models.components.res_scale_hyperprior import (  # noqa: E402
+    ResidualScaleHyperprior,
+)
+from src.models.components.sar_simple_autoencoder import ResidualSimpleAE  # noqa: E402
+from src.utils.metrics import MerlinRDLoss  # noqa: E402
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 parser = argparse.ArgumentParser()
 
 parser.add_argument(
-    "--data_dir",
-    default="/path/to/imagenet/",
-    help="Data set directory, when quant_mode=calib, it is for calibration, while quant_mode=test it is for evaluation",
+    "--run_dir",
+    default=None,
+    help="Path to the directory of the run. It must contains at the minimum the run config `.hydra/config.yaml` and the last checkpoint `checkpoints/last.ckpt`.",
 )
-parser.add_argument(
-    "--model_dir",
-    default="/path/to/trained_model/",
-    help="Trained model file path. Download pretrained model from the following url and put it in model_dir specified path: https://download.pytorch.org/models/resnet18-5c106cde.pth",
-)
+
+# # Deprecated
+# parser.add_argument(
+#     "--data_dir",
+#     default="/path/to/imagenet/",
+#     help="Data set directory, when quant_mode=calib, it is for calibration, while quant_mode=test it is for evaluation",
+# )
+# parser.add_argument(
+#     "--model_dir",
+#     default="/path/to/trained_model/",
+#     help="Trained model file path. Download pretrained model from the following url and put it in model_dir specified path: https://download.pytorch.org/models/resnet18-5c106cde.pth",
+# )
+
 parser.add_argument("--config_file", default=None, help="quantization configuration file")
 parser.add_argument(
     "--subset_len",
@@ -59,13 +75,13 @@ parser.add_argument(
     help="subset_len to evaluate model, using the whole validation dataset if it is not set",
 )
 parser.add_argument(
-    "--batch_size", default=32, type=int, help="input data batch size to evaluate model"
+    "--batch_size", default=1, type=int, help="input data batch size to evaluate model"
 )
 parser.add_argument(
     "--quant_mode",
     default="calib",
     choices=["float", "calib", "test"],
-    help="quantization mode. 0: no quantization, evaluate float model, calib: quantize, test: evaluate quantized model",
+    help="Quantization mode: float: evaluate float model, calib: quantize, test: evaluate quantized model.",
 )
 parser.add_argument(
     "--fast_finetune",
@@ -77,18 +93,16 @@ parser.add_argument(
     "--deploy", dest="deploy", action="store_true", help="export xmodel for deployment"
 )
 parser.add_argument("--inspect", dest="inspect", action="store_true", help="inspect model")
-
 parser.add_argument("--target", dest="target", nargs="?", const="", help="specify target device")
 
 args, _ = parser.parse_known_args()
 
 
 def load_data(
-    data_dir: Path,
     **kwargs,
-):
+) -> torch.utils.data.DataLoader:
     """Load validation data loader."""
-    dataset = TSXSSCDataset(data_dir / "val.h5", transform=None)
+    dataset = TSXSSCDataset(args.data_dir / "val.h5", with_refs=False)
     if args.subset_len:  # random sampling method
         assert args.subset_len <= len(dataset)
         dataset = torch.utils.data.Subset(
@@ -100,49 +114,109 @@ def load_data(
     return data_loader
 
 
-def evaluate(model, val_loader, loss_fn):
+def evaluate(
+    model: torch.nn.Module, val_loader: torch.utils.data.DataLoader, loss_fn: torch.nn.Module
+) -> float:
     """Evaluate the model on validation dataset."""
+    print(val_loader)
     # @TODO: figure out what I want to evaluate
     model.eval()
     model = model.to(device)
     nb_images = 0
     loss_total = 0
-    for i, (images, labels) in tqdm(enumerate(val_loader), total=len(val_loader)):
-        images = images.to(device)
-        labels = labels.to(device)
-        outputs = model(images)
-        loss = loss_fn(outputs, labels)
-        loss_total += loss.item()
-        nb_images += images.size(0)
+    for i, data_dict in tqdm(enumerate(val_loader), total=len(val_loader)):
+        real = data_dict["real"].to(device)
+        imag = data_dict["imag"].to(device)
+        input = torch.cat([real, imag], dim=1)
+        output = model(input)
+        loss = loss_fn(output, input)
+        loss_total += loss["distortion"].item()
+        nb_images += real.size(0)
     return loss_total / nb_images
 
 
-if __name__ == "__main__":
-    # ----- Parse/Preprocess arguments -----
-    data_dir = Path(args.data_dir)
+def try_match_run_dir_with_existing_runs() -> Path:
+    """Try to match run_dir with existing runs."""
+    dir_prefix = Path("DDC_FPGA/logs/train/sar_ddc/")
+    existing_runs = {
+        "ResSHyp-relu_42_merlinʎ100_lr5e-05_b12": "hyperprior/multiruns/2025-11-18_09-45-37/6",
+        "ResAE-relu_42_merlinʎ100_lr5e-05_b12": "simple_ae/multiruns/2025-11-16_19-34-55/3/",
+        "ResAE-relu_42_merlinʎ100_lr5e-05_b12_no-out-pad": "simple_ae/runs/2025-11-19_15-22-34",
+    }
+    run_path = existing_runs.get(args.run_dir, None)
+    if run_path is None:
+        raise RuntimeError(f"Cannot find matching run for {args.run_dir}!")
+    return dir_prefix / run_path
+
+
+def check_and_enforce_arguments():
+    """Check and enforce arguments."""
+    run_dir = Path(args.run_dir)
+    if not run_dir.exists():
+        run_dir = try_match_run_dir_with_existing_runs()
+
+    args.model_dir = run_dir / "checkpoints"
+    config_path = run_dir / ".hydra" / "config.yaml"
+    # read hydra config to find data_dir
+    args.hydra_conf = OmegaConf.load(config_path)
+    assert type(args.hydra_conf) is DictConfig
+
+    args.data_dir = Path(args.hydra_conf.data.get("hdf5_dir", None))
+    if not args.data_dir or not args.data_dir.exists():
+        raise RuntimeError(f"args.data_dir {args.data_dir} does not exist!")
+
     if args.quant_mode != "test" and args.deploy:
-        args.deploy = False
-        print(
-            r"Warning: Exporting xmodel needs to be done in quantization test mode, turn off it in this running!"
+        warnings.warn(
+            "Exporting xmodel needs to be done with `--quant_mode test`. Setting deploy to False."
         )
+        args.deploy = False
+    if args.inspect and args.quant_mode == "float" and args.batch_size != 1:
+        warnings.warn("Inspecting model needs batch size to be 1. Enforcing it.")
+        args.batch_size = 1
     if args.deploy and (args.batch_size != 1 or args.subset_len != 1):
-        print(
-            r"Warning: Exporting xmodel needs batch size to be 1 and only 1 iteration of inference, change them automatically!"
+        warnings.warn(
+            "Exporting xmodel needs batch size to be 1 and only 1 iteration of inference. Enforcing them."
         )
         args.batch_size = 1
         args.subset_len = 1
+
+
+if __name__ == "__main__":
+    check_and_enforce_arguments()
+
     # ---- Find the model -----
-    # ~/dev/DDC_FPGA/logs/train/sar_ddc/hyperprior/runs/2025-06-10_13-47-27
-    model_path = Path(args.model_dir) / "last.ckpt"
-    model = ResidualScaleHyperprior().cpu()  # model is a nn.Module with a forward() method
-    model.load_state_dict(torch.load(model_path))
+    model_path = args.model_dir / "last.ckpt"
+    # We can use hydra.utils.instantiate() because it would try to import lightning, which we don't have int this Vitis-Ai container.
+    # So we parse the network._target_ and instantiate the model directly.
+    model_name = args.hydra_conf.model.net._target_.split(".")[-1]
+    model_params = args.hydra_conf.model.net
+    model_params.pop("_target_")
+    print(f"Model {model_name} with parameters: {model_params}.")
+
+    if model_name == "ResidualScaleHyperprior":
+        model = ResidualScaleHyperprior(**model_params).cpu()
+    elif model_name == "ResidualSimpleAE":
+        model = ResidualSimpleAE(**model_params).cpu()
+    else:
+        raise ValueError(f"Model {model_name} not recognized for DPU compilation!")
+
+    checkpoint = torch.load(model_path)  # , map_location="cpu")
+    if "state_dict" in checkpoint:
+        # Lightning prefixes parameters with "model." or similar, need to remove that
+        state_dict = checkpoint["state_dict"]
+        state_dict = {k.replace("net.", "", 1): v for k, v in state_dict.items()}
+        message = model.load_state_dict(state_dict, strict=False)
+        print(f"     Loaded a Lightning checkpoint: {message}")
+    else:
+        message = model.load_state_dict(checkpoint, strict=False)
+        print(f"     Loaded a regular PyTorch checkpoint: {message}")
 
     # ----- inspect -----
-    input = torch.randn([args.batch_size, 1, 256, 256])
+    input = torch.randn([args.batch_size, 2, 256, 256])
     if args.quant_mode == "float":
         quant_model = model
         if args.inspect:
-            if not args.starget:
+            if not args.target:
                 raise ValueError("Target must be specified for Inspector.")
             from pytorch_nndct.apis import Inspector
 
@@ -155,7 +229,7 @@ if __name__ == "__main__":
         quantizer = torch_quantizer(
             args.quant_mode,
             model,
-            (input),
+            (input,),
             device=device,
             quant_config_file=args.config_file,
             target=args.target,
@@ -163,20 +237,24 @@ if __name__ == "__main__":
         quant_model = quantizer.quant_model
 
     # Get loss after evaluation @TODO: Write MerlinRDLoss functional
-    loss_fn = MerlinRDLoss(metric="mse", lmbda=0.01).to(device)
+    loss_params = args.hydra_conf.model.criterion
+    loss_params.pop("_target_")
+    loss_fn = MerlinRDLoss(**loss_params).to(device)
 
     # ----- Load data -----
-    val_loader = load_data(data_dir)
+    val_loader = load_data()
 
     # fast finetune model or load finetuned parameter before test
-    if args.finetune:
-        ft_loader, _ = load_data(data_dir)
+    if args.fast_finetune:
+        ft_loader = load_data()
         if args.quant_mode == "calib":
             quantizer.fast_finetune(evaluate, (quant_model, ft_loader, loss_fn))
         elif args.quant_mode == "test":
             quantizer.load_ft_param()
 
     # @TODO: keep here scores of float model to print and compare
+    # Float model: Loss after evaluation: 5545.23803125
+    # Quantized model: Loss after evaluation: 5776.80296875
     loss_gen = evaluate(quant_model, val_loader, loss_fn)
     print(f"Loss after evaluation: {loss_gen}")
 
@@ -184,6 +262,7 @@ if __name__ == "__main__":
     if args.quant_mode == "calib":
         quantizer.export_quant_config()
     if args.deploy:
+        # I should set output_dir to script location + quantize_results/
         quantizer.export_torch_script()
-        quantizer.export_onnx_model()
-        quantizer.export_xmodel(deploy_check=False)
+        # quantizer.export_onnx_model() # Get an ERROR: Exporting the operator 'aten::erfc' to ONNX opset version 17 is not supported. Please feel free to request support or submit a pull request on PyTorch GitHub: https://github.com/pytorch/pytorch/issues
+        quantizer.export_xmodel(deploy_check=True)
