@@ -276,6 +276,7 @@ def run_inference(xmodel_path: str, dataset_path: str, subset_len: int):
             batch_data = np.pad(batch_data, ((0, pad_size), (0, 0), (0, 0), (0, 0)))
 
         # Preprocess input (norm + quant) and store to DPU input buffer
+        print(f"{batch_data.shape=}, {input_data[0].shape=}, {input_scale=}")
         input_data[0][:] = preprocess_input(batch_data, input_scale)
 
         # Execute on DPU (synchronous)

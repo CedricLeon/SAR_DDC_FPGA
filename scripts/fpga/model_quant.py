@@ -32,7 +32,7 @@ from pathlib import Path
 
 import torch
 from omegaconf import DictConfig, OmegaConf
-from pytorch_nndct.apis import torch_quantizer
+from pytorch_nndct.apis import torch_quantizer  # type: ignore
 from tqdm import tqdm
 
 project_root = Path(__file__).resolve().parent.parent.parent
@@ -41,6 +41,9 @@ sys.path.append(str(project_root))
 from src.data.components.sar_dataset import TSXSSCDataset  # noqa: E402
 from src.models.components.res_scale_hyperprior import (  # noqa: E402
     ResidualScaleHyperprior,
+)
+from src.models.components.res_scale_hyperprior_dpu import (  # noqa: E402
+    ResidualScaleHyperpriorPatched,
 )
 from src.models.components.sar_simple_autoencoder import ResidualSimpleAE  # noqa: E402
 from src.utils.metrics import MerlinRDLoss  # noqa: E402
@@ -118,17 +121,17 @@ def evaluate(
     model: torch.nn.Module, val_loader: torch.utils.data.DataLoader, loss_fn: torch.nn.Module
 ) -> float:
     """Evaluate the model on validation dataset."""
-    print(val_loader)
     # @TODO: figure out what I want to evaluate
-    model.eval()
     model = model.to(device)
     nb_images = 0
     loss_total = 0
     for i, data_dict in tqdm(enumerate(val_loader), total=len(val_loader)):
-        real = data_dict["real"].to(device)
-        imag = data_dict["imag"].to(device)
+        real = data_dict["real"].to(device).float()
+        imag = data_dict["imag"].to(device).float()
         input = torch.cat([real, imag], dim=1)
         output = model(input)
+        if i == 0:
+            print(f"{input.shape=}, {output['x_hat'].shape=}")
         loss = loss_fn(output, input)
         loss_total += loss["distortion"].item()
         nb_images += real.size(0)
@@ -142,6 +145,7 @@ def try_match_run_dir_with_existing_runs() -> Path:
         "ResSHyp-relu_42_merlinʎ100_lr5e-05_b12": "hyperprior/multiruns/2025-11-18_09-45-37/6",
         "ResAE-relu_42_merlinʎ100_lr5e-05_b12": "simple_ae/multiruns/2025-11-16_19-34-55/3/",
         "ResAE-relu_42_merlinʎ100_lr5e-05_b12_no-out-pad": "simple_ae/runs/2025-11-19_15-22-34",
+        "ResSHyp_export_dpu_test": "hyperprior_dpu/runs/2025-12-01_13-36-00",
     }
     run_path = existing_runs.get(args.run_dir, None)
     if run_path is None:
@@ -191,25 +195,33 @@ if __name__ == "__main__":
     model_name = args.hydra_conf.model.net._target_.split(".")[-1]
     model_params = args.hydra_conf.model.net
     model_params.pop("_target_")
-    print(f"Model {model_name} with parameters: {model_params}.")
 
-    if model_name == "ResidualScaleHyperprior":
+    # For DPU export / inspection, always use the patched model with export_dpu=True.
+    # We still load weights from the training-time ResidualScaleHyperprior checkpoint.
+    if model_name in ("ResidualScaleHyperprior"):
         model = ResidualScaleHyperprior(**model_params).cpu()
+    elif model_name in ("ResidualScaleHyperpriorPatched"):
+        model_params["export_dpu"] = True
+        print(f"Using ResidualScaleHyperpriorPatched for DPU with params: {model_params}.")
+        model = ResidualScaleHyperpriorPatched(**model_params).cpu()
     elif model_name == "ResidualSimpleAE":
+        # Simple AE has no entropy modules; nothing special needed
+        print(f"Using ResidualSimpleAE with params: {model_params}.")
         model = ResidualSimpleAE(**model_params).cpu()
     else:
         raise ValueError(f"Model {model_name} not recognized for DPU compilation!")
 
-    checkpoint = torch.load(model_path)  # , map_location="cpu")
+    checkpoint = torch.load(model_path)
+    ckpt_type = "regular PyTorch"
     if "state_dict" in checkpoint:
         # Lightning prefixes parameters with "model." or similar, need to remove that
         state_dict = checkpoint["state_dict"]
         state_dict = {k.replace("net.", "", 1): v for k, v in state_dict.items()}
-        message = model.load_state_dict(state_dict, strict=False)
-        print(f"     Loaded a Lightning checkpoint: {message}")
-    else:
-        message = model.load_state_dict(checkpoint, strict=False)
-        print(f"     Loaded a regular PyTorch checkpoint: {message}")
+        ckpt_type = "Lightning"
+    message = model.load_state_dict(checkpoint, strict=False)
+    print(f"     Loaded a {ckpt_type} checkpoint: {message}")
+
+    model.eval()
 
     # ----- inspect -----
     input = torch.randn([args.batch_size, 2, 256, 256])
@@ -218,7 +230,7 @@ if __name__ == "__main__":
         if args.inspect:
             if not args.target:
                 raise ValueError("Target must be specified for Inspector.")
-            from pytorch_nndct.apis import Inspector
+            from pytorch_nndct.apis import Inspector  # type: ignore
 
             inspector = Inspector(args.target)
             inspector.inspect(model, (input,), device=device)
@@ -243,6 +255,10 @@ if __name__ == "__main__":
 
     # ----- Load data -----
     val_loader = load_data()
+    # print the shape of the data
+    for data in val_loader:
+        print(f"Data batch shape: {data['real'].shape}, {data['imag'].shape}")
+        break
 
     # fast finetune model or load finetuned parameter before test
     if args.fast_finetune:
@@ -262,7 +278,9 @@ if __name__ == "__main__":
     if args.quant_mode == "calib":
         quantizer.export_quant_config()
     if args.deploy:
-        # I should set output_dir to script location + quantize_results/
+        # @TODO: I should set output_dir to script location + quantize_results/
         quantizer.export_torch_script()
         # quantizer.export_onnx_model() # Get an ERROR: Exporting the operator 'aten::erfc' to ONNX opset version 17 is not supported. Please feel free to request support or submit a pull request on PyTorch GitHub: https://github.com/pytorch/pytorch/issues
         quantizer.export_xmodel(deploy_check=True)
+
+        # @TODO: Print the size of the xmodel's input buffer

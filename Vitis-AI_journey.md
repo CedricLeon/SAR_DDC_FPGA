@@ -3,6 +3,42 @@
 I'll use this file as a journal, just to keep track of what I tried and when.
 Once I understand the toolchain and its processes better, I'll make a step-by-step instructions for deployment.
 
+## Updating the model to be Vitis-AI-friendly
+
+### Overwriting CompressAI custom `torch.autograd.Function`
+*Vitis-AI only supports a handful of operations. Obviously, custom backward operation are not supported, but they are also not needed during inference.*
+#### Redefining LowerBoundFunction
+*See [this issue](https://github.com/InterDigitalInc/CompressAI/issues/345) to better understand the role of the function in the first place.*
+The original error from Vitis-AI model Inspector is `[VAIQ_ERROR][QUANTIZER_TORCH_UNSUPPORTED_OPS]: Unsupported Ops: {'LowerBoundFunction'}.`. To avoid that, we implement a `LowerBoundFunctionPatched` that simply uses `torch.max()`.
+#### Re-writing all CompressAI componentsto use LowerBoundFunctionPatched
+Now we create `Patched` versions of `GDN`, `EntropyBottleneck`, and `GaussianConditional` to use `LowerBoundFunctionPatched`.
+During the process I copied some compressai code for all these components. However, I got some problems with "unexpected keys" when loading the checkpiont. That's because they renamed some parameters between 1.2.6 and 1.2.8. Therefore, I bumped compressai to 1.2.8.
+
+
+### Convolution settings (tackled before LPS ~ 23/06/2025)
+*Vitis-AI has a problem with `output_padding`, I detailed below how I solved that.*
+Because my patches will always be square I wrote the formulas for only 1 dimension, i.e., height=width. This also holds for the stride, kernel_size, padding, and output_padding.
+
+**Conv2D**, see [Pytorch doc](https://docs.pytorch.org/docs/stable/generated/torch.nn.Conv2d.html)
+$$
+H_{out} = \lfloor\frac{H_{in} + 2 * padding−dilation * (kernel\_size−1) - 1}{stride} + 1 \rfloor
+$$
+So: `nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2)` gives $H_{out} = \lfloor\frac{256 + 2 * 2 − 1 * (5 − 1) - 1}{2} + 1 \rfloor = \lfloor \frac{255}{2} + 1\rfloor = 128$
+
+Alternative: `nn.Conv2d(N, N, kernel_size=4, stride=2, padding=1)` gives $H_{out} = \lfloor\frac{256 + 2 * 1 − 1 * (4 − 1) - 1}{2} + 1 \rfloor = \lfloor \frac{254}{2} + 1\rfloor = 128$
+
+**ConvTranspose2D**, see the [Pytorch doc](https://docs.pytorch.org/docs/stable/generated/torch.nn.ConvTranspose2d.html)
+$$
+H_{out} = (H_{in} − 1) * stride − 2 * padding + dilation * (kernel\_size−1) + output\_padding + 1
+$$
+
+So: `nn.ConvTranspose2d(N, N, kernel_size=5, stride=2, padding=2, output_padding=1)` gives $H_{out} = (128 − 1) * 2 − 2 * 2 + 1 * (5 − 1) + 1 + 1 = 254 - 4 + 4 + 1 +1 = 256$
+
+Alternative: `nn.ConvTranspose2d(N, N, kernel_size=4, stride=2, padding=1, output_padding=0)` gives $H_{out} = (128 − 1) * 2 − 2 * 1 + 1 * (4 − 1) + 0 + 1 = 254 - 2 + 3 + 0 + 1 = 256$
+
+**Smaller kernels**: the first and last layer hyperprior have $kernel\_size = 3$ `nn.Conv2d(M, M, kernel_size=3, stride=2, padding=1)` gives $H_{out} = \lfloor\frac{16 + 2 * 1 − 1 * (3 − 1) - 1}{2} + 1 \rfloor = \lfloor \frac{15}{2} + 1\rfloor = 8$. And `nn.ConvTranspose2d(M, M, kernel_size=3, stride=2, padding=1, output_padding=0)` gives $H_{out} = (8 − 1) * 2 − 2 * 1 + 1 * (3 − 1) + 0 + 1 = 14 - 2 + 2 + 0 + 1 = 15$
+> I need to use the output_padding for this one.
+
 ## Running the model on the ZC102
 So I realized (a bit late) that, it's not enough to compile the model. In their tutorial, Vitis AI uses some additional scripts to run inference of the compiled model on specific task/images. Because these scripts are not suitable for my application I need to write my own.
 I found barely any documentation about the features these scripts should implement or functions from `xir` or `vart` they should call, so I will proceed brute-force: have an LLm (perplexity) hallucinate some procedure/script and iteratively debug that thing, just so I start from somewhere.
@@ -48,32 +84,6 @@ Because I don't want to create a VSCode server on the FPGA directly and I don't 
 ```bash
 [TARGET]root@xilinx-zcu102-20222:~/SAR_DDC# python3 scripts/inference.py --xmodel model/ResAE_pt.xmodel --data data/test_500.npy --subset 100
 ```
-
-
-## Updating the model to be Vitis-AI-friendly (~ 23/06/2025)
-*Vitis-AI has a problem with `output_padding`, I detailed below how I **tried** to solve that.*
-### Convolution settings
-Because my patches will always be square I wrote the formulas for only 1 dimension, i.e., height=width. This also holds for the stride, kernel_size, padding, and output_padding.
-
-**Conv2D**, see [Pytorch doc](https://docs.pytorch.org/docs/stable/generated/torch.nn.Conv2d.html)
-$$
-H_{out} = \lfloor\frac{H_{in} + 2 * padding−dilation * (kernel\_size−1) - 1}{stride} + 1 \rfloor
-$$
-So: `nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2)` gives $H_{out} = \lfloor\frac{256 + 2 * 2 − 1 * (5 − 1) - 1}{2} + 1 \rfloor = \lfloor \frac{255}{2} + 1\rfloor = 128$
-
-Alternative: `nn.Conv2d(N, N, kernel_size=4, stride=2, padding=1)` gives $H_{out} = \lfloor\frac{256 + 2 * 1 − 1 * (4 − 1) - 1}{2} + 1 \rfloor = \lfloor \frac{254}{2} + 1\rfloor = 128$
-
-**ConvTranspose2D**, see the [Pytorch doc](https://docs.pytorch.org/docs/stable/generated/torch.nn.ConvTranspose2d.html)
-$$
-H_{out} = (H_{in} − 1) * stride − 2 * padding + dilation * (kernel\_size−1) + output\_padding + 1
-$$
-
-So: `nn.ConvTranspose2d(N, N, kernel_size=5, stride=2, padding=2, output_padding=1)` gives $H_{out} = (128 − 1) * 2 − 2 * 2 + 1 * (5 − 1) + 1 + 1 = 254 - 4 + 4 + 1 +1 = 256$
-
-Alternative: `nn.ConvTranspose2d(N, N, kernel_size=4, stride=2, padding=1, output_padding=0)` gives $H_{out} = (128 − 1) * 2 − 2 * 1 + 1 * (4 − 1) + 0 + 1 = 254 - 2 + 3 + 0 + 1 = 256$
-
-**Smaller kernels**: the first and last layer hyperprior have $kernel\_size = 3$ `nn.Conv2d(M, M, kernel_size=3, stride=2, padding=1)` gives $H_{out} = \lfloor\frac{16 + 2 * 1 − 1 * (3 − 1) - 1}{2} + 1 \rfloor = \lfloor \frac{15}{2} + 1\rfloor = 8$. And `nn.ConvTranspose2d(M, M, kernel_size=3, stride=2, padding=1, output_padding=0)` gives $H_{out} = (8 − 1) * 2 − 2 * 1 + 1 * (3 − 1) + 0 + 1 = 14 - 2 + 2 + 0 + 1 = 15$
-> I need to use the output_padding for this one.
 
 
 ## What I did for a first deployment (20/06/2025)
