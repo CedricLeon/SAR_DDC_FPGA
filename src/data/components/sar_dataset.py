@@ -65,9 +65,9 @@ class TSXSSCDataset(Dataset):
 
                 patch = patch[:, :, :2]
 
-            patch = torch.square(patch)
-            patch = torch.log(patch + 1e-2)
-            patch = (patch - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
+            # patch = torch.square(patch)
+            # patch = torch.log(patch + 1e-2)
+            # patch = (patch - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
             item["real"] = patch[:, :, 0].unsqueeze(0)
             item["imag"] = patch[:, :, 1].unsqueeze(0)
 

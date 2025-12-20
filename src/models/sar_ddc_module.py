@@ -51,23 +51,6 @@ class SARDDCModule(lightning.LightningModule):
         # Activate manual optimization, because we have two optimizers.
         self.automatic_optimization = False
 
-    # def on_fit_start(self):
-    #     """Called at the beginning of fit."""
-    #     # Set up wandb watch to monitor parameters and gradients
-    #     if isinstance(self.trainer.logger, WandbLogger):
-    #         print("----------------------The WandB logger should watch gradient")
-    #         self.trainer.logger.watch(
-    #             self.net,
-    #             log="all",  # Track both gradients and parameters
-    #             log_freq=100,  # Log every 100 batches
-    #             log_graph=False,  # Disable logging model graph
-    #         )
-
-    # def on_train_end(self):
-    #     # Remove the hooks added by watch() to the model
-    #     if isinstance(self.trainer.logger, WandbLogger):
-    #         wandb.unwatch(self.net)
-
     def _random_switch_Re_Im(self, batch: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         """Randomly switch between real and imaginary parts as input and target.
 
@@ -85,7 +68,8 @@ class SARDDCModule(lightning.LightningModule):
         return input_data, target_data
 
     def forward(self, x: Tensor):
-        """Forward pass through the network."""
+        """Normalize x and forward pass through the network."""
+        x = (torch.log(torch.square(x) + EPS) - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
         return self.net(x)
 
     def _log_metrics(
@@ -139,7 +123,7 @@ class SARDDCModule(lightning.LightningModule):
         # Forward pass
         input, target = self._random_switch_Re_Im(batch)
         output = self.forward(input)
-        criterion = self.criterion(output, target)
+        criterion = self.criterion(output, target)  # Noise2Noise: target is the other channel
 
         # Backward pass for the main loss
         self.manual_backward(criterion["loss"])
@@ -179,9 +163,7 @@ class SARDDCModule(lightning.LightningModule):
         # input, target = self._random_switch_Re_Im(batch)
         input = torch.cat((batch["real"], batch["imag"]), dim=1).contiguous()
         output = self.forward(input)
-        criterion = self.criterion(
-            output, target=input
-        )  # Noise2Noise: target is the other channel
+        criterion = self.criterion(output, target=input)
         aux_loss = self.net.aux_loss()
         self._log_metrics("valid", criterion, aux_loss.item())
 
@@ -210,39 +192,42 @@ class SARDDCModule(lightning.LightningModule):
 
         output = output["x_hat"]
 
-        # Convert to log-intensity like in evaluation
-        recon_lin = torch.exp(output * (amp_max - amp_min) + amp_min)
-        recon_lin = 0.5 * (recon_lin[:, :1, :, :] + recon_lin[:, 1:, :, :])
-        recon_logI = torch.log(recon_lin + EPS)  # [B,1,H,W]
+        # Convert to linear amplitude
+        recon_denorm = output * (amp_max - amp_min) + amp_min
+        recon_lin = torch.exp(recon_denorm)
+        clean_im_real = torch.square(recon_denorm[:, 0, :, :])
+        clean_im_imag = torch.square(recon_denorm[:, 1, :, :])
+        clean_im = torch.sqrt(0.5 * (clean_im_real + clean_im_imag))
 
         # Load GTs references
         adam_noc_ref = batch["adam_noc_ref"]
         merlin_ref = batch["merlin_ref"]
-        data_range = float((recon_logI.max() - recon_logI.min()).detach().cpu())
+        peak = float(torch.max(clean_im))
+        # data_range = float((recon_logI.max() - recon_logI.min()).detach().cpu())
 
         # MSE
-        all_metrics["test/mse_adam_noc"] = TMF.mean_squared_error(recon_logI, adam_noc_ref)
-        all_metrics["test/mse_merlin"] = TMF.mean_squared_error(recon_logI, merlin_ref)
+        all_metrics["test/mse_adam_noc"] = TMF.mean_squared_error(clean_im, adam_noc_ref)
+        all_metrics["test/mse_merlin"] = TMF.mean_squared_error(clean_im, merlin_ref)
         # PSNR
         all_metrics["test/psnr_adam_noc"] = F.peak_signal_noise_ratio(
-            recon_logI, adam_noc_ref, data_range=data_range
+            clean_im, adam_noc_ref, data_range=peak
         )
         all_metrics["test/psnr_merlin"] = F.peak_signal_noise_ratio(
-            recon_logI, merlin_ref, data_range=data_range
+            clean_im, merlin_ref, data_range=peak
         )
         # SSIM
         all_metrics["test/ssim_adam_noc"] = F.structural_similarity_index_measure(
-            recon_logI, adam_noc_ref, data_range=data_range
+            clean_im, adam_noc_ref, data_range=peak
         )
         all_metrics["test/ssim_merlin"] = F.structural_similarity_index_measure(
-            recon_logI, merlin_ref, data_range=data_range
+            clean_im, merlin_ref, data_range=peak
         )
         # MS-SSIM
         all_metrics["test/ms_ssim_adam_noc"] = F.multiscale_structural_similarity_index_measure(
-            recon_logI, adam_noc_ref, data_range=data_range
+            clean_im, adam_noc_ref, data_range=peak
         )
         all_metrics["test/ms_ssim_merlin"] = F.multiscale_structural_similarity_index_measure(
-            recon_logI, merlin_ref, data_range=data_range
+            clean_im, merlin_ref, data_range=peak
         )
 
         # Log extra metrics

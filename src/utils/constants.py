@@ -1,10 +1,14 @@
+# EPSILON used in log computations to avoid log(0)
+EPS = 1e-2
+
 # ----- Normalization constants computed on whole datasets -----
-# Amplitude: log(sqrt(intensity) + 1e-2)
-amp_min = -4.605170249938965
-amp_max = 10.742239952087402
 # MERLIN constants: global maximum and minimum values obtained empirically and used for the training of MERLIN (see https://github.com/hi-paris/deepdespeckling)
 m = -1.429329123112601
 M = 10.089038980848645
+
+# Amplitude: log(sqrt(intensity) + 1e-2)
+amp_min = 4.605170249938965
+amp_max = 10.742239952087402
 
 # ################ /!\ DEPRECATED /!\ ################
 # # ----- Intensity: log(a^2 + b^2 + epsilon)-----

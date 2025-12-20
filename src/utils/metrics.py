@@ -12,6 +12,7 @@ from torchmetrics.image import (
 )
 
 from src.utils.constants import amp_max, amp_min
+from src.utils.debug import print_statistics
 
 
 def estimate_bpp(
@@ -42,7 +43,7 @@ class MerlinRDLoss(nn.Module):
             raise NotImplementedError(f"{metric} is not supported!")
         self.metric = metric
 
-        self.lmbda = lmbda
+        self.lmbda = lmbda if lmbda >= 0 else None  # deactivate rate if lmbda < 0
 
         self.mse = MeanSquaredError()  # nn.MSELoss(reduction="sum")
         self.psnr = PeakSignalNoiseRatio(data_range=(2 * amp_min, 2 * amp_max))
@@ -56,32 +57,39 @@ class MerlinRDLoss(nn.Module):
         # Rate term (estimated bpp)
         out["bpp"] = estimate_bpp(output)
 
-        # Denorm the reconstructions and target before computing losses
-        r_denorm = output["x_hat"] * (2 * amp_max - 2 * amp_min) + 2 * amp_min
-        b_denorm = target * (2 * amp_max - 2 * amp_min) + 2 * amp_min
+        print_statistics("[DEBUG]: Output x_hat", output["x_hat"])
+        print_statistics("[DEBUG]: Target", target)
 
-        out["mse"] = self.mse(r_denorm, b_denorm)
-        out["psnr"] = self.psnr(r_denorm, b_denorm)
-        out["ssim"] = self.ssim(r_denorm, b_denorm)
-        out["ms_ssim"] = self.ms_ssim(r_denorm, b_denorm)
+        # Denorm the reconstructions before computing losses
+        log_hat_R = 2 * (output["x_hat"] * (amp_max - amp_min) + amp_min)
+        hat_R = torch.exp(log_hat_R) + 1e-6  # must be non-zero
+        print_statistics("[DEBUG]: Predicted Reflectivity hat_R", hat_R)
+        b_square = torch.square(target)
 
         # ----- MERLIN Loss -----
-        # # Classic:      (0.5 * log(r) + b^2 / r)
-        # r_denorm = torch.exp(r_denorm)
-        # b_denorm = torch.exp(b_denorm)
-        # merlin_loss = 0.5 * torch.log(r_denorm + 1e-2) + torch.square(b_denorm) / (
-        #     r_denorm + 1e-6
-        # )
-        # In Log-Scale: (0.5 * r + exp(2*b - r))
-        merlin_loss = 0.5 * r_denorm + torch.exp(2 * b_denorm - r_denorm)
+        # Classic:      (0.5 * log(r) + b^2 / r)
+        merlin_loss = 0.5 * log_hat_R + b_square / hat_R
         out["merlin"] = torch.mean(merlin_loss)
+        # In Log-Scale: (0.5 * r + exp(2*b - r))
+
+        out["mse"] = self.mse(hat_R, target)
+        out["psnr"] = self.psnr(hat_R, target)
+        out["ssim"] = self.ssim(hat_R, target)
+        out["ms_ssim"] = self.ms_ssim(hat_R, target)
+
+        print(
+            f"[DEBUG]: {out['merlin']=}, {out['mse']=}, {out['psnr']=}, {out['ssim']=}, {out['ms_ssim']=}"
+        )
 
         if self.metric == "merlin" or self.metric == "mse":
             out["distortion"] = out[self.metric]
         elif self.metric == "ssim" or self.metric == "ms_ssim":
             out["distortion"] = 1 - out[self.metric]
 
-        out["loss"] = self.lmbda * out["distortion"] + out["bpp"]
+        if self.lmbda is None:
+            out["loss"] = out["distortion"]
+        else:
+            out["loss"] = self.lmbda * out["distortion"] + out["bpp"]
         return out
 
 
