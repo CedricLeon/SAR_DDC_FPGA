@@ -229,6 +229,13 @@ def run_inference(xmodel_path: str, dataset_path: str, subset_len: int):
     input_shape = tuple(input_tensor.dims)  # [B, H, W, C]
     output_shape = tuple(output_tensor.dims)  # [B, H, W, C]
 
+    for input_tensor in input_tensors:
+        print(f"Input tensor: {input_tensor.name=}, {input_tensor.dims=}, {input_tensor.dtype=}")
+    for output_tensor in output_tensors:
+        print(
+            f"Output tensor: {output_tensor.name=}, {output_tensor.dims=}, {output_tensor.dtype=}"
+        )
+
     # Get fixed-point scales for conversion @TODO check how that is computed
     input_fixpos = input_tensor.get_attr("fix_point")
     output_fixpos = output_tensor.get_attr("fix_point")
@@ -276,8 +283,11 @@ def run_inference(xmodel_path: str, dataset_path: str, subset_len: int):
             batch_data = np.pad(batch_data, ((0, pad_size), (0, 0), (0, 0), (0, 0)))
 
         # Preprocess input (norm + quant) and store to DPU input buffer
-        print(f"{batch_data.shape=}, {input_data[0].shape=}, {input_scale=}")
-        input_data[0][:] = preprocess_input(batch_data, input_scale)
+        print(f"input_data info: {len(input_data)=}, {input_data[0].shape=}, {input_scale=}")
+
+        input_data = preprocess_input(batch_data, input_scale)
+        print(f"{input_data.shape=}, {input_data[0].shape=}")
+        input_data[0][:] = input_data
 
         # Execute on DPU (synchronous)
         job_id = runner.execute_async(input_data, output_data)
