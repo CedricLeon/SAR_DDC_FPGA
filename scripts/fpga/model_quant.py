@@ -30,15 +30,17 @@ import sys
 import warnings
 from pathlib import Path
 
+import h5py
 import torch
 from omegaconf import DictConfig, OmegaConf
 from pytorch_nndct.apis import torch_quantizer  # type: ignore
+from torch.utils.data import Dataset
 from tqdm import tqdm
 
 project_root = Path(__file__).resolve().parent.parent.parent
 os.environ["PROJECT_ROOT"] = str(project_root)
 sys.path.append(str(project_root))
-from src.data.components.sar_dataset import TSXSSCDataset  # noqa: E402
+# from src.data.components.sar_dataset import TSXSSCDataset  # noqa: E402
 from src.models.components.res_scale_hyperprior import (  # noqa: E402
     ResidualScaleHyperprior,
 )
@@ -46,6 +48,7 @@ from src.models.components.res_scale_hyperprior_dpu import (  # noqa: E402
     ResidualScaleHyperpriorPatched,
 )
 from src.models.components.sar_simple_autoencoder import ResidualSimpleAE  # noqa: E402
+from src.utils.constants import amp_max, amp_min  # noqa: E402
 from src.utils.metrics import MerlinRDLoss  # noqa: E402
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -101,11 +104,46 @@ parser.add_argument("--target", dest="target", nargs="?", const="", help="specif
 args, _ = parser.parse_known_args()
 
 
+class CustomDataset(Dataset):
+    def __init__(
+        self,
+        hdf5_path: Path,
+    ):
+        """Custom Dataset for loading patches from HDF5 file.
+
+        Avoids problematic imports in TSXSSCDataset.
+        """
+        super().__init__()
+        self.hdf5_path = hdf5_path
+
+        if not self.hdf5_path.exists():
+            raise FileNotFoundError(f"HDF5 file not found: {self.hdf5_path}")
+
+        with h5py.File(self.hdf5_path, "r") as f:
+            self.num_patches = f["patches"].shape[0]
+            self.attrs = dict(f.attrs)
+
+    def __len__(self):
+        """Return the number of patches in the dataset."""
+        return self.num_patches
+
+    def __getitem__(self, idx):
+        """Get a patch by index."""
+        with h5py.File(self.hdf5_path, "r") as f:
+            patch = torch.from_numpy(f["patches"][idx]).float()
+
+            patch = torch.square(patch)
+            patch = torch.log(patch + 1e-2)
+            patch = (patch - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
+
+            return patch.permute(2, 0, 1)
+
+
 def load_data(
     **kwargs,
 ) -> torch.utils.data.DataLoader:
     """Load validation data loader."""
-    dataset = TSXSSCDataset(args.data_dir / "val.h5", with_refs=False)
+    dataset = CustomDataset(args.data_dir / "val.h5")
     if args.subset_len:  # random sampling method
         assert args.subset_len <= len(dataset)
         dataset = torch.utils.data.Subset(
@@ -125,16 +163,14 @@ def evaluate(
     model = model.to(device)
     nb_images = 0
     loss_total = 0
-    for i, data_dict in tqdm(enumerate(val_loader), total=len(val_loader)):
-        real = data_dict["real"].to(device).float()
-        imag = data_dict["imag"].to(device).float()
-        input = torch.cat([real, imag], dim=1)
+    for i, data in tqdm(enumerate(val_loader), total=len(val_loader)):
+        input = data.to(device).float()
         output = model(input)
         if i == 0:
             print(f"{input.shape=}, {output['x_hat'].shape=}")
         loss = loss_fn(output, input)
         loss_total += loss["distortion"].item()
-        nb_images += real.size(0)
+        nb_images += input.size(0)
     return loss_total / nb_images
 
 
@@ -224,7 +260,7 @@ if __name__ == "__main__":
     model.eval()
 
     # ----- inspect -----
-    input = torch.randn([args.batch_size, 2, 256, 256])
+    input_data = torch.randn([args.batch_size, 2, 256, 256])
     if args.quant_mode == "float":
         quant_model = model
         if args.inspect:
@@ -232,8 +268,19 @@ if __name__ == "__main__":
                 raise ValueError("Target must be specified for Inspector.")
             from pytorch_nndct.apis import Inspector  # type: ignore
 
+            # torch.onnx.export(
+            #     model,
+            #     (input_data,),
+            #     f"original_{model_name}_skeleton.onnx",
+            #     export_params=False,
+            #     opset_version=17,
+            #     do_constant_folding=True,
+            #     input_names=["input"],
+            #     output_names=["output"],
+            # )
+
             inspector = Inspector(args.target)
-            inspector.inspect(model, (input,), device=device)
+            inspector.inspect(model, (input_data,), device=device)
 
             sys.exit()
     else:
@@ -241,7 +288,7 @@ if __name__ == "__main__":
         quantizer = torch_quantizer(
             args.quant_mode,
             model,
-            (input,),
+            (input_data,),
             device=device,
             quant_config_file=args.config_file,
             target=args.target,
@@ -257,7 +304,7 @@ if __name__ == "__main__":
     val_loader = load_data()
     # print the shape of the data
     for data in val_loader:
-        print(f"Data batch shape: {data['real'].shape}, {data['imag'].shape}")
+        print(f"Data batch shape: {data.shape}")
         break
 
     # fast finetune model or load finetuned parameter before test
