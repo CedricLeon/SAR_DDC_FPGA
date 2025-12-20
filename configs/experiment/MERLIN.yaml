@@ -1,8 +1,5 @@
 # @package _global_
 
-# to execute this experiment run:
-# python src/train.py experiment=merlin
-
 defaults:
   - override /data: tsx_ssc.yaml
   - override /model: merlin.yaml
@@ -10,11 +7,6 @@ defaults:
   - override /logger: wandb.yaml
   - override /trainer: gpu.yaml
   - override /hydra: default.yaml
-
-data:
-  # hdf5_dir: ${paths.data_dir}processed_hdf5/TSX_preprocessed_spatial_splits_5_256x256
-  batch_size: 12 # MERLIN uses 12
-  num_workers: 11
 
 model:
   optimizer:
@@ -29,23 +21,17 @@ model:
 callbacks:
   compare_recon_to_gt:
     patch_dir: ${paths.data_dir}
-    split_large_patch: True
-    blend_method: "count"
-    stride: 256
 
 trainer:
   min_epochs: 1
   max_epochs: 30
   deterministic: True
   detect_anomaly: True
-  log_every_n_steps: 10
+  log_every_n_steps: 1
 
 logger:
   wandb:
-    project: "sar-ddc-test"
-    offline: False
-    # tags: ${tags}
-    # name: ${name}
+    project: "SAR_DDC_FPGA"
 
 # The task name determines the logs path, by convention use <task>/<dataset>/<model>
 task_name: train/sar_ddc/merlin

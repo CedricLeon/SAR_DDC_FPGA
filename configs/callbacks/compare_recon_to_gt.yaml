@@ -3,5 +3,5 @@ compare_recon_to_gt:
   patch_dir: null # Location of the patch, to be set after overwriting data.hdf5_dir (in experiment config)
   log_every_n_epochs: 5
   split_large_patch: False
-  blend_method: "linear"
+  blend_method: "count"
   stride: 256

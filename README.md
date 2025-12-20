@@ -12,6 +12,12 @@ Yes, that's a lot of acronyms. But now you know why it's called DDC_FPGA.
 This project implements the solution presented by Amao-Oliva et al. [1] available at [sciencedirect.com](https://www.sciencedirect.com/science/article/pii/S0924271624004866) on FPGA.
 
 ### TODOs
+- [ ] Delete create_test_set.py once implemented in preprocess_TSX_dataset.py
+- [ ] Ensure no part of the repo uses data from TSCSSCDataset as if it is normalized, it's not anymore.
+- [ ] Ensure all images comparisons are made in linear amplitude domain.
+- [ ] Ensure to use the same PSNR formula everywhere, either manually, or from `torchmetrics`
+- [ ] Ensure the loss function is correct
+- [ ] Once everything shown to be functional, delete the res_scale_hyperprior.py. Everything it does is implemented in the dpu version.
 *I'll use this section as a TODO list, including ideas for future projects.*
 - [ ] "NWML" warning, see [NVML is the NVIDIA Management Library and is used on NVIDIA GPUs](https://discuss.pytorch.org/t/cant-initialize-nvml-error-with-rvc-project/194206)
 - [ ] Next runs:

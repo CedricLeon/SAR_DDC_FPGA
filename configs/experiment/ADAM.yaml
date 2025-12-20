@@ -17,12 +17,13 @@ data:
   num_workers: 11
 
 model:
+  net:
+    no_output_padding: True
   criterion:
     metric: "merlin" # "mse" or "ssim" or "ms_ssim"
     lmbda: 100
   net_optimizer:
     lr: 5e-5
-  # Check if aux_optimizer.lr has good values
 
 callbacks:
   compare_recon_to_gt:
@@ -40,10 +41,8 @@ trainer:
 
 logger:
   wandb:
-    project: "SAR_DDC-RD-curve" # "SAR_DDC-RD-curve"
+    project: "SAR_DDC_FPGA" # "SAR_DDC-RD-curve"
     offline: False
-    # tags: ${tags}
-    # name: ${name}
 
 # The task name determines the logs path, by convention use <task>/<dataset>/<model>
 task_name: train/sar_ddc/hyperprior
