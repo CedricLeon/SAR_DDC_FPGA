@@ -27,6 +27,7 @@ from src.models.components.compressai_dpu import (
     GaussianConditionalPatched,
 )
 from src.models.components.layers import ResidualBlock, make_activation
+from src.utils.debug import log_tensor_shape
 
 # -------------------------------------------------------------------------
 # DPU-friendly ResidualScaleHyperprior
@@ -181,9 +182,14 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
     def scale_hyperprior(self, y: Tensor) -> tuple[Tensor, Tensor]:
         """Apply hyperprior to get scales and z-likelihoods."""
         z = torch.abs(y)
+        log_tensor_shape("scale_hyperprior.z_abs", z)
         z = self.h_a(z)
+        log_tensor_shape("scale_hyperprior.h_a(z)", z)
         z_hat, z_likelihoods = self.entropy_bottleneck(z)
+        log_tensor_shape("scale_hyperprior.z_hat", z_hat)
+        log_tensor_shape("scale_hyperprior.z_likelihoods", z_likelihoods)
         scales = self.h_s(z_hat)
+        log_tensor_shape("scale_hyperprior.scales", scales)
         return scales, z_likelihoods
 
     # ---------------- Forward ----------------
@@ -203,26 +209,32 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
             raise RuntimeError(
                 "ResidualScaleHyperpriorPatched with export_dpu=True must not be used in training mode."
             )
+        log_tensor_shape("forward.x", x)
 
         if self.training:
             assert x.shape[1] == 1, "Training: Input tensor must have 1 channel"
 
             # Analysis transform to get latent representation
             y = self.g_a(x)
+            log_tensor_shape("forward.train.y", y)
             # Concatenate y with itself along channel dimension
             y = torch.cat((y, y), dim=1)
 
             # Apply hyperprior to get scales
+            log_tensor_shape("forward.train.y_cat", y)
             scales, z_likelihoods = self.scale_hyperprior(y)
 
             # Apply entropy coding
             y_hat, y_likelihoods = self.gaussian_conditional(y, scales)
 
             # Split: discard second half of y_hat
+            log_tensor_shape("forward.train.y_hat_full", y_hat)
             y_hat = y_hat[:, : y_hat.shape[1] // 2, :, :]
 
             # Apply synthesis transform to reconstruct
+            log_tensor_shape("forward.train.y_hat_half", y_hat)
             x_hat = self.g_s(y_hat)
+            log_tensor_shape("forward.train.x_hat", x_hat)
         else:
             assert x.shape[1] == 2, "Inference: Input tensor must have 2 channels"
             x_real = x[:, :1, :, :]
@@ -231,23 +243,31 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
             # Analysis transform to get latent representation
             y_real = self.g_a(x_real)
             y_imag = self.g_a(x_imag)
+            log_tensor_shape("forward.eval.y_real", y_real)
+            log_tensor_shape("forward.eval.y_imag", y_imag)
             y = torch.cat((y_real, y_imag), dim=1)
 
             # Apply hyperprior to get scales
+            log_tensor_shape("forward.eval.y_cat", y)
             scales, z_likelihoods = self.scale_hyperprior(y)
 
             # Apply entropy coding
             y_hat, y_likelihoods = self.gaussian_conditional(y, scales)
 
             # Split real/imag paths
+            log_tensor_shape("forward.eval.y_hat", y_hat)
             y_hat_real = y_hat[:, : y_hat.shape[1] // 2, :, :]
             y_hat_imag = y_hat[:, y_hat.shape[1] // 2 :, :, :]
 
             # Apply synthesis transform to reconstruct
+            log_tensor_shape("forward.eval.y_hat_real", y_hat_real)
+            log_tensor_shape("forward.eval.y_hat_imag", y_hat_imag)
             x_hat_real = self.g_s(y_hat_real)
             x_hat_imag = self.g_s(y_hat_imag)
+            log_tensor_shape("forward.eval.x_hat_real", x_hat_real)
+            log_tensor_shape("forward.eval.x_hat_imag", x_hat_imag)
             x_hat = torch.cat((x_hat_real, x_hat_imag), dim=1)
-
+            log_tensor_shape("forward.eval.x_hat", x_hat)
         return {
             "x_hat": x_hat,
             "y_hat": y_hat,

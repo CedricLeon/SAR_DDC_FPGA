@@ -27,6 +27,8 @@ from compressai._CXX import pmf_to_quantized_cdf as _pmf_to_quantized_cdf
 from compressai.entropy_models.entropy_models import _EntropyCoder
 from torch import Tensor
 
+from src.utils.debug import log_tensor_shape
+
 
 # -------------------------------------------------------------------------
 # -------------- Original from compressai/ops/bound_ops.py ----------------
@@ -235,10 +237,12 @@ class EntropyModelPatched(nn.Module):
             return inputs
 
         outputs = inputs.clone()
+        log_tensor_shape("EntropyModelPatched.quantize.inputs", inputs)
         if means is not None:
             outputs -= means
 
         outputs = torch.round(outputs)
+        log_tensor_shape("EntropyModelPatched.quantize.outputs_rounded", outputs)
 
         if mode == "dequantize":
             if means is not None:
@@ -545,7 +549,7 @@ class EntropyBottleneckPatched(EntropyModelPatched):
         return likelihood, lower, upper
 
     def forward(self, x: Tensor, training: bool | None = None) -> tuple[Tensor, Tensor]:
-        """Comes directly from CompressAI."""
+        log_tensor_shape("EntropyBottleneckPatched.x", x)
         if training is None:
             training = self.training
 
@@ -589,6 +593,8 @@ class EntropyBottleneckPatched(EntropyModelPatched):
         likelihood = likelihood.reshape(shape)
         likelihood = likelihood.permute(*inv_perm).contiguous()
 
+        log_tensor_shape("EntropyBottleneckPatched.forward.outputs", outputs)
+        log_tensor_shape("EntropyBottleneckPatched.forward.likelihood", likelihood)
         return outputs, likelihood
 
     @staticmethod
@@ -792,10 +798,17 @@ class GaussianConditionalPatched(EntropyModelPatched):
         """Comes directly from CompressAI."""
         if training is None:
             training = self.training
+        log_tensor_shape("GaussianConditionalPatched.inputs", inputs)
+        log_tensor_shape("GaussianConditionalPatched.scales", scales)
+        if means is not None:
+            log_tensor_shape("GaussianConditionalPatched.means", means)
         outputs = self.quantize(inputs, "noise" if training else "dequantize", means)
+        log_tensor_shape("GaussianConditionalPatched.outputs", outputs)
         likelihood = self._likelihood(outputs, scales, means)
+        log_tensor_shape("GaussianConditionalPatched.likelihood", likelihood)
         if self.use_likelihood_bound:
             likelihood = self.likelihood_lower_bound(likelihood)
+        log_tensor_shape("GaussianConditionalPatched.likelihood_bound", likelihood)
         return outputs, likelihood
 
     def build_indexes(self, scales: Tensor) -> Tensor:
