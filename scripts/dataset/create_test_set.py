@@ -17,7 +17,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 # from src.utils.pylogger import RankedLogger
 from src.models.merlin_module import MerlinModule
 from src.models.sar_ddc_module import SARDDCModule
-from src.utils.constants import amp_max, amp_min
+from src.utils.constants import EPS, amp_max, amp_min
 from src.utils.processing_utils import extract_short_name_from_TSX_filepath
 from src.utils.sar_utils import (
     extract_patches,
@@ -62,8 +62,6 @@ args = parser.parse_args()
 
 ADAM_NOC_CKPT_PATH = Path("data/method_ground_truths/ADAM_NOC/checkpoints/last.ckpt")
 MERLIN_CKPT_PATH = Path("data/method_ground_truths/MERLIN/checkpoints/last.ckpt")
-
-EPS = 1e-2
 
 
 def setup_logging(output_dir: Path, dataset_name: str):
