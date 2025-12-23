@@ -16,18 +16,13 @@ from matplotlib.ticker import FuncFormatter
 from omegaconf import DictConfig, OmegaConf
 from ptflops import get_model_complexity_info  # type: ignore
 from torch import nn
-from torchmetrics import MeanSquaredError
-from torchmetrics.image import (
-    MultiScaleStructuralSimilarityIndexMeasure,
-    PeakSignalNoiseRatio,
-    StructuralSimilarityIndexMeasure,
-)
 from tqdm import tqdm
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.data.sar_datamodule import TSXSSCDataModule  # noqa: E402
 from src.utils.constants import amp_max, amp_min  # noqa: E402
+from src.utils.metrics import ms_ssim, mse, psnr, ssim  # noqa: E402
 from src.utils.processing_utils import process_large_patch  # noqa: E402
 from src.utils.pylogger import RankedLogger  # noqa: E402
 from src.utils.sar_utils import load_cosar, symmetrize  # noqa: E402
@@ -237,12 +232,10 @@ def _evaluate_on_test(
 
     model = model.to(device)
 
-    data_range = (0, 1)
-
-    mse = MeanSquaredError().to(device)
-    psnr = PeakSignalNoiseRatio(data_range=data_range).to(device)
-    ssim = StructuralSimilarityIndexMeasure(data_range=data_range).to(device)
-    ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=data_range).to(device)
+    mse_list = []
+    psnr_list = []
+    ssim_list = []
+    ms_ssim_list = []
 
     bpp_list = []
     if eval_cfg.short_test_set:
@@ -265,13 +258,26 @@ def _evaluate_on_test(
                 # Unsupported for now
                 recon_r = out_r
                 recon_i = out_i
-            recon = 0.5 * (recon_r + recon_i)
-            noisy = real + imag
 
-            mse.update(recon, noisy)
-            psnr.update(recon, noisy)
-            ssim.update(recon, noisy)
-            ms_ssim.update(recon, noisy)
+            # Convert to linear amplitude
+            # recon_r and recon_i are normalized log-intensity
+            recon_r_denorm = recon_r * (amp_max - amp_min) + amp_min
+            recon_i_denorm = recon_i * (amp_max - amp_min) + amp_min
+            recon_r_lin = torch.exp(recon_r_denorm)
+            recon_i_lin = torch.exp(recon_i_denorm)
+            clean_im_real = torch.square(recon_r_lin)
+            clean_im_imag = torch.square(recon_i_lin)
+            clean_im = torch.sqrt(0.5 * (clean_im_real + clean_im_imag))
+
+            # Noisy image (Amplitude)
+            noisy_im = torch.sqrt(torch.square(real) + torch.square(imag))
+
+            mse_list.append(mse(clean_im, noisy_im))
+            psnr_list.append(psnr(clean_im, noisy_im))
+
+            peak = float(torch.max(clean_im))
+            ssim_list.append(ssim(clean_im, noisy_im, data_range=peak))
+            ms_ssim_list.append(ms_ssim(clean_im, noisy_im, data_range=peak))
 
             if eval_cfg.short_test_set:
                 batch_nb += 1
@@ -290,10 +296,10 @@ def _evaluate_on_test(
         except Exception:
             return -1.0
 
-    mse_val = to_float(mse.compute())
-    psnr_val = to_float(psnr.compute())
-    ssim_val = to_float(ssim.compute())
-    ms_ssim_val = to_float(ms_ssim.compute())
+    mse_val = float(np.mean(mse_list)) if mse_list else -1.0
+    psnr_val = float(np.mean(psnr_list)) if psnr_list else -1.0
+    ssim_val = float(np.mean(ssim_list)) if ssim_list else -1.0
+    ms_ssim_val = float(np.mean(ms_ssim_list)) if ms_ssim_list else -1.0
     results = {
         "mse": mse_val,
         "psnr": psnr_val,

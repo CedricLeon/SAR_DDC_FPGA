@@ -5,6 +5,8 @@ import numpy as np
 import torch
 from lightning import Callback, LightningModule, Trainer
 
+from src.utils.constants import EPS, amp_max, amp_min
+
 
 class MonitorValReconstruction(Callback):
     def __init__(
@@ -51,6 +53,12 @@ class MonitorValReconstruction(Callback):
             criterion = pl_module.criterion(reconstructions, target=input)
             if self.with_compression:
                 reconstructions = reconstructions["x_hat"]
+        # Denormalize reconstructions
+        recon_denorm = reconstructions * (amp_max - amp_min) + amp_min
+        recon = torch.exp(recon_denorm)
+        recon_amp = torch.sqrt(
+            0.5 * (torch.square(recon[:, 0, :, :]) + torch.square(recon[:, 1, :, :]))
+        )  # [B, H, W]
 
         # Create the visualization
         fig, axes = plt.subplots(3, num_images_to_show, figsize=(4 * num_images_to_show, 12))
@@ -61,27 +69,29 @@ class MonitorValReconstruction(Callback):
             # Get individual images and convert to numpy
             real_i = batch["real"][i, 0].cpu().numpy()  # Remove channel dim
             imag_i = batch["imag"][i, 0].cpu().numpy()  # Remove channel dim
-            input_reflectivity_i = real_i + imag_i  # Sum for input reflectivity
-            reconstruction_i = reconstructions[i, 0].cpu().numpy()  # Remove channel dim
+            noisy_amp_i = np.sqrt(
+                np.square(real_i) + np.square(imag_i)
+            )  # Sum for input reflectivity
+            recon_amp_i = recon_amp[i].cpu().numpy()  # Remove channel dim
 
             # Row 0: Input reflectivity
-            im0 = axes[0, i].imshow(input_reflectivity_i, cmap="gray")
+            im0 = axes[0, i].imshow(noisy_amp_i, cmap="gray")
             axes[0, i].axis("off")
             fig.colorbar(im0, ax=axes[0, i], shrink=0.6)
             # Row 1: Reconstruction
-            im1 = axes[1, i].imshow(reconstruction_i, cmap="gray")
+            im1 = axes[1, i].imshow(recon_amp_i, cmap="gray")
             axes[1, i].axis("off")
             fig.colorbar(im1, ax=axes[1, i], shrink=0.6)
             # Row 2: Residuals (difference)
-            residuals = np.abs(input_reflectivity_i - reconstruction_i)
+            residuals = np.abs(noisy_amp_i - recon_amp_i)
             im2 = axes[2, i].imshow(residuals, cmap="gray")
             axes[2, i].axis("off")
             fig.colorbar(im2, ax=axes[2, i], shrink=0.6)
 
         # Add Row titles on the left side
         row_titles = [
-            "Input Reflectivity\n(Real + Imag)",
-            "Reconstruction",
+            "Noisy amplitude\n(sqrt(Real^2 + Imag^2))",
+            "Recon amplitude",
             "Residuals",
         ]
         for i, title in enumerate(row_titles):
@@ -107,7 +117,6 @@ class MonitorValReconstruction(Callback):
             if self.with_compression:
                 title += f", BPP: {criterion['bpp']:.4f}"
 
-            title += "\nMetrics computed between reconstructions (real) and target (imag)"
             fig.suptitle(title)
 
             plt.tight_layout()

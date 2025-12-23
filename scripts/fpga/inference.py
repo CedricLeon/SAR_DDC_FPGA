@@ -70,9 +70,8 @@ class MetricsTracker:
     def compute_psnr(a: np.ndarray, b: np.ndarray) -> float:
         """Compute Peak Signal-to-Noise Ratio (PSNR) between two images."""
         mse = MetricsTracker.compute_mse(a, b)
-        if mse == 0:
-            return float("inf")
-        return 10 * np.log10((DATA_RANGE**2) / mse)
+        peak = float(np.max(a))
+        return 20 * np.log10(peak) - 10 * np.log10(mse)
 
     @staticmethod
     def compute_ssim(a: np.ndarray, b: np.ndarray) -> float:
@@ -179,7 +178,7 @@ def preprocess_input(data: np.ndarray, input_scale: float) -> np.ndarray:
     """Data normalization and quantization (fixed-point INT8)."""
     # Normalization is normally applied in TSXSSCDataset.__getitem__. Because we don't use it here, we must do it manually.
     data = np.square(data)
-    data = np.log(data + 1e-2)
+    data = np.log(data + EPS)
     data = (data - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
 
     # The DPU processes INT8 data. We can either quantize it ourselves or let Vitis AI handle it.
@@ -188,14 +187,15 @@ def preprocess_input(data: np.ndarray, input_scale: float) -> np.ndarray:
 
 def postprocess_output(output_data_int: np.ndarray, output_scale: float) -> np.ndarray:
     """Convert DPU fixed-point output back to float, denormalize the reconstruction, and convert in
-    Log-intensity scale."""
+    Linear amplitude image."""
     output_data_float = output_data_int.astype(np.float32) * output_scale
 
     # Convert to log-intensity like in evaluation
-    recon_lin = np.exp(output_data_float * (AMP_MAX - AMP_MIN) + AMP_MIN)
+    recon_denorm = output_data_float * (AMP_MAX - AMP_MIN) + AMP_MIN
+    recon_lin = np.exp(recon_denorm)
     recon_lin = 0.5 * (recon_lin[..., 0:1] + recon_lin[..., 1:2])
-    recon_logI = np.log(recon_lin + EPS)
-    return recon_logI
+    recon_amp = np.sqrt(recon_lin + EPS)
+    return recon_amp
 
 
 def get_child_subgraph_dpu(graph: xir.Graph) -> list[xir.Subgraph]:
@@ -298,16 +298,15 @@ def run_inference(xmodel_path: str, dataset_path: str, subset_len: int):
         # Bring back to float and denormalize
         batch_output = postprocess_output(batch_output_int, output_scale)  # [valid_len, H, W, 1]
 
-        # Build references in log-intensity
-        # original: compute log-intensity from real/imag in channel-last form
+        # Build references in linear amplitude
+        # original: compute linear amplitude from real/imag in channel-last form
         # batch_data (with padding) is [batch_size, H, W, 2]; we need only valid part
         batch_data_valid = batch_data[:valid_len]  # [valid_len, H, W, 2]
-        orig_log = np.log(
-            0.5 * (np.square(batch_data_valid[..., 0:1]) + np.square(batch_data_valid[..., 1:2]))
-            + EPS
+        orig_amp = np.sqrt(
+            np.square(batch_data_valid[..., 0:1]) + np.square(batch_data_valid[..., 1:2])
         )  # [valid_len, H, W, 1]
 
-        # ADAM-NOC and MERLIN already log-intensity [B, H, W]; expand channel dim to match [B, H, W, 1]
+        # ADAM-NOC and MERLIN already linear amplitude [B, H, W]; expand channel dim to match [B, H, W, 1]
         adam_slice = ref_data["adam_noc"][i:batch_end][:valid_len]  # [valid_len, H, W, 1]
         merlin_slice = ref_data["merlin"][i:batch_end][:valid_len]  # [valid_len, H, W, 1]
 
@@ -318,7 +317,7 @@ def run_inference(xmodel_path: str, dataset_path: str, subset_len: int):
         batch_metrics_orig = tracker_orig.update(
             x_hat_norm=batch_output,
             likelihoods=likelihoods,
-            target_log=orig_log,
+            target_log=orig_amp,
         )
         batch_metrics_adam = tracker_adam.update(
             x_hat_norm=batch_output,

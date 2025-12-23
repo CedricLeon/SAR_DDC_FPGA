@@ -51,7 +51,7 @@ class TSXSSCDataModule(LightningDataModule):
         # Set file paths as Path objects
         self.train_path = self.hdf5_root_dir / "train.h5"
         self.val_path = self.hdf5_root_dir / "val.h5"
-        self.test_path = (
+        self.test_path = (  # @TODO update to normal path
             self.hdf5_root_dir.parent / "test_with_GT" / self.hdf5_root_dir.name / "test.h5"
         )
 
@@ -108,7 +108,7 @@ class TSXSSCDataModule(LightningDataModule):
             self.data_train = TSXSSCDataset(self.train_path)
 
             # Create validation dataset
-            self.data_val = TSXSSCDataset(self.val_path)
+            self.data_val = TSXSSCDataset(self.val_path)  # with_refs=True
 
         if stage == "test" or stage is None:
             # Create test dataset

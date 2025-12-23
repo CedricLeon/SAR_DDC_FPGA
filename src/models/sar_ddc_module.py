@@ -6,9 +6,8 @@ import torchmetrics.functional as TMF
 import torchmetrics.functional.image as F
 from torch import Tensor
 
-from src.utils.constants import amp_max, amp_min
-
-EPS = 1e-2
+from src.utils.constants import EPS, amp_max, amp_min
+from src.utils.metrics import mse, psnr
 
 
 class SARDDCModule(lightning.LightningModule):
@@ -79,16 +78,8 @@ class SARDDCModule(lightning.LightningModule):
         aux_loss: float,
     ) -> None:
         """Log training, validation, or test metrics."""
-        log_info = {
-            f"{prefix}/loss": criterion["loss"].item(),
-            f"{prefix}/bpp": criterion["bpp"].item(),
-            f"{prefix}/mse": criterion["mse"].item(),
-            f"{prefix}/ssim": criterion["ssim"].item(),
-            f"{prefix}/ms_ssim": criterion["ms_ssim"].item(),
-            f"{prefix}/merlin": criterion["merlin"].item(),
-            f"{prefix}/psnr": criterion["psnr"].item(),
-            f"{prefix}/aux": aux_loss,
-        }
+        log_info = {f"{prefix}/{key}": value for key, value in criterion.items()}
+        log_info[f"{prefix}/aux"] = aux_loss
 
         # Configure per prefix (e.g. train/valid/test) logging **kwargs.
         on_step, on_epoch, prog_bar, sync_dist = None, None, False, True
@@ -180,40 +171,30 @@ class SARDDCModule(lightning.LightningModule):
 
         # Compute normal losses with Noise2Noise approach
         criterion = self.criterion(output, target=input)
-        all_metrics = {
-            "test/bpp": criterion["bpp"].item(),
-            "test/loss": criterion["loss"].item(),
-            "test/aux": self.net.aux_loss(),
-            "test/mse": criterion["mse"].item(),
-            "test/ssim": criterion["ssim"].item(),
-            "test/ms_ssim": criterion["ms_ssim"].item(),
-            "test/psnr": criterion["psnr"].item(),
-        }
-
-        output = output["x_hat"]
+        all_metrics = {f"test/{key}": value for key, value in criterion.items()}
+        all_metrics["test/aux"] = self.net.aux_loss().item()
 
         # Convert to linear amplitude
-        recon_denorm = output * (amp_max - amp_min) + amp_min
+        recon_denorm = output["x_hat"] * (amp_max - amp_min) + amp_min
         recon_lin = torch.exp(recon_denorm)
-        clean_im_real = torch.square(recon_denorm[:, 0, :, :])
-        clean_im_imag = torch.square(recon_denorm[:, 1, :, :])
-        clean_im = torch.sqrt(0.5 * (clean_im_real + clean_im_imag))
+        clean_im_real = torch.square(recon_lin[:, 0, :, :])
+        clean_im_imag = torch.square(recon_lin[:, 1, :, :])
+        clean_im = torch.sqrt(0.5 * (clean_im_real + clean_im_imag)).unsqueeze(1)
 
         # Load GTs references
         adam_noc_ref = batch["adam_noc_ref"]
         merlin_ref = batch["merlin_ref"]
         peak = float(torch.max(clean_im))
-        # data_range = float((recon_logI.max() - recon_logI.min()).detach().cpu())
 
         # MSE
-        all_metrics["test/mse_adam_noc"] = TMF.mean_squared_error(clean_im, adam_noc_ref)
-        all_metrics["test/mse_merlin"] = TMF.mean_squared_error(clean_im, merlin_ref)
+        all_metrics["test/mse_adam_noc"] = mse(clean_im, adam_noc_ref)
+        all_metrics["test/mse_merlin"] = mse(clean_im, merlin_ref)
         # PSNR
-        all_metrics["test/psnr_adam_noc"] = F.peak_signal_noise_ratio(
-            clean_im, adam_noc_ref, data_range=peak
+        all_metrics["test/psnr_adam_noc"] = psnr(
+            clean_im, adam_noc_ref, mse_value=all_metrics["test/mse_adam_noc"]
         )
-        all_metrics["test/psnr_merlin"] = F.peak_signal_noise_ratio(
-            clean_im, merlin_ref, data_range=peak
+        all_metrics["test/psnr_merlin"] = psnr(
+            clean_im, merlin_ref, mse_value=all_metrics["test/mse_merlin"]
         )
         # SSIM
         all_metrics["test/ssim_adam_noc"] = F.structural_similarity_index_measure(

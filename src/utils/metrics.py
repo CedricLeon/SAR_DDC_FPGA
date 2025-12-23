@@ -1,18 +1,51 @@
 import math
-from typing import Dict, Literal, Union
+from typing import Dict, Literal, Optional, Union
 
 import torch
 from compressai.registry import register_criterion
 from torch import Tensor, nn
 from torchmetrics import MeanSquaredError
+from torchmetrics.functional.image import (
+    multiscale_structural_similarity_index_measure,
+    structural_similarity_index_measure,
+)
 from torchmetrics.image import (
     MultiScaleStructuralSimilarityIndexMeasure,
     PeakSignalNoiseRatio,
     StructuralSimilarityIndexMeasure,
 )
 
-from src.utils.constants import amp_max, amp_min
+from src.utils.constants import EPS, amp_max, amp_min
 from src.utils.debug import print_statistics
+
+
+def mse(predicted: Tensor, target: Tensor) -> float:
+    """Compute Mean Squared Error (MSE) loss between predicted and target tensors."""
+    return torch.mean((predicted - target) ** 2).item()
+
+
+def psnr(predicted: Tensor, target: Tensor, mse_value: Optional[float] = None) -> float:
+    """Compute Peak Signal-to-Noise Ratio (PSNR) between predicted and target tensors."""
+    mse_value = mse_value if mse_value is not None else mse(predicted, target)
+    peak = float(torch.max(predicted))
+    psnr_value = 20 * math.log10(peak) - 10 * math.log10(mse_value)
+    return psnr_value
+
+
+def ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = None) -> float:
+    """Compute Structural Similarity Index Measure (SSIM)."""
+    if data_range is None:
+        data_range = float(torch.max(predicted))
+    return structural_similarity_index_measure(predicted, target, data_range=data_range).item()
+
+
+def ms_ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = None) -> float:
+    """Compute Multi-Scale Structural Similarity Index Measure (MS-SSIM)."""
+    if data_range is None:
+        data_range = float(torch.max(predicted))
+    return multiscale_structural_similarity_index_measure(
+        predicted, target, data_range=data_range
+    ).item()
 
 
 def estimate_bpp(
@@ -57,29 +90,37 @@ class MerlinRDLoss(nn.Module):
         # Rate term (estimated bpp)
         out["bpp"] = estimate_bpp(output)
 
-        print_statistics("[DEBUG]: Output x_hat", output["x_hat"])
-        print_statistics("[DEBUG]: Target", target)
+        # print_statistics("[CLEAN]: Output x_hat", output["x_hat"])
+        # print_statistics("[NOISY]: Target", target)
 
         # Denorm the reconstructions before computing losses
         log_hat_R = 2 * (output["x_hat"] * (amp_max - amp_min) + amp_min)
+        # print_statistics("      Predicted Reflectivity log_hat_R", log_hat_R)
+        # ----- Classic MERLIN Loss (0.5 * log(r) + b^2 / r) -----
         hat_R = torch.exp(log_hat_R) + 1e-6  # must be non-zero
-        print_statistics("[DEBUG]: Predicted Reflectivity hat_R", hat_R)
+        # print_statistics("      Predicted Reflectivity hat_R", hat_R)
         b_square = torch.square(target)
-
-        # ----- MERLIN Loss -----
-        # Classic:      (0.5 * log(r) + b^2 / r)
+        # print_statistics("      b_square", b_square)
         merlin_loss = 0.5 * log_hat_R + b_square / hat_R
+        # ----- In Log-Scale MERLIN Loss (0.5 * log_r + exp(2*log_b - log_r)) -----
+        # log_b = torch.log(torch.square(target) + EPS)
+        # print_statistics("      Target (square + log )", log_b)
+        # merlin_loss = 0.5 * log_hat_R + torch.exp(2 * log_b - log_hat_R)
+
         out["merlin"] = torch.mean(merlin_loss)
-        # In Log-Scale: (0.5 * r + exp(2*b - r))
 
-        out["mse"] = self.mse(hat_R, target)
-        out["psnr"] = self.psnr(hat_R, target)
-        out["ssim"] = self.ssim(hat_R, target)
-        out["ms_ssim"] = self.ms_ssim(hat_R, target)
+        # These metrics are just used for monitoring purposes, I compute them iin log-scale
+        clean = log_hat_R
+        noisy = torch.log(b_square + EPS)
 
-        print(
-            f"[DEBUG]: {out['merlin']=}, {out['mse']=}, {out['psnr']=}, {out['ssim']=}, {out['ms_ssim']=}"
-        )
+        out["mse"] = self.mse(clean, noisy)
+        out["psnr"] = self.psnr(clean, noisy)
+        out["ssim"] = self.ssim(clean, noisy)
+        out["ms_ssim"] = self.ms_ssim(clean, noisy)
+
+        # print(
+        #     f"[DEBUG]: {out['merlin']=}, {out['mse']=}, {out['psnr']=}, {out['ssim']=}, {out['ms_ssim']=}"
+        # )
 
         if self.metric == "merlin" or self.metric == "mse":
             out["distortion"] = out[self.metric]
