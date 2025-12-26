@@ -1,6 +1,7 @@
 import math
 from typing import Dict, Literal, Optional, Union
 
+import numpy as np
 import torch
 from compressai.registry import register_criterion
 from torch import Tensor, nn
@@ -17,6 +18,36 @@ from torchmetrics.image import (
 
 from src.utils.constants import EPS, amp_max, amp_min
 from src.utils.debug import print_statistics
+
+
+def get_all_distortion_metrics(
+    predicted: Union[Tensor, np.ndarray],
+    target: Union[Tensor, np.ndarray],
+) -> Dict[str, float]:
+    if isinstance(predicted, np.ndarray):
+        predicted = torch.from_numpy(predicted)
+    if isinstance(target, np.ndarray):
+        target = torch.from_numpy(target)
+    mse_value = mse(predicted, target)
+    psnr_value = psnr(predicted, target, mse_value)
+
+    # Ensure tensors have shape [N, C, H, W]
+    if predicted.ndim == 2:
+        predicted = predicted.unsqueeze(0).unsqueeze(0)
+    elif predicted.ndim == 3:
+        predicted = predicted.unsqueeze(0)
+    if target.ndim == 2:
+        target = target.unsqueeze(0).unsqueeze(0)
+    elif target.ndim == 3:
+        target = target.unsqueeze(0)
+    ssim_value = ssim(predicted, target)
+    ms_ssim_value = ms_ssim(predicted, target)
+    return {
+        "mse": mse_value,
+        "psnr": psnr_value,
+        "ssim": ssim_value,
+        "ms_ssim": ms_ssim_value,
+    }
 
 
 def mse(predicted: Tensor, target: Tensor) -> float:

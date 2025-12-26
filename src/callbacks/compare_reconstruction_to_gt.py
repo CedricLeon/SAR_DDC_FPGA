@@ -9,8 +9,8 @@ from lightning import Callback, LightningModule, Trainer
 from matplotlib.ticker import FuncFormatter
 
 from src.utils.constants import EPS, amp_max, amp_min
-from src.utils.metrics import ms_ssim, mse, psnr, ssim
-from src.utils.processing_utils import process_large_patch
+from src.utils.metrics import get_all_distortion_metrics, ms_ssim, mse, psnr, ssim
+from src.utils.processing_utils import clip, process_large_patch
 from src.utils.sar_utils import symmetrize
 
 
@@ -26,8 +26,12 @@ class CompareReconstructionToGT(Callback):
         super().__init__()
         self.patch_dir = Path(patch_dir) / "visualization"
         self.log_every_n_epochs = log_every_n_epochs
-        self.clip_and_norm = True
+        # --- Details for clipping ---
+        self.clip_for_visualization = True  # Enable or disable clipping
+        self.mean_std_norm = False  # True: use mean/std, False use percentiles
         self.clip_factor = 3  # Clip to mean +/- self.clip_factor * std
+        self.clip_percentiles = (5, 95)  # Clip to these percentiles
+        # --- Processing large patch as small patches or not ---
         self.split_large_patch = split_large_patch
         self.blend_method = blend_method
         self.stride = stride
@@ -37,7 +41,7 @@ class CompareReconstructionToGT(Callback):
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
         """Find the large patch and convert it to a torch tensor."""
         print(
-            f"\n[CompareReconstructionToGT] Setting up Callback. {self.clip_and_norm=}, {self.clip_factor=}, {self.split_large_patch=} ({self.blend_method=}, {self.stride=})"
+            f"\n[CompareReconstructionToGT] Setting up Callback. {self.clip_for_visualization=}, {self.clip_factor=}, {self.split_large_patch=} ({self.blend_method=}, {self.stride=})"
         )
         print(
             f"    Called with {pl_module.__class__.__name__}: net = {pl_module.net.__class__.__name__}, criterion = {pl_module.criterion.__class__.__name__}."
@@ -82,12 +86,9 @@ class CompareReconstructionToGT(Callback):
         # Normalize
         patch = torch.square(patch_tensor)
         patch = torch.log(patch + EPS)
-        print(
-            f"        NOISY TENSOR LOG (shape={patch.shape}) statistics: min={patch.min():.4f}, max={patch.max():.4f}, mean={patch.mean():.4f}, std={patch.std():.4f}. Is NaN={torch.isnan(patch).any()}."
-        )
         patch = (patch - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
         print(
-            f"        NORMALIZED NOISY TENSOR LOG (shape={patch.shape}) statistics: min={patch.min():.4f}, max={patch.max():.4f}, mean={patch.mean():.4f}, std={patch.std():.4f}. Is NaN={torch.isnan(patch).any()}."
+            f"        NOISY LOG-I NORMALIZED (shape={patch.shape}) statistics: min={patch.min():.4f}, max={patch.max():.4f}, mean={patch.mean():.4f}, std={patch.std():.4f}. Is NaN={torch.isnan(patch).any()}."
         )
         # Add batch and channel dimensions
         self.tensor = patch.unsqueeze(0).permute(0, 3, 1, 2).contiguous()  # [1, 2, H, W]
@@ -108,6 +109,13 @@ class CompareReconstructionToGT(Callback):
             print(
                 f"        MERLIN LIN-AMPLITUDE  (shape={self.A_merlin.shape}) statistics: min={self.A_merlin.min():.4f}, max={self.A_merlin.max():.4f}, mean={self.A_merlin.mean():.4f}, std={self.A_merlin.std():.4f}. Is NaN={np.isnan(self.A_merlin).any()}."
             )
+
+            # Quick print metrics between noisy and MERLIN GT
+            metrics = get_all_distortion_metrics(self.A_noisy, self.A_merlin)
+            print("        Initial metrics between Noisy and MERLIN GT:", end="")
+            for key, value in metrics.items():
+                print(f" {key}={value:.4f}", end=",")
+            print()
             found_merlin = True
             break
 
@@ -123,15 +131,6 @@ class CompareReconstructionToGT(Callback):
                 "This may lead to incorrect logging."
             )
 
-    def _clip_and_minmax_normalize(self, img: np.ndarray) -> np.ndarray:
-        """Clip to mean +/- self.clip_factor * std and min-max normalize to [0, 1]."""
-        img = img.clip(
-            img.mean() - self.clip_factor * img.std(),
-            img.mean() + self.clip_factor * img.std(),
-        )
-        img = (img - img.min()) / (img.max() - img.min())
-        return img
-
     def on_validation_batch_end(
         self,
         trainer: Trainer,
@@ -145,6 +144,7 @@ class CompareReconstructionToGT(Callback):
         # Only log on specified epochs and for the first batch
         if (trainer.current_epoch % self.log_every_n_epochs != 0) or batch_idx > 0:
             return
+        print(f"\n[CompareReconstructionToGT] Epoch {trainer.current_epoch}.")
 
         # ----- Forward pass to get reconstruction and metrics -----
         with torch.no_grad():
@@ -157,13 +157,12 @@ class CompareReconstructionToGT(Callback):
                     blend_method=self.blend_method,
                 )
             else:
-                recon = pl_module(self.tensor)
+                recon = pl_module.forward(self.tensor)
                 criterion = pl_module.criterion(recon, self.tensor)
+                if self.with_compression:
+                    assert isinstance(recon, dict)
+                    recon = recon["x_hat"]
 
-            if self.with_compression:
-                assert isinstance(recon, dict)
-                # , "SAR_DDC should return dict when with_compression=True"
-                recon = recon["x_hat"]
             self.recon_as_output = 0.5 * (recon[:, :1, :, :] + recon[:, 1:, :, :])
             print(
                 f"    RECON: min={recon.min().item():.4f}, max={recon.max().item():.4f}, mean={recon.mean().item():.4f}, std={recon.std().item():.4f}. Is NaN={torch.isnan(recon).any().item()}."
@@ -188,7 +187,7 @@ class CompareReconstructionToGT(Callback):
         )
         A_recon = A_recon.squeeze().cpu().numpy()
 
-        fig_A, metrics = self._visualize_with_histograms(
+        fig_A, metrics_to_merlin = self._visualize_with_histograms(
             A_recon,
             criterion,
             trainer,
@@ -196,14 +195,21 @@ class CompareReconstructionToGT(Callback):
         )
 
         # Log to WandB if available
-        if pl_module.logger is not None and hasattr(pl_module.logger, "experiment"):
+        if (
+            pl_module.logger is not None
+            and hasattr(pl_module.logger, "experiment")
+            and self.A_merlin is not None
+        ):
+            dict_to_log = {
+                f"val_large_patch/{key}_to_MERLIN": value if key not in ["loss", "bpp"] else None
+                for key, value in get_all_distortion_metrics(A_recon, self.A_merlin).items()
+            }
             pl_module.logger.experiment.log(  # type: ignore[attr-defined]
                 {
                     "val_large_patch_comparison": fig_A,
-                    "val_large_patch/loss": metrics["loss"],
-                    "val_large_patch/bpp": metrics["bpp"],
-                    "val_large_patch/mse_to_MERLIN": metrics["mse"],
-                    "val_large_patch/psnr_to_MERLIN": metrics["psnr"],
+                    "val_large_patch/loss": metrics_to_merlin["loss"],
+                    "val_large_patch/bpp": metrics_to_merlin["bpp"],
+                    **dict_to_log,
                 }
             )
 
@@ -230,13 +236,15 @@ class CompareReconstructionToGT(Callback):
             raise ValueError(f"Unknown scale: {scale}")
 
         recon_as_output = self.recon_as_output.squeeze().cpu().numpy()
-        # If self.clip_and_norm is True, clip and min-max normalize all images for better visualization
-        if self.clip_and_norm:
-            noisy = self._clip_and_minmax_normalize(noisy)
-            recon = self._clip_and_minmax_normalize(recon)
-            recon_as_output = self._clip_and_minmax_normalize(recon_as_output)
+        # If self.clip_for_visualization is True, clip and min-max normalize all images for better visualization
+        if self.clip_for_visualization:
+            noisy = clip(noisy, self.mean_std_norm, self.clip_factor, self.clip_percentiles)
+            recon = clip(recon, self.mean_std_norm, self.clip_factor, self.clip_percentiles)
+            recon_as_output = clip(
+                recon_as_output, self.mean_std_norm, self.clip_factor, self.clip_percentiles
+            )
             if merlin is not None:
-                merlin = self._clip_and_minmax_normalize(merlin)
+                merlin = clip(merlin, self.mean_std_norm, self.clip_factor, self.clip_percentiles)
 
         fig, axes = plt.subplots(2, 4, figsize=(15, 10))
         # ----- Row 1: Images -----
@@ -339,31 +347,23 @@ class CompareReconstructionToGT(Callback):
             axes[1, 3].axis("off")
 
         # ----- Add overall title with metrics -----\
-        metrics = {"mse": -1.0, "psnr": -1.0, "bpp": -1.0, "ssim": -1.0, "ms_ssim": -1.0}
-        metrics["loss"] = criterion["loss"].item()
+        metrics_to_merlin = {"mse": -1.0, "psnr": -1.0, "bpp": -1.0, "ssim": -1.0, "ms_ssim": -1.0}
+        metrics_to_merlin["loss"] = criterion["loss"].item()
         # Compute MSE, PSNR between reconstructions and MERLIN GT
         if merlin is not None:
-            recon_torch = torch.from_numpy(recon)
-            merlin_torch = torch.from_numpy(merlin)
-            metrics["mse"] = mse(recon_torch, merlin_torch)
-            metrics["psnr"] = psnr(recon_torch, merlin_torch, mse_value=metrics["mse"])
-            metrics["ssim"] = ssim(
-                recon_torch.unsqueeze(0).unsqueeze(0), merlin_torch.unsqueeze(0).unsqueeze(0)
-            )
-            metrics["ms_ssim"] = ms_ssim(
-                recon_torch.unsqueeze(0).unsqueeze(0), merlin_torch.unsqueeze(0).unsqueeze(0)
-            )
+            for key, value in get_all_distortion_metrics(recon, merlin).items():
+                metrics_to_merlin[key] = value
 
         if self.with_compression:
-            metrics["bpp"] = criterion["bpp"].item()
+            metrics_to_merlin["bpp"] = criterion["bpp"].item()
 
         fig.suptitle(
-            f"Val Large patch ({'clipped and normalized' if self.clip_and_norm else 'raw'}), epoch {trainer.current_epoch}: "
-            f"Loss={metrics['loss']:.3f}, BPP={metrics['bpp']:.4f}."
-            f"\n Metrics to MERLIN GT: MSE={metrics['mse']:.4f}, PSNR={metrics['psnr']:.2f}dB, SSIM={metrics['ssim']:.4f}, MS-SSIM={metrics['ms_ssim']:.4f}",
+            f"Val Large patch ({'clipped and normalized' if self.clip_for_visualization else 'raw'}), epoch {trainer.current_epoch}: "
+            f"Loss={metrics_to_merlin['loss']:.3f}, BPP={metrics_to_merlin['bpp']:.4f}."
+            f"\n metrics_to_merlin to MERLIN GT: MSE={metrics_to_merlin['mse']:.4f}, PSNR={metrics_to_merlin['psnr']:.2f}dB, SSIM={metrics_to_merlin['ssim']:.4f}, MS-SSIM={metrics_to_merlin['ms_ssim']:.4f}",
             fontsize=14,
         )
 
         plt.tight_layout()
 
-        return fig, metrics
+        return fig, metrics_to_merlin

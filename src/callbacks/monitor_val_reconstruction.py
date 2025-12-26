@@ -6,6 +6,7 @@ import torch
 from lightning import Callback, LightningModule, Trainer
 
 from src.utils.constants import EPS, amp_max, amp_min
+from src.utils.processing_utils import clip
 
 
 class MonitorValReconstruction(Callback):
@@ -17,6 +18,11 @@ class MonitorValReconstruction(Callback):
         super().__init__()
         self.log_every_n_epochs = log_every_n_epochs
         self.num_images = num_images
+        # --- Details for clipping ---
+        self.clip_for_visualization = True  # Enable or disable clipping
+        self.mean_std_norm = False  # True: use mean/std, False use percentiles
+        self.clip_factor = 3  # Clip to mean +/- self.clip_factor * std
+        self.clip_percentiles = (5, 95)  # Clip to these percentiles
 
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
         """Determine if the model uses compression based on its class name."""
@@ -40,6 +46,7 @@ class MonitorValReconstruction(Callback):
         # Only log on specified epochs and for the first batch
         if (trainer.current_epoch % self.log_every_n_epochs != 0) or batch_idx > 0:
             return
+        print(f"\n[MonitorValReconstruction] Epoch {trainer.current_epoch}.")
 
         # Get the first few images from the batch
         num_images_to_show = min(self.num_images, batch["real"].shape[0])
@@ -73,6 +80,28 @@ class MonitorValReconstruction(Callback):
                 np.square(real_i) + np.square(imag_i)
             )  # Sum for input reflectivity
             recon_amp_i = recon_amp[i].cpu().numpy()  # Remove channel dim
+            if self.clip_for_visualization:
+                noisy_amp_i = clip(
+                    noisy_amp_i,
+                    mean_std_norm=self.mean_std_norm,
+                    clip_factor=self.clip_factor,
+                    percentiles=self.clip_percentiles,
+                )
+                recon_amp_i = clip(
+                    recon_amp_i,
+                    mean_std_norm=self.mean_std_norm,
+                    clip_factor=self.clip_factor,
+                    percentiles=self.clip_percentiles,
+                )
+                clip_info = f" (clipped with {'mean/std' if self.mean_std_norm else f'percentiles {self.clip_percentiles}'})"
+            else:
+                clip_info = " (no clipping)"
+            print(
+                f"    RECON N°{i} AMPLITUDE{clip_info}: min={recon_amp_i.min():.4f}, max={recon_amp_i.max():.4f}, mean={recon_amp_i.mean():.4f}, std={recon_amp_i.std():.4f}. Is NaN={np.isnan(recon_amp_i).any()}."
+            )
+            print(
+                f"    NOISY N°{i} AMPLITUDE{clip_info}: min={noisy_amp_i.min():.4f}, max={noisy_amp_i.max():.4f}, mean={noisy_amp_i.mean():.4f}, std={noisy_amp_i.std():.4f}, Is NaN={np.isnan(noisy_amp_i).any()}."
+            )
 
             # Row 0: Input reflectivity
             im0 = axes[0, i].imshow(noisy_amp_i, cmap="gray")
@@ -92,7 +121,7 @@ class MonitorValReconstruction(Callback):
         row_titles = [
             "Noisy amplitude\n(sqrt(Real^2 + Imag^2))",
             "Recon amplitude",
-            "Residuals",
+            "Residuals\n(no clipping)",
         ]
         for i, title in enumerate(row_titles):
             axes[i, 0].text(
