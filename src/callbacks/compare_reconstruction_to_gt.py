@@ -15,6 +15,9 @@ from src.utils.sar_utils import symmetrize
 
 
 class CompareReconstructionToGT(Callback):
+    """Callback to compare model reconstructions to MERLIN ground truth on a large validation
+    patch."""
+
     def __init__(
         self,
         patch_dir: str,
@@ -160,32 +163,27 @@ class CompareReconstructionToGT(Callback):
                 recon = pl_module.forward(self.tensor)
                 criterion = pl_module.criterion(recon, self.tensor)
                 if self.with_compression:
-                    assert isinstance(recon, dict)
                     recon = recon["x_hat"]
 
             self.recon_as_output = 0.5 * (recon[:, :1, :, :] + recon[:, 1:, :, :])
             print(
-                f"    RECON: min={recon.min().item():.4f}, max={recon.max().item():.4f}, mean={recon.mean().item():.4f}, std={recon.std().item():.4f}. Is NaN={torch.isnan(recon).any().item()}."
-            )
-            print(
-                f"    TARGET: min={self.tensor.min().item():.4f}, max={self.tensor.max().item():.4f}, mean={self.tensor.mean().item():.4f}, std={self.tensor.std().item():.4f}. Is NaN={torch.isnan(self.tensor).any().item()}."
+                f"    RECON AS OUTPUT: min={recon.min().item():.4f}, max={recon.max().item():.4f}, mean={recon.mean().item():.4f}, std={recon.std().item():.4f}. Is NaN={torch.isnan(recon).any().item()}."
             )
 
         # ----- Denorm the reconstructions  -----
         recon_denorm = recon * (amp_max - amp_min) + amp_min
-        recon = torch.exp(recon_denorm)
-        print(
-            f"    RECON DENORM LINEAR: min={recon.min().item():.4f}, max={recon.max().item():.4f}, mean={recon.mean().item():.4f}, std={recon.std().item():.4f}. Is NaN={torch.isnan(recon).any().item()}."
-        )
-
-        # Build full linear amplitude reconstruction
+        recon_lin = torch.exp(recon_denorm)
         A_recon = torch.sqrt(
-            0.5 * (torch.square(recon[:, :1, :, :]) + torch.square(recon[:, 1:, :, :]))
+            0.5 * (torch.square(recon_lin[:, 0, :, :]) + torch.square(recon_lin[:, 1, :, :]))
         )
         print(
             f"    RECON AMPLITUDE: min={A_recon.min().item():.4f}, max={A_recon.max().item():.4f}, mean={A_recon.mean().item():.4f}, std={A_recon.std().item():.4f}. Is NaN={torch.isnan(A_recon).any().item()}."
         )
         A_recon = A_recon.squeeze().cpu().numpy()
+
+        print(
+            f"    NOISY AMPLITUDE: min={self.A_noisy.min().item():.4f}, max={self.A_noisy.max().item():.4f}, mean={self.A_noisy.mean().item():.4f}, std={self.A_noisy.std().item():.4f}."
+        )
 
         fig_A, metrics_to_merlin = self._visualize_with_histograms(
             A_recon,

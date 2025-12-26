@@ -18,6 +18,7 @@ This project implements the solution presented by Amao-Oliva et al. [1] availabl
 - [ ] Ensure to use the same PSNR formula everywhere, either manually, or from `torchmetrics`
 - [ ] Ensure the loss function is correct
 - [ ] Once everything shown to be functional, delete the res_scale_hyperprior.py. Everything it does is implemented in the dpu version.
+- [ ] Delete the recon_as_output in Callback CompareToGT
 *I'll use this section as a TODO list, including ideas for future projects.*
 - [ ] "NWML" warning, see [NVML is the NVIDIA Management Library and is used on NVIDIA GPUs](https://discuss.pytorch.org/t/cant-initialize-nvml-error-with-rvc-project/194206)
 - [ ] Next runs:

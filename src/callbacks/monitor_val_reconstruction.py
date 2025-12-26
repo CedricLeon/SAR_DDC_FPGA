@@ -10,6 +10,8 @@ from src.utils.processing_utils import clip
 
 
 class MonitorValReconstruction(Callback):
+    """Callback to monitor reconstructions by logging the first validation patches."""
+
     def __init__(
         self,
         log_every_n_epochs: int,
@@ -62,9 +64,9 @@ class MonitorValReconstruction(Callback):
                 reconstructions = reconstructions["x_hat"]
         # Denormalize reconstructions
         recon_denorm = reconstructions * (amp_max - amp_min) + amp_min
-        recon = torch.exp(recon_denorm)
+        recon_lin = torch.exp(recon_denorm)
         recon_amp = torch.sqrt(
-            0.5 * (torch.square(recon[:, 0, :, :]) + torch.square(recon[:, 1, :, :]))
+            0.5 * (torch.square(recon_lin[:, 0, :, :]) + torch.square(recon_lin[:, 1, :, :]))
         )  # [B, H, W]
 
         # Create the visualization
@@ -79,19 +81,19 @@ class MonitorValReconstruction(Callback):
             noisy_amp_i = np.sqrt(
                 np.square(real_i) + np.square(imag_i)
             )  # Sum for input reflectivity
-            recon_amp_i = recon_amp[i].cpu().numpy()  # Remove channel dim
+            recon_amp_i = recon_amp[i].cpu().numpy()
             if self.clip_for_visualization:
                 noisy_amp_i = clip(
                     noisy_amp_i,
-                    mean_std_norm=self.mean_std_norm,
-                    clip_factor=self.clip_factor,
-                    percentiles=self.clip_percentiles,
+                    self.mean_std_norm,
+                    self.clip_factor,
+                    self.clip_percentiles,
                 )
                 recon_amp_i = clip(
                     recon_amp_i,
-                    mean_std_norm=self.mean_std_norm,
-                    clip_factor=self.clip_factor,
-                    percentiles=self.clip_percentiles,
+                    self.mean_std_norm,
+                    self.clip_factor,
+                    self.clip_percentiles,
                 )
                 clip_info = f" (clipped with {'mean/std' if self.mean_std_norm else f'percentiles {self.clip_percentiles}'})"
             else:
@@ -150,7 +152,7 @@ class MonitorValReconstruction(Callback):
 
             plt.tight_layout()
 
-        pl_module.logger.experiment.log(
+        pl_module.logger.experiment.log(  # type: ignore[attr-defined]
             {
                 "val_reconstructions": fig,
                 "val_batch/loss": criterion["loss"],

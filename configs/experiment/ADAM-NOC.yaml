@@ -15,7 +15,9 @@ model:
 callbacks:
   compare_recon_to_gt:
     patch_dir: ${paths.data_dir}
-    split_large_patch: True
+    split_large_patch: False
+    blend_method: "count"
+    stride: 128
 
 trainer:
   min_epochs: 1
