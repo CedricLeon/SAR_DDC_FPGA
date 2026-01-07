@@ -10,7 +10,7 @@ defaults:
 
 model:
   criterion:
-    lmbda: -1 # Set to -1 to deactivate the rate in the loss and get No COmpression (NOC)
+    lmbda: -1 # Set to -1 to deactivate the rate in the loss and get NO Compression (NOC)
 
 callbacks:
   compare_recon_to_gt:
