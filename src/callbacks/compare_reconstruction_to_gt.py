@@ -164,11 +164,6 @@ class CompareReconstructionToGT(Callback):
                 if self.with_compression:
                     recon = recon["x_hat"]
 
-            recon_as_output = 0.5 * (recon[:, :1, :, :] + recon[:, 1:, :, :])
-            print(
-                f"    RECON AS OUTPUT: min={recon.min().item():.4f}, max={recon.max().item():.4f}, mean={recon.mean().item():.4f}, std={recon.std().item():.4f}. Is NaN={torch.isnan(recon).any().item()}."
-            )
-
         # ----- Denorm the reconstructions  -----
         recon_denorm = recon * (amp_max - amp_min) + amp_min
         recon_lin = torch.exp(recon_denorm)
@@ -187,7 +182,6 @@ class CompareReconstructionToGT(Callback):
         fig_A, metrics_to_merlin = self._visualize_with_histograms(
             recon_linA,
             recon_logI,
-            recon_as_output.squeeze().cpu().numpy(),
             criterion,
             trainer,
         )
@@ -217,7 +211,6 @@ class CompareReconstructionToGT(Callback):
         self,
         recon_linA: np.ndarray,
         recon_logI: np.ndarray,
-        recon_as_output: np.ndarray,
         criterion: dict,
         trainer: Trainer,
     ) -> tuple[Any, dict]:
@@ -241,15 +234,12 @@ class CompareReconstructionToGT(Callback):
             recon_logI = clip(
                 recon_logI, self.mean_std_norm, self.clip_factor, self.clip_percentiles
             )
-            recon_as_output = clip(
-                recon_as_output, self.mean_std_norm, self.clip_factor, self.clip_percentiles
-            )
             if self.merlin_logI is not None:
                 merlin_logI = clip(
                     self.merlin_logI, self.mean_std_norm, self.clip_factor, self.clip_percentiles
                 )
 
-        fig, axes = plt.subplots(2, 4, figsize=(15, 10))
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
         # ----- Row 1: Images -----
         # Original
         im0 = axes[0, 0].imshow(noisy_logI, cmap="gray")
@@ -263,27 +253,22 @@ class CompareReconstructionToGT(Callback):
         axes[0, 1].axis("off")
         fig.colorbar(im1, ax=axes[0, 1], shrink=0.8)
 
-        im2 = axes[0, 2].imshow(recon_as_output, cmap="gray")
-        axes[0, 2].set_title("Recon (As output averaged)")
-        axes[0, 2].axis("off")
-        fig.colorbar(im2, ax=axes[0, 2], shrink=0.8)
-
         # MERLIN GT (if available)
         if self.merlin_logI is not None:
-            im3 = axes[0, 3].imshow(merlin_logI, cmap="gray")
-            axes[0, 3].set_title("MERLIN GT Log-I")
-            axes[0, 3].axis("off")
-            fig.colorbar(im3, ax=axes[0, 3], shrink=0.8)
+            im3 = axes[0, 2].imshow(merlin_logI, cmap="gray")
+            axes[0, 2].set_title("MERLIN GT Log-I")
+            axes[0, 2].axis("off")
+            fig.colorbar(im3, ax=axes[0, 2], shrink=0.8)
         else:
-            axes[0, 3].text(
+            axes[0, 2].text(
                 0.5,
                 0.5,
                 "MERLIN GT\nNot Available",
                 ha="center",
                 va="center",
-                transform=axes[0, 3].transAxes,
+                transform=axes[0, 2].transAxes,
             )
-            axes[0, 3].axis("off")
+            axes[0, 2].axis("off")
 
         # ----- Row 2: Histograms -----
         def plot_histogram(ax, data, title):
@@ -329,25 +314,20 @@ class CompareReconstructionToGT(Callback):
 
         # Reconstruction histogram
         plot_histogram(axes[1, 1], recon_logI, "Recon LOG-I Histogram")
-        plot_histogram(
-            axes[1, 2],
-            recon_as_output,
-            "Recon output Histogram",
-        )
 
         # MERLIN GT histogram (if available)
         if self.merlin_logI is not None:
-            plot_histogram(axes[1, 3], merlin_logI, "MERLIN GT LOG-I Histogram")
+            plot_histogram(axes[1, 2], merlin_logI, "MERLIN GT LOG-I Histogram")
         else:
-            axes[1, 3].text(
+            axes[1, 2].text(
                 0.5,
                 0.5,
                 "MERLIN GT\nHistogram\nNot Available",
                 ha="center",
                 va="center",
-                transform=axes[1, 3].transAxes,
+                transform=axes[1, 2].transAxes,
             )
-            axes[1, 3].axis("off")
+            axes[1, 2].axis("off")
 
         # ----- Add overall title with metrics -----
         fig.suptitle(
