@@ -95,7 +95,7 @@ def process_large_patch(
 
             # Process patches
             with torch.no_grad():
-                output = model(input_patch)
+                output = model.forward(input_patch)
 
             # Compute criterion if target is provided
             if target is not None:

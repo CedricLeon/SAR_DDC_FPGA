@@ -22,7 +22,7 @@ class MonitorValReconstruction(Callback):
         self.num_images = num_images
         # --- Details for clipping ---
         self.clip_for_visualization = True  # Enable or disable clipping
-        self.mean_std_norm = False  # True: use mean/std, False use percentiles
+        self.mean_std_norm = True  # True: use mean/std, False use percentiles
         self.clip_factor = 3  # Clip to mean +/- self.clip_factor * std
         self.clip_percentiles = (5, 95)  # Clip to these percentiles
 
@@ -65,9 +65,11 @@ class MonitorValReconstruction(Callback):
         # Denormalize reconstructions
         recon_denorm = reconstructions * (amp_max - amp_min) + amp_min
         recon_lin = torch.exp(recon_denorm)
-        recon_amp = torch.sqrt(
-            0.5 * (torch.square(recon_lin[:, 0, :, :]) + torch.square(recon_lin[:, 1, :, :]))
+        recon_linI = 0.5 * (
+            torch.square(recon_lin[:, 0, :, :]) + torch.square(recon_lin[:, 1, :, :])
         )  # [B, H, W]
+        recon_logI = torch.log(recon_linI + EPS)  # used for visualization
+        # recon_linA = torch.sqrt(recon_linI)         # used for metrics computation
 
         # Create the visualization
         fig, axes = plt.subplots(3, num_images_to_show, figsize=(4 * num_images_to_show, 12))
@@ -78,19 +80,19 @@ class MonitorValReconstruction(Callback):
             # Get individual images and convert to numpy
             real_i = batch["real"][i, 0].cpu().numpy()  # Remove channel dim
             imag_i = batch["imag"][i, 0].cpu().numpy()  # Remove channel dim
-            noisy_amp_i = np.sqrt(
+            noisy_logI = np.log(
                 np.square(real_i) + np.square(imag_i)
             )  # Sum for input reflectivity
-            recon_amp_i = recon_amp[i].cpu().numpy()
+            recon_logI_i = recon_logI[i].cpu().numpy()
             if self.clip_for_visualization:
-                noisy_amp_i = clip(
-                    noisy_amp_i,
+                noisy_logI = clip(
+                    noisy_logI,
                     self.mean_std_norm,
                     self.clip_factor,
                     self.clip_percentiles,
                 )
-                recon_amp_i = clip(
-                    recon_amp_i,
+                recon_logI_i = clip(
+                    recon_logI_i,
                     self.mean_std_norm,
                     self.clip_factor,
                     self.clip_percentiles,
@@ -99,30 +101,30 @@ class MonitorValReconstruction(Callback):
             else:
                 clip_info = " (no clipping)"
             print(
-                f"    RECON N°{i} AMPLITUDE{clip_info}: min={recon_amp_i.min():.4f}, max={recon_amp_i.max():.4f}, mean={recon_amp_i.mean():.4f}, std={recon_amp_i.std():.4f}. Is NaN={np.isnan(recon_amp_i).any()}."
+                f"    RECON N°{i} Log-Intensity{clip_info}: min={recon_logI_i.min():.4f}, max={recon_logI_i.max():.4f}, mean={recon_logI_i.mean():.4f}, std={recon_logI_i.std():.4f}. Is NaN={np.isnan(recon_logI_i).any()}."
             )
             print(
-                f"    NOISY N°{i} AMPLITUDE{clip_info}: min={noisy_amp_i.min():.4f}, max={noisy_amp_i.max():.4f}, mean={noisy_amp_i.mean():.4f}, std={noisy_amp_i.std():.4f}, Is NaN={np.isnan(noisy_amp_i).any()}."
+                f"    NOISY N°{i} Log-Intensity{clip_info}: min={noisy_logI.min():.4f}, max={noisy_logI.max():.4f}, mean={noisy_logI.mean():.4f}, std={noisy_logI.std():.4f}, Is NaN={np.isnan(noisy_logI).any()}."
             )
 
             # Row 0: Input reflectivity
-            im0 = axes[0, i].imshow(noisy_amp_i, cmap="gray")
+            im0 = axes[0, i].imshow(noisy_logI, cmap="gray")
             axes[0, i].axis("off")
             fig.colorbar(im0, ax=axes[0, i], shrink=0.6)
             # Row 1: Reconstruction
-            im1 = axes[1, i].imshow(recon_amp_i, cmap="gray")
+            im1 = axes[1, i].imshow(recon_logI_i, cmap="gray")
             axes[1, i].axis("off")
             fig.colorbar(im1, ax=axes[1, i], shrink=0.6)
             # Row 2: Residuals (difference)
-            residuals = np.abs(noisy_amp_i - recon_amp_i)
+            residuals = np.abs(noisy_logI - recon_logI_i)
             im2 = axes[2, i].imshow(residuals, cmap="gray")
             axes[2, i].axis("off")
             fig.colorbar(im2, ax=axes[2, i], shrink=0.6)
 
         # Add Row titles on the left side
         row_titles = [
-            "Noisy amplitude\n(sqrt(Real^2 + Imag^2))",
-            "Recon amplitude",
+            "Noisy log-intensity\n(log(Real^2 + Imag^2))",
+            "Recon log-intensity\n(log(0.5 * (Real^2 + Imag^2)))",
             "Residuals\n(no clipping)",
         ]
         for i, title in enumerate(row_titles):
