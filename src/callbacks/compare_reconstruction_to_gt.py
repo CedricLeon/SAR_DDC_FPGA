@@ -93,8 +93,6 @@ class CompareReconstructionToGT(Callback):
         # NO NORMALIZATION, IT'S DONE IN model.forward()
         # Add batch and channel dimensions
         self.patch = patch_tensor.unsqueeze(0).permute(0, 3, 1, 2).contiguous()  # [1, 2, H, W]
-        self.patch_real = patch_tensor[:, :, 0].unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
-        self.patch_imag = patch_tensor[:, :, 1].unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
         del patch_tensor, patch_data
 
         # ----- Load MERLIN Ground Truth -----
@@ -159,10 +157,15 @@ class CompareReconstructionToGT(Callback):
                     blend_method=self.blend_method,
                 )
             else:
-                recon = pl_module.forward(self.patch)
-                criterion = pl_module.criterion(recon, self.patch)
                 if self.with_compression:
+                    recon = pl_module.forward(self.patch)
+                    criterion = pl_module.criterion(recon, self.patch)
                     recon = recon["x_hat"]
+                else:
+                    recon_real = pl_module.forward(self.patch[:, 0:1, :, :])
+                    recon_imag = pl_module.forward(self.patch[:, 1:2, :, :])
+                    recon = torch.cat([recon_real, recon_imag], dim=1)
+                    criterion = pl_module.criterion(recon, self.patch)
 
         # ----- Denorm the reconstructions  -----
         recon_denorm = recon * (amp_max - amp_min) + amp_min

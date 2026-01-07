@@ -58,10 +58,15 @@ class MonitorValReconstruction(Callback):
 
         # Forward pass to get reconstructions
         with torch.no_grad():
-            reconstructions = pl_module(input)
-            criterion = pl_module.criterion(reconstructions, target=input)
             if self.with_compression:
+                reconstructions = pl_module(input)
+                criterion = pl_module.criterion(reconstructions, target=input)
                 reconstructions = reconstructions["x_hat"]
+            else:
+                recon_real = pl_module(input[:, 0:1, :, :])
+                recon_imag = pl_module(input[:, 1:2, :, :])
+                reconstructions = torch.cat([recon_real, recon_imag], dim=1)
+                criterion = pl_module.criterion(reconstructions, target=input)
         # Denormalize reconstructions
         recon_denorm = reconstructions * (amp_max - amp_min) + amp_min
         recon_lin = torch.exp(recon_denorm)
