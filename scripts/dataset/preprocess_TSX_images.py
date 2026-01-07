@@ -48,6 +48,7 @@ class Colors:
 
 
 NB_GTS = 2  # Number of ground truths to store per patch: ADAM-NOC and MERLIN
+# "/mnt/vitisAI/Vitis-AI/DDC_FPGA/logs/train/sar_ddc/adam_noc/runs/2025-12-21_13-13-53"
 ADAM_NOC_CKPT_PATH = Path("data/method_ground_truths/ADAM_NOC/checkpoints/last.ckpt")
 MERLIN_CKPT_PATH = Path("data/method_ground_truths/MERLIN/checkpoints/last.ckpt")
 
@@ -130,36 +131,39 @@ def _instantiate_model_and_load_weights(train_cfg, ckpt_path: Path) -> torch.nn.
 
 
 @torch.no_grad()
-def _predict_amp_from_real_imag(
-    model: torch.nn.Module, real_b: torch.Tensor, imag_b: torch.Tensor
-) -> torch.Tensor:
+def _predict_linA(model: torch.nn.Module, batch: torch.Tensor) -> torch.Tensor:
     """Run model on batches of normalized real/imag and return linear amplitude reconstructions.
 
     Inputs:
-      - real_b, imag_b: tensors [B,1,H,W] normalized in model domain.
+      - model: SARDDCModule or MerlinModule.
+      - batch: tensor [B,2,H,W] normalized in model domain.
     Returns:
       - recon_amp: tensor [B,1,H,W] in linear amplitude domain.
     """
-    # ADAM forward passes in evaluation takes input with 2 channels
     if isinstance(model, SARDDCModule):
-        input = torch.cat((real_b, imag_b), dim=1).contiguous()
-        output = model(input)
-        out_r = output["x_hat"][:, 0:1, :, :]
-        out_i = output["x_hat"][:, 1:2, :, :]
+        # ADAM forward passes in evaluation takes input with 2 channels
+        output = model(batch)
+        recon_real = output["x_hat"][:, 0, :, :]  # [B,H,W]
+        recon_imag = output["x_hat"][:, 1, :, :]
     elif isinstance(model, MerlinModule):
-        out_r = model(real_b)
-        out_i = model(imag_b)
+        # While MERLIN takes one channel at a time
+        recon_real = model(batch[:, 0, :, :])
+        recon_imag = model(batch[:, 1, :, :])
     # Type guard for linters
-    assert isinstance(out_r, torch.Tensor), "Model output must be a Tensor or dict with 'x_hat'"
-    assert isinstance(out_i, torch.Tensor), "Model output must be a Tensor or dict with 'x_hat'"
+    assert isinstance(
+        recon_real, torch.Tensor
+    ), "Model output must be a Tensor or dict with 'x_hat'"
+    assert isinstance(
+        recon_imag, torch.Tensor
+    ), "Model output must be a Tensor or dict with 'x_hat'"
 
     # Denormalize, average, return linear amplitude
-    recon_r_lin = torch.exp(out_r.squeeze(1) * (amp_max - amp_min) + amp_min)
-    recon_i_lin = torch.exp(out_i.squeeze(1) * (amp_max - amp_min) + amp_min)
-    recon_amp = torch.sqrt(
-        0.5 * (torch.square(recon_r_lin) + torch.square(recon_i_lin))
+    recon_real_lin = torch.exp(recon_real * (amp_max - amp_min) + amp_min)
+    recon_imag_lin = torch.exp(recon_imag * (amp_max - amp_min) + amp_min)
+    recon_linA = torch.sqrt(
+        0.5 * (torch.square(recon_real_lin) + torch.square(recon_imag_lin))
     )  # [B,H,W]
-    return recon_amp.unsqueeze(1)  # [B,1,H,W]
+    return recon_linA.unsqueeze(1)  # [B,1,H,W]
 
 
 def add_metadata_to_dataset(
@@ -325,25 +329,17 @@ def process_dataset(
                 leave=False,
             ):
                 end = min(start + batch_size, nb_patches)
-                batch = patches[start:end]  # [B,H,W,2]
-
-                # Normalize to model domain: log of squared channel, then min-max using (2*amp_min, 2*amp_max)
-                batch_sq = np.square(batch).astype(np.float32)
-                batch_log = np.log(batch_sq + EPS)
-                batch_norm = (batch_log - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
-
-                real_b = torch.from_numpy(batch_norm[:, :, :, 0]).to(device).unsqueeze(1).float()
-                imag_b = torch.from_numpy(batch_norm[:, :, :, 1]).to(device).unsqueeze(1).float()
+                batch = patches[start:end].astype(np.float32)  # [B,H,W,2]
+                batch = torch.from_numpy(batch).permute(0, 3, 1, 2).contiguous()  # [B,2,H,W]
 
                 # Predictions (amplitude in linear domain)
-                adam_amp = _predict_amp_from_real_imag(adam_model, real_b, imag_b)
-                merlin_amp = _predict_amp_from_real_imag(merlin_model, real_b, imag_b)
+                adam_linA = _predict_linA(adam_model, batch)
+                merlin_linA = _predict_linA(merlin_model, batch)
 
-                out_file[start:end, :, :, 2] = adam_amp.squeeze(1).cpu().numpy()
-                out_file[start:end, :, :, 3] = merlin_amp.squeeze(1).cpu().numpy()
-
+                out_file[start:end, :, :, 2] = adam_linA.squeeze(1).cpu().numpy()
+                out_file[start:end, :, :, 3] = merlin_linA.squeeze(1).cpu().numpy()
                 # Free GPU memory for large batches
-                del real_b, imag_b, adam_amp, merlin_amp
+                del batch, adam_linA, merlin_linA
                 torch.cuda.empty_cache() if device.type == "cuda" else None
 
             per_file_patches.append(out_file)
