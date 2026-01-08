@@ -31,10 +31,14 @@ callbacks:
     split_large_patch: False
     blend_method: "count"
     stride: 256
+    log_every_n_epochs: 2
+  monitor_val_recon:
+    log_every_n_epochs: 2
+    num_images: 4
 
 trainer:
   min_epochs: 1
-  max_epochs: 30
+  max_epochs: 10
   deterministic: True
   detect_anomaly: False
   log_every_n_steps: 10
