@@ -51,9 +51,7 @@ class TSXSSCDataModule(LightningDataModule):
         # Set file paths as Path objects
         self.train_path = self.hdf5_root_dir / "train.h5"
         self.val_path = self.hdf5_root_dir / "val.h5"
-        self.test_path = (  # @TODO update to normal path
-            self.hdf5_root_dir.parent / "test_with_GT" / self.hdf5_root_dir.name / "test.h5"
-        )
+        self.test_path = self.hdf5_root_dir.parent / self.hdf5_root_dir.name / "test.h5"
 
         # Data transformations
         self.transform = transform
