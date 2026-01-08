@@ -28,7 +28,7 @@ from tqdm import tqdm
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src.models.merlin_module import MerlinModule
 from src.models.sar_ddc_module import SARDDCModule
-from src.utils.constants import EPS, amp_max, amp_min
+from src.utils.constants import amp_max, amp_min
 from src.utils.processing_utils import extract_short_name_from_TSX_filepath
 from src.utils.sar_utils import (
     extract_patches,
@@ -48,7 +48,6 @@ class Colors:
 
 
 NB_GTS = 2  # Number of ground truths to store per patch: ADAM-NOC and MERLIN
-# "/mnt/vitisAI/Vitis-AI/DDC_FPGA/logs/train/sar_ddc/adam_noc/runs/2025-12-21_13-13-53"
 ADAM_NOC_CKPT_PATH = Path("data/method_ground_truths/ADAM_NOC/checkpoints/last.ckpt")
 MERLIN_CKPT_PATH = Path("data/method_ground_truths/MERLIN/checkpoints/last.ckpt")
 
@@ -147,8 +146,10 @@ def _predict_linA(model: torch.nn.Module, batch: torch.Tensor) -> torch.Tensor:
         recon_imag = output["x_hat"][:, 1, :, :]
     elif isinstance(model, MerlinModule):
         # While MERLIN takes one channel at a time
-        recon_real = model(batch[:, 0, :, :])
-        recon_imag = model(batch[:, 1, :, :])
+        recon_real = model(batch[:, 0:1, :, :])
+        recon_imag = model(batch[:, 1:2, :, :])
+        recon_real = recon_real[:, 0, :, :]
+        recon_imag = recon_imag[:, 0, :, :]
     # Type guard for linters
     assert isinstance(
         recon_real, torch.Tensor
@@ -163,7 +164,7 @@ def _predict_linA(model: torch.nn.Module, batch: torch.Tensor) -> torch.Tensor:
     recon_linA = torch.sqrt(
         0.5 * (torch.square(recon_real_lin) + torch.square(recon_imag_lin))
     )  # [B,H,W]
-    return recon_linA.unsqueeze(1)  # [B,1,H,W]
+    return recon_linA
 
 
 def add_metadata_to_dataset(
@@ -331,13 +332,14 @@ def process_dataset(
                 end = min(start + batch_size, nb_patches)
                 batch = patches[start:end].astype(np.float32)  # [B,H,W,2]
                 batch = torch.from_numpy(batch).permute(0, 3, 1, 2).contiguous()  # [B,2,H,W]
+                batch = batch.to(device)
 
                 # Predictions (amplitude in linear domain)
                 adam_linA = _predict_linA(adam_model, batch)
                 merlin_linA = _predict_linA(merlin_model, batch)
 
-                out_file[start:end, :, :, 2] = adam_linA.squeeze(1).cpu().numpy()
-                out_file[start:end, :, :, 3] = merlin_linA.squeeze(1).cpu().numpy()
+                out_file[start:end, :, :, 2] = adam_linA.cpu().numpy()
+                out_file[start:end, :, :, 3] = merlin_linA.cpu().numpy()
                 # Free GPU memory for large batches
                 del batch, adam_linA, merlin_linA
                 torch.cuda.empty_cache() if device.type == "cuda" else None
