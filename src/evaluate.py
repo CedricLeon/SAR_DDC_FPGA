@@ -2,28 +2,32 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Union
 
 import hydra
 import matplotlib.pyplot as plt
 import numpy as np
 import rootutils
 import torch
-import torchmetrics
-import torchmetrics.functional.image as F
-from lightning import LightningModule
+from lightning import LightningDataModule, LightningModule
 from matplotlib.ticker import FuncFormatter
 from omegaconf import DictConfig, OmegaConf
 from ptflops import get_model_complexity_info  # type: ignore
-from torch import nn
+from torch import Tensor, nn
 from tqdm import tqdm
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.data.sar_datamodule import TSXSSCDataModule  # noqa: E402
-from src.utils.constants import amp_max, amp_min  # noqa: E402
-from src.utils.metrics import ms_ssim, mse, psnr, ssim  # noqa: E402
-from src.utils.processing_utils import process_large_patch  # noqa: E402
+from src.models.merlin_module import MerlinModule  # noqa: E402
+from src.models.sar_ddc_module import SARDDCModule  # noqa: E402
+from src.utils.constants import EPS, amp_max, amp_min  # noqa: E402
+from src.utils.metrics import (  # noqa: E402
+    estimate_bpp,
+    get_all_distortion_metrics,
+)
+
+# from src.utils.processing_utils import process_large_patch  # noqa: E402
 from src.utils.pylogger import RankedLogger  # noqa: E402
 from src.utils.sar_utils import load_cosar, symmetrize  # noqa: E402
 from src.utils.utils import extras  # noqa: E402
@@ -31,30 +35,39 @@ from src.utils.utils import extras  # noqa: E402
 log = RankedLogger(__name__, rank_zero_only=True)
 
 
-def _best_device() -> torch.device:
-    """Select the best available device (GPU if available, else CPU)."""
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
 def _checkpoint_run_dir(ckpt_path: Path) -> Path:
     """Get the run directory from the checkpoint path."""
     # ckpt lives in .../runs/<date>/checkpoints/<file>.ckpt
-    # run dir = parent.parent
     return ckpt_path.parent.parent
 
 
-def _load_training_cfg_from_ckpt(ckpt_path: Path) -> Any:
-    """Load the original training configuration from the checkpoint's run directory."""
+def _load_training_cfg_from_ckpt(ckpt_path: Path) -> DictConfig:
+    """Load the original training configuration from the checkpoint's run directory.
+
+    Args:
+        ckpt_path (Path): Path to the checkpoint file.
+    Returns:
+        training_cfg (DictConfig): The training configuration.
+    """
     run_dir = _checkpoint_run_dir(ckpt_path)
     training_config_path = run_dir / ".hydra" / "config.yaml"
     if not training_config_path.exists():
         raise FileNotFoundError(f"Training config not found at {training_config_path}.")
     log.info(f"Loading original training config from {training_config_path}")
-    return OmegaConf.load(training_config_path)
+    training_cfg = OmegaConf.load(training_config_path)
+    assert isinstance(training_cfg, DictConfig), "Training config is not a DictConfig."
+    return training_cfg
 
 
 def _instantiate_model_and_load_weights(train_cfg: DictConfig, ckpt_path: Path) -> LightningModule:
-    """Instantiate the model from training config and load weights from checkpoint."""
+    """Instantiate the model from training config and load weights from checkpoint.
+
+    Args:
+        train_cfg (DictConfig): The training configuration.
+        ckpt_path (Path): Path to the checkpoint file.
+    Returns:
+        model (LightningModule): The instantiated model with loaded weights.
+    """
     log.info(f"Instantiating model <{train_cfg.model._target_}>")
     model: LightningModule = hydra.utils.instantiate(train_cfg.model)
     checkpoint = torch.load(str(ckpt_path), map_location="cpu")
@@ -65,7 +78,13 @@ def _instantiate_model_and_load_weights(train_cfg: DictConfig, ckpt_path: Path) 
 
 
 def _count_layers(module: torch.nn.Module) -> Dict[str, int]:
-    """Count the number of layers in the model."""
+    """Count the number of layers in the model.
+
+    Args:
+        module (torch.nn.Module): The model to analyze.
+    Returns:
+        counts (Dict[str, int]): A dictionary with counts of different layer types.
+    """
     counts = {
         "Conv2d": 0,
         "ConvTranspose2d": 0,
@@ -87,11 +106,19 @@ def _count_layers(module: torch.nn.Module) -> Dict[str, int]:
 
 
 def _params_and_size_mb(module: torch.nn.Module) -> Tuple[int, int, float]:
-    """Compute total and trainable parameters, and size in MB."""
-    total = sum(p.numel() for p in module.parameters())
-    trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
-    state = module.state_dict()
-    total_bytes = sum(t.element_size() * t.nelement() for t in state.values())
+    """Compute total and trainable parameters, and size in MB.
+
+    Args:
+        module (torch.nn.Module): The model to analyze.
+    Returns:
+        total (int): Total number of parameters.
+        trainable (int): Number of trainable parameters.
+        size_mb (float): Size of model weights in megabytes.
+    """
+    total: int = sum(p.numel() for p in module.parameters())
+    trainable: int = sum(p.numel() for p in module.parameters() if p.requires_grad)
+    state: Dict[str, Tensor] = module.state_dict()
+    total_bytes: int = sum(t.element_size() * t.nelement() for t in state.values())
     return total, trainable, total_bytes / (1024**2)
 
 
@@ -101,11 +128,17 @@ def _profile_flops_macs_latency(
     """Compute MACs/FLOPs using ptflops only, and measure latency.
 
     Fails fast if ptflops is unavailable.
+    Args:
+        module (torch.nn.Module): The model to analyze.
+        device (torch.device): Device to run the model on.
+        input_size (int): Input height and width (assumes square input).
+    Returns:
+        stats (Dict[str, Any]): Dictionary with input shape, device, #MACs, #FLOPs, and latency in seconds.
     """
     net = getattr(module, "net", module).to(device)
     net.eval()
 
-    macs, params = get_model_complexity_info(
+    macs, _ = get_model_complexity_info(
         net,
         (1, input_size, input_size),  # (C,H,W) no batch
         as_strings=False,
@@ -114,13 +147,20 @@ def _profile_flops_macs_latency(
     )
     assert macs is not None, "ptflops returned None for MACs"
 
-    macs_val = int(float(macs))  # supports numpy scalars
-    flops_val = int(2 * macs_val)
+    macs_val: int = int(float(macs))  # supports numpy scalars
+    flops_val: int = int(2 * macs_val)
 
     # Latency: warmup + measure``
     def time_forward(iters: int = 50, warmup: int = 10) -> float:
-        """Measure average forward pass time over `iters` runs after `warmup` runs."""
-        x = torch.randn(1, 1, input_size, input_size, device=device)
+        """Measure average forward pass time over `iters` runs after `warmup` runs.
+
+        Args:
+            iters (int): Number of iterations to average over.
+            warmup (int): Number of warmup iterations.
+         Returns:
+            avg_time (float): Average time per forward pass in seconds.
+        """
+        x: Tensor = torch.randn(1, 1, input_size, input_size, device=device)
         if device.type == "cuda":
             torch.cuda.synchronize()
         with torch.inference_mode():
@@ -128,15 +168,15 @@ def _profile_flops_macs_latency(
                 _ = net(x)
             if device.type == "cuda":
                 torch.cuda.synchronize()
-            start = time.time()
+            start: float = time.time()
             for _ in range(iters):
                 _ = net(x)
             if device.type == "cuda":
                 torch.cuda.synchronize()
-            end = time.time()
+            end: float = time.time()
         return (end - start) / iters
 
-    latency = time_forward()
+    latency: float = time_forward()
 
     return {
         "input": [1, 1, input_size, input_size],
@@ -148,17 +188,25 @@ def _profile_flops_macs_latency(
 
 
 def _compute_model_stats(model: LightningModule, input_size: int) -> Dict[str, Any]:
-    """Compute various model statistics: layers, parameters, size, MACs/FLOPs, latency."""
-    net = getattr(model, "net", model)
-    layer_counts = _count_layers(net)
+    """Compute various model statistics: layers, parameters, size, MACs/FLOPs, latency.
+    Args:
+        model (LightningModule): The model to analyze.
+        input_size (int): Input height and width (assumes square input).
+    Returns:
+        model_stats (Dict[str, Any]): Dictionary with model statistics.
+    """
+    net: torch.nn.Module = getattr(model, "net", model)
+    layer_counts: Dict[str, int] = _count_layers(net)
     params_total, params_trainable, weights_size_mb = _params_and_size_mb(net)
 
     # MACs/FLOPs + CPU latency
-    stats_cpu = _profile_flops_macs_latency(net, torch.device("cpu"), input_size)
+    stats_cpu: Dict[str, Any] = _profile_flops_macs_latency(net, torch.device("cpu"), input_size)
     # GPU latency (if available)
-    latency_gpu = None
+    latency_gpu: Union[float, None] = None
     if torch.cuda.is_available():
-        stats_gpu = _profile_flops_macs_latency(net, torch.device("cuda"), input_size)
+        stats_gpu: Dict[str, Any] = _profile_flops_macs_latency(
+            net, torch.device("cuda"), input_size
+        )
         latency_gpu = stats_gpu.get("latency_s")
 
     model_stats = {
@@ -174,12 +222,12 @@ def _compute_model_stats(model: LightningModule, input_size: int) -> Dict[str, A
         "input": stats_cpu.get("input"),
     }
 
-    macs_str = f"{model_stats['macs']:_}" if model_stats.get("macs") is not None else "N/A"
-    flops_str = f"{model_stats['flops']:_}" if model_stats.get("flops") is not None else "N/A"
+    macs_str: str = f"{model_stats['macs']:_}" if model_stats.get("macs") is not None else "N/A"
+    flops_str: str = f"{model_stats['flops']:_}" if model_stats.get("flops") is not None else "N/A"
     log.info(
         f"The model {model_stats['net_class']} has {model_stats['parameters_total']:_} parameters, including {model_stats['parameters_trainable']:_} trainable, for a total memory footprint of {model_stats['weights_size_mb']:.2f}MB."
     )
-    gpu_part = (
+    gpu_part: str = (
         f" | GPU: {model_stats['latency_gpu_s'] * 1e3:.2f} ms"
         if model_stats["latency_gpu_s"] is not None
         else ""
@@ -196,32 +244,48 @@ def _standardize_reference_name(name: str) -> str:
     return name.replace(" ", "_")
 
 
-def _load_reference_tile_outputs(methods: List[str], tile_dir: Path) -> Dict[str, Any]:
-    """Load reference denoised outputs for given methods from tile directory."""
-    refs = {}
+def _load_reference_tile_outputs(methods: List[str], tile_dir: Path) -> Dict[str, np.ndarray]:
+    """Load reference denoised outputs for given methods from tile directory.
+
+    Args:
+        methods (List[str]): List of method names to load references for.
+        tile_dir (Path): Directory containing reference output .npy files.
+    Returns:
+        refs (Dict[str, np.ndarray]): Dictionary with loaded reference arrays.
+    """
+    refs: Dict[str, np.ndarray] = {}
     for m in methods:
-        key = _standardize_reference_name(m)
-        # Expected format: denoised_by_<KEY>_* .npy containing a dict or array
-        matches = list(tile_dir.glob(f"denoised_by_{key}_*.npy"))
+        method_name: str = _standardize_reference_name(m)
+        # Expected format: denoised_by_<method_name>_* .npy containing a dict or array
+        matches: List[Path] = list(tile_dir.glob(f"denoised_by_{method_name}_*.npy"))
         if not matches:
             log.warning(
                 f"[REF MISSING] Reference output for '{m}' not found in {tile_dir}. "
-                "Expected denoised_by_<METHOD>_*.npy. Skipping."
+                f"Expected denoised_by_{method_name}_*.npy. Skipping."
             )
             continue
-        refs[m] = np.load(matches[0], allow_pickle=True)
+        refs[method_name] = np.load(matches[0], allow_pickle=True)
     return refs
 
 
 def _evaluate_on_test(
     model: LightningModule,
     eval_cfg: DictConfig,
-    data_dir: Path | str,
+    data_dir: str,
     device: torch.device,
 ) -> Dict[str, float]:
-    """Evaluate the model on the test set and compute metrics."""
+    """Evaluate the model on the test set and compute metrics.
+
+    Args:
+        model (LightningModule): The model to evaluate.
+        eval_cfg (DictConfig): Evaluation configuration.
+        data_dir (str): Directory containing the test data.
+        device (torch.device): Device to run the evaluation on.
+    Returns:
+        results (Dict[str, float]): Dictionary with evaluation metrics.
+    """
     # Build datamodule from training cfg.data
-    dm = TSXSSCDataModule(
+    dm: LightningDataModule = TSXSSCDataModule(
         hdf5_dir=str(data_dir),
         batch_size=eval_cfg.test_batch_size,
         num_workers=eval_cfg.num_workers,
@@ -232,75 +296,62 @@ def _evaluate_on_test(
 
     model = model.to(device)
 
-    mse_list = []
-    psnr_list = []
-    ssim_list = []
-    ms_ssim_list = []
+    mse_list: List[float] = []
+    psnr_list: List[float] = []
+    ssim_list: List[float] = []
+    ms_ssim_list: List[float] = []
+    bpp_list: List[Tensor] = []
 
-    bpp_list = []
     if eval_cfg.short_test_set:
         log.info("Using short test set for quick evaluation (first 10 batches only).")
-        batch_nb = 0
+        batch_nb: int = 0
     with torch.inference_mode():
         for batch in tqdm(dm.test_dataloader()):
-            real, imag = batch["real"].to(device), batch["imag"].to(device)
-            # SARDDC: forward returns dict; MerlinModule not supported here
-            out_r = model(real)
-            out_i = model(imag)
-            if isinstance(out_r, dict) and "x_hat" in out_r:
-                recon_r = out_r["x_hat"]
-                recon_i = out_i["x_hat"]
-                # bpp from criterion requires target; for aggregates, average criterion outputs
-                crit_r = model.criterion(out_r, imag)
-                crit_i = model.criterion(out_i, real)
-                bpp_list.append(((crit_r["bpp"] + crit_i["bpp"]) / 2).detach())
+            real: Tensor = batch["real"].to(device)
+            imag: Tensor = batch["imag"].to(device)
+            if isinstance(model, SARDDCModule):
+                noisy_lin: Tensor = torch.cat([real, imag], dim=1).contiguous()
+                recon: Dict[str, Tensor] = model(noisy_lin)
+                bpp_list.append(Tensor(estimate_bpp(recon)))
+                recon_real: Tensor = recon["x_hat"]
+                recon_imag: Tensor = recon["x_hat"]
+            elif isinstance(model, MerlinModule):  # untested so far
+                recon_real: Tensor = model(real)
+                recon_imag: Tensor = model(imag)
             else:
-                # Unsupported for now
-                recon_r = out_r
-                recon_i = out_i
+                raise ValueError(
+                    "Model output format not supported for evaluation, the model is probably MerlinModule. @TODO: Implement support."
+                )
 
-            # Convert to linear amplitude
-            # recon_r and recon_i are normalized log-intensity
-            recon_r_denorm = recon_r * (amp_max - amp_min) + amp_min
-            recon_i_denorm = recon_i * (amp_max - amp_min) + amp_min
-            recon_r_lin = torch.exp(recon_r_denorm)
-            recon_i_lin = torch.exp(recon_i_denorm)
-            clean_im_real = torch.square(recon_r_lin)
-            clean_im_imag = torch.square(recon_i_lin)
-            clean_im = torch.sqrt(0.5 * (clean_im_real + clean_im_imag))
+            # Convert model output to linear amplitude
+            recon_real_denorm: Tensor = recon_real * (amp_max - amp_min) + amp_min
+            recon_imag_denorm: Tensor = recon_imag * (amp_max - amp_min) + amp_min
+            recon_real_lin: Tensor = torch.exp(recon_real_denorm)
+            recon_imag_lin: Tensor = torch.exp(recon_imag_denorm)
+            recon_linA: Tensor = torch.sqrt(
+                0.5 * (torch.square(recon_real_lin) + torch.square(recon_imag_lin))
+            )
 
-            # Noisy image (Amplitude)
-            noisy_im = torch.sqrt(torch.square(real) + torch.square(imag))
+            # Noisy image linear amplitude
+            noisy_linA: Tensor = torch.sqrt(torch.square(real) + torch.square(imag))
 
-            mse_list.append(mse(clean_im, noisy_im))
-            psnr_list.append(psnr(clean_im, noisy_im))
+            # Compute metrics
+            all_metrics: Dict[str, float] = get_all_distortion_metrics(recon_linA, noisy_linA)
+            mse_list.append(all_metrics["mse"])
+            psnr_list.append(all_metrics["psnr"])
 
-            peak = float(torch.max(clean_im))
-            ssim_list.append(ssim(clean_im, noisy_im, data_range=peak))
-            ms_ssim_list.append(ms_ssim(clean_im, noisy_im, data_range=peak))
-
+            ssim_list.append(all_metrics["ssim"])
+            ms_ssim_list.append(all_metrics["ms_ssim"])
             if eval_cfg.short_test_set:
                 batch_nb += 1
                 if batch_nb >= 10:
                     break
 
-    def to_float(val: Any) -> float:
-        """Convert metric value to float."""
-        # Some torchmetrics may return Tensor, or (Tensor, Tensor)
-        if isinstance(val, tuple):
-            val = val[0]
-        if hasattr(val, "detach"):
-            return float(val.detach().cpu().item())
-        try:
-            return float(val)
-        except Exception:
-            return -1.0
-
-    mse_val = float(np.mean(mse_list)) if mse_list else -1.0
-    psnr_val = float(np.mean(psnr_list)) if psnr_list else -1.0
-    ssim_val = float(np.mean(ssim_list)) if ssim_list else -1.0
-    ms_ssim_val = float(np.mean(ms_ssim_list)) if ms_ssim_list else -1.0
-    results = {
+    mse_val: float = float(np.mean(mse_list))
+    psnr_val: float = float(np.mean(psnr_list))
+    ssim_val: float = float(np.mean(ssim_list))
+    ms_ssim_val: float = float(np.mean(ms_ssim_list))
+    results: Dict[str, float] = {
         "mse": mse_val,
         "psnr": psnr_val,
         "ssim": ssim_val,
@@ -319,99 +370,106 @@ def _evaluate_tile_and_visualize(
     model: LightningModule,
     cfg: DictConfig,
     save_dir: Path,
-) -> Dict[str, Any]:
-    """Evaluate the model on a tile and generate visualization figure."""
+) -> Dict[str, float]:
+    """Evaluate the model against references on a tile and generate visualization figure.
+
+    Args:
+        model (LightningModule): The model to evaluate.
+        cfg (DictConfig): Evaluation configuration.
+        save_dir (Path): Directory to save visualization outputs.
+    Returns:
+        metrics (Dict[str, float]): Dictionary with evaluation metrics on the tile.
+    """
     tile_path: Path = Path(cfg.tile_path)
-    clip_std_factor: float = float(cfg.clip_std_factor)
 
     # Load tile or pre-extracted patch and symmetrize
     if tile_path.suffix == ".npy":
-        patch = np.load(tile_path)
+        patch: np.ndarray = np.load(tile_path)
         if patch is None:
             raise FileNotFoundError(f"Failed to load patch from {tile_path}")
         patch = symmetrize(patch)
     else:
-        image = load_cosar(tile_path)
+        image: Union[np.ndarray, None] = load_cosar(tile_path)
         if image is None:
             raise FileNotFoundError(f"Failed to load SAR tile from {tile_path}")
         image = symmetrize(image)  # [H,W,2]
-        patch = image[
+        patch: np.ndarray = image[
             cfg.crop_coordinates[0] : cfg.crop_coordinates[0] + cfg.tile_crop_size,
             cfg.crop_coordinates[1] : cfg.crop_coordinates[1] + cfg.tile_crop_size,
             :,
         ]
 
-    eps = 1e-2
-    patch_sq = np.square(patch)
-    patch_log = np.log(patch_sq + eps)
-    patch_norm = (patch_log - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
-
     device = next(model.parameters()).device
-    real = torch.from_numpy(patch_norm[:, :, 0]).to(device).unsqueeze(0).unsqueeze(0)
-    imag = torch.from_numpy(patch_norm[:, :, 1]).to(device).unsqueeze(0).unsqueeze(0)
+    input_real = torch.from_numpy(patch[:, :, 0]).to(device).unsqueeze(0).unsqueeze(0)
+    input_imag = torch.from_numpy(patch[:, :, 1]).to(device).unsqueeze(0).unsqueeze(0)
 
     log.info(f"Loaded and pre-processed tile patch of size {patch.shape}.")
 
     with torch.inference_mode():
         # Patch-based forward to be consistent and memory-friendly
-        metrics_r, recon_r = process_large_patch(
-            model=model,
-            input=real,
-            target=None,
-            model_patch_size=cfg.patch_size,
-            stride=cfg.stride,
-            blend_method=cfg.blend_method,
-        )
-        metrics_i, recon_i = process_large_patch(
-            model=model,
-            input=imag,
-            target=None,
-            model_patch_size=cfg.patch_size,
-            stride=cfg.stride,
-            blend_method=cfg.blend_method,
-        )
-    # Average is done later in linear/log domains for visualization/metrics
-    bpp_avg = 0.5 * (metrics_r.get("bpp", -1) + metrics_i.get("bpp", -1))
+        if isinstance(model, SARDDCModule):
+            noisy_lin: Tensor = torch.cat([input_real, input_imag], dim=1).contiguous()
+            recon: Dict[str, Tensor] = model(noisy_lin)
+            recon_real: Tensor = recon["x_hat"]
+            recon_imag: Tensor = recon["x_hat"]
+            bpp: Tensor = Tensor(estimate_bpp(recon))
+        elif isinstance(model, MerlinModule):  # untested so far
+            recon_real: Tensor = model(input_real)
+            recon_imag: Tensor = model(input_imag)
+            bpp: Tensor = Tensor(-1.0)
+        else:
+            raise ValueError(
+                "Model output format not supported for evaluation, the model is probably MerlinModule. @TODO: Implement support."
+            )
+    # # Average is done later in linear/log domains for visualization/metrics
+    # bpp_avg = 0.5 * (metrics_r.get("bpp", -1) + metrics_i.get("bpp", -1))
 
     # Convert to linear amplitude per channel and build log-intensity like in callback
-    recon_r_lin = torch.exp(recon_r.squeeze() * (amp_max - amp_min) + amp_min)
-    recon_i_lin = torch.exp(recon_i.squeeze() * (amp_max - amp_min) + amp_min)
-    I_recon = 0.5 * (recon_r_lin + recon_i_lin)
-    recon_logI = torch.log(I_recon + eps)
+    recon_real_lin: Tensor = torch.exp(recon_real.squeeze() * (amp_max - amp_min) + amp_min)
+    recon_imag_lin: Tensor = torch.exp(recon_imag.squeeze() * (amp_max - amp_min) + amp_min)
+    recon_I: Tensor = 0.5 * (recon_real_lin + recon_imag_lin)
+    recon_linA: Tensor = torch.sqrt(recon_I)
+    recon_logI: Tensor = torch.log(recon_I + EPS)
 
-    # Load references if available
-    tile_vis_dir = Path("data/visualization/for_evaluations/")
-    refs = _load_reference_tile_outputs(list(cfg.reference_methods), tile_vis_dir)
-    nb_refs = len(refs)
+    # Load references
+    tile_vis_dir: Path = Path("data/visualization/for_evaluations/")
+    refs_linA: Dict[str, np.ndarray] = _load_reference_tile_outputs(
+        list(cfg.reference_methods), tile_vis_dir
+    )
+    refs_logI: Dict[str, np.ndarray] = {
+        method: np.log(np.square(ref_linA) + EPS) for method, ref_linA in refs_linA.items()
+    }
+    nb_refs: int = len(refs_linA)
 
-    # Build figure similar to callback (noisy, recon, MERLIN GT + histograms)
-    noisy_logI = np.log(patch_sq[:, :, 0] + patch_sq[:, :, 1] + eps)
-    recon_np = recon_logI.squeeze().cpu().numpy()
-    # Prepare reference maps (per method)
-    refs_logI: Dict[str, np.ndarray] = {}
-    for m, obj in refs.items():
-        key = _standardize_reference_name(m)
-        try:
-            if isinstance(obj, dict):
-                # deepdespeckling format: amplitude in linear scale
-                A = obj["denoised"]["full"]
-                refs_logI[key] = np.log(np.square(A) + eps)
-            else:
-                refs_logI[key] = np.array(obj)
-        except Exception as e:
-            log.warning(f"Reference '{m}' has unexpected format: {e}")
+    # ----- Visualization figure (LOG-I) -----
+    noisy_logI: np.ndarray = np.log(np.square(patch[:, :, 0]) + np.square(patch[:, :, 1]) + EPS)
+    recon_logI_np: np.ndarray = recon_logI.squeeze().cpu().numpy()
 
     fig, axes = plt.subplots(2, 2 + nb_refs, figsize=(10 + (nb_refs * 5), 10))
 
-    def clip_image(x):
-        """Clip image values to <clip_std_factor> standard deviations around the mean."""
+    clip_std_factor: float = float(cfg.clip_std_factor)
+
+    def clip_image(x: np.ndarray) -> np.ndarray:
+        """Clip image values to <clip_std_factor> standard deviations around the mean.
+
+        Args:
+            x (np.ndarray): Input image array.
+        Returns:
+            np.ndarray: Clipped image array.
+        """
         m, s = x.mean(), x.std()
         x = np.clip(x, m - clip_std_factor * s, m + clip_std_factor * s)
         # x = (x - x.min()) / (x.max() - x.min() + 1e-8)
         return x
 
-    def plot_histogram(ax, data, title):
-        """Plot histogram of data on given axis with mean and std lines."""
+    def plot_histogram(ax, data: np.ndarray, title: str) -> None:
+        """Plot histogram of data on given axis with mean and std lines.
+
+        Args:
+            ax (plt.Axes): Matplotlib axis to plot on.
+            data (np.ndarray): Data array to plot histogram for.
+            title (str): Title for the histogram plot.
+        """
         ax.set_title(title)
         ax.hist(data.flatten(), bins=50, alpha=0.7, color="blue")
         ax.grid(True, alpha=0.3)
@@ -419,8 +477,8 @@ def _evaluate_tile_and_visualize(
         ax.yaxis.set_major_formatter(
             FuncFormatter(lambda x, loc: f"{x / 1000:.0f}K" if x >= 1000 else f"{x:.0f}")
         )
-        mean = data.mean()
-        std = data.std()
+        mean: float = data.mean()
+        std: float = data.std()
         ax.axvline(mean, color="red", linestyle="--", label="Mean")
         ax.axvline(
             mean + clip_std_factor * std,
@@ -442,18 +500,18 @@ def _evaluate_tile_and_visualize(
     fig.colorbar(im0, ax=axes[0, 0], shrink=0.8)
     plot_histogram(axes[1, 0], noisy_logI, "Noisy Log-I Histogram")
 
-    im1 = axes[0, 1].imshow(clip_image(recon_np.squeeze()), cmap="gray")
+    im1 = axes[0, 1].imshow(clip_image(recon_logI_np), cmap="gray")
     axes[0, 1].axis("off")
     axes[0, 1].set_title("Recon Log-I")
     fig.colorbar(im1, ax=axes[0, 1], shrink=0.8)
-    plot_histogram(axes[1, 1], recon_np, "Recon Log-I Histogram")
+    plot_histogram(axes[1, 1], recon_logI_np, "Recon Log-I Histogram")
 
-    for i, (m, ref) in enumerate(refs_logI.items()):
+    for i, (method_name, ref) in enumerate(refs_logI.items()):
         im2 = axes[0, 2 + i].imshow(clip_image(ref), cmap="gray")
         axes[0, 2 + i].axis("off")
-        axes[0, 2 + i].set_title(f"{m} Log-I")
+        axes[0, 2 + i].set_title(f"{method_name} Log-I")
         fig.colorbar(im2, ax=axes[0, 2 + i], shrink=0.8)
-        plot_histogram(axes[1, 2 + i], ref, f"{m} Log-I Histogram")
+        plot_histogram(axes[1, 2 + i], ref, f"{method_name} Log-I Histogram")
 
     plt.tight_layout()
 
@@ -464,69 +522,53 @@ def _evaluate_tile_and_visualize(
     log.info(f"Saved tile comparison figure to {fig_path}")
 
     # Save the reconstruction image alone with high quality
-    recon_save = clip_image(recon_np)
-    plt.imsave(save_dir / "tile_reconstruction_logI.png", recon_save, cmap="gray", dpi=300)
+    plt.imsave(
+        save_dir / "tile_reconstruction_logI.png", clip_image(recon_logI_np), cmap="gray", dpi=300
+    )
 
-    # Metrics on tile vs all references (MSE/PSNR/SSIM/MS-SSIM)
-    data_range = float(recon_logI.max() - recon_logI.min())
-    recon_logI = recon_logI.unsqueeze(0).unsqueeze(0).to(device).float()
+    # ----- Metrics on tile vs all references (Lin-A) -----
+    metrics: Dict[str, float] = {"bpp": float(bpp)}
+    log.info(f"Tile (bpp: {bpp:.4f}) metrics vs references:")
 
-    metrics: Dict[str, float] = {"bpp": float(bpp_avg)}
-    log.info(f"Tile (bpp: {bpp_avg:.4f}) metrics vs references:")
+    for method_name, ref_np in refs_logI.items():
+        log.info(f"    - Against {method_name}:")
+        ref_t: Tensor = torch.from_numpy(ref_np).to(device).float()
+        ref_linA: Tensor = torch.sqrt(torch.exp(ref_t) + EPS)
 
-    def _to_scalar(val: Any) -> float:
-        """Convert metric value to float."""
-        if isinstance(val, (tuple, list)):
-            val = val[0]
-        if hasattr(val, "detach"):
-            return float(val.detach().cpu().item())
-        try:
-            return float(val)
-        except Exception:
-            return float("nan")
-
-    for key, ref_np in refs_logI.items():
-        ref_t = torch.from_numpy(ref_np).unsqueeze(0).unsqueeze(0).to(device).float()
-
-        log.info(f"    - Against {key}:")
-        metrics[f"mse_to_{key}"] = _to_scalar(
-            torchmetrics.functional.mean_squared_error(recon_logI, ref_t)
-        )
-        log.info(f"        - MSE: {metrics[f'mse_to_{key}']:.4f}")
-
-        metrics[f"psnr_to_{key}"] = _to_scalar(
-            F.peak_signal_noise_ratio(recon_logI, ref_t, data_range=data_range)
-        )
-        log.info(f"        - PSNR: {metrics[f'psnr_to_{key}']:.2f} dB")
-
-        metrics[f"ssim_to_{key}"] = _to_scalar(
-            F.structural_similarity_index_measure(recon_logI, ref_t, data_range=data_range)
-        )
-        log.info(f"        - SSIM: {metrics[f'ssim_to_{key}']:.4f}")
-
-        metrics[f"ms_ssim_to_{key}"] = _to_scalar(
-            F.multiscale_structural_similarity_index_measure(
-                recon_logI, ref_t, data_range=data_range
-            )
-        )
-        log.info(f"        - MS-SSIM: {metrics[f'ms_ssim_to_{key}']:.4f}")
+        all_metrics: Dict[str, float] = get_all_distortion_metrics(recon_linA, ref_linA)
+        metrics[f"mse_to_{method_name}"] = all_metrics["mse"]
+        log.info(f"        - MSE: {metrics[f'mse_to_{method_name}']:.4f}")
+        metrics[f"psnr_to_{method_name}"] = all_metrics["psnr"]
+        log.info(f"        - PSNR: {metrics[f'psnr_to_{method_name}']:.2f} dB")
+        metrics[f"ssim_to_{method_name}"] = all_metrics["ssim"]
+        log.info(f"        - SSIM: {metrics[f'ssim_to_{method_name}']:.4f}")
+        metrics[f"ms_ssim_to_{method_name}"] = all_metrics["ms_ssim"]
+        log.info(f"        - MS-SSIM: {metrics[f'ms_ssim_to_{method_name}']:.4f}")
 
     return metrics
 
 
 def _write_artifacts(
     out_dir: Path,
-    model_stats: Any,
-    test_metrics: Any,
-    tile_info: Any,
+    model_stats: Dict[str, Any],
+    test_metrics: Dict[str, float],
+    tile_info: Dict[str, float],
     eval_cfg: Any,
     train_cfg: Any,
 ):
-    """Write evaluation artifacts: metrics logs and config files."""
+    """Write evaluation artifacts: metrics logs and config files.
+    Args:
+        out_dir (Path): Output directory to save artifacts.
+        model_stats (Dict[str, Any]): Model statistics.
+        test_metrics (Dict[str, float]): Test set evaluation metrics.
+        tile_info (Dict[str, float]): Tile evaluation metrics.
+        eval_cfg (Any): Evaluation configuration.
+        train_cfg (Any): Training configuration.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Create a hierarchical structure for all metrics
-    combined_metrics = {
+    combined_metrics: Dict[str, Any] = {
         "run_name": eval_cfg.get("run_name"),
         "model_stats": model_stats,
         "test_metrics": test_metrics,
@@ -545,9 +587,17 @@ def _write_artifacts(
 
 
 def _mark_evaluated(ckpt_path: Path, eval_out_dir: Path, re_evaluate: bool, run_name: str) -> bool:
-    """Mark the run as evaluated by creating a marker file in the checkpoint's run directory."""
-    run_dir = _checkpoint_run_dir(ckpt_path)
-    marker = run_dir / "evaluated.txt"
+    """Mark the run as evaluated by creating a marker file in the checkpoint's run directory.
+
+    Args:
+        ckpt_path (Path): Path to the checkpoint file.
+        eval_out_dir (Path): Directory where evaluation outputs are saved.
+        re_evaluate (bool): Whether to force re-evaluation.
+        run_name (str): Name of the evaluation run.
+    Returns:
+        should_evaluate (bool): True if evaluation should proceed, False if already evaluated.
+    """
+    marker: Path = _checkpoint_run_dir(ckpt_path) / "evaluated.txt"
     if marker.exists() and not re_evaluate:
         log.info(
             f"Run already evaluated per {marker}. Set re_evaluate=true to force new evaluation."
@@ -563,7 +613,7 @@ def _mark_evaluated(ckpt_path: Path, eval_out_dir: Path, re_evaluate: bool, run_
 def main(cfg: DictConfig) -> None:
     # Validate inputs
     assert cfg.ckpt_path, "Checkpoint path (ckpt_path) must be provided."
-    ckpt = Path(cfg.ckpt_path)
+    ckpt: Path = Path(cfg.ckpt_path)
     if not ckpt.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
 
@@ -571,29 +621,30 @@ def main(cfg: DictConfig) -> None:
     extras(cfg)
 
     # Recover training config from run dir and instantiate model
-    train_cfg = _load_training_cfg_from_ckpt(ckpt)
-    model = _instantiate_model_and_load_weights(train_cfg, ckpt)
+    train_cfg: DictConfig = _load_training_cfg_from_ckpt(ckpt)
+    model: LightningModule = _instantiate_model_and_load_weights(train_cfg, ckpt)
 
-    # Prepare evaluation output dir (Hydra determines working dir); we still compute a concrete path to store artifacts
     # Use current working directory as hydra run dir
-    eval_out_dir = Path(cfg.paths.output_dir)
+    eval_out_dir: Path = Path(cfg.paths.output_dir)
 
     # Stop early if evaluated already (unless re_evaluate)
     if not _mark_evaluated(ckpt, eval_out_dir, bool(cfg.re_evaluate), cfg.run_name):
         return
 
     # Choose best device for evaluation (prefer GPU if available)
-    device = _best_device()
+    device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
     # Model stats (on model.net if available)
-    model_stats = _compute_model_stats(model, int(cfg.patch_size))
+    model_stats: Dict[str, Any] = _compute_model_stats(model, int(cfg.patch_size))
 
     # Test-set evaluation
-    test_metrics = _evaluate_on_test(model, cfg, train_cfg.data.hdf5_dir, device)
+    test_metrics: Dict[str, float] = _evaluate_on_test(
+        model, cfg, str(train_cfg.data.hdf5_dir), device
+    )
 
     # Tile evaluation + visuals
-    tile_metrics = _evaluate_tile_and_visualize(model, cfg, eval_out_dir)
+    tile_metrics: Dict[str, float] = _evaluate_tile_and_visualize(model, cfg, eval_out_dir)
 
     # Save artifacts and configs
     eval_cfg_dict = OmegaConf.to_container(cfg, resolve=True)
