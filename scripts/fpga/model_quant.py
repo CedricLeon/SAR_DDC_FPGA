@@ -41,9 +41,6 @@ project_root = Path(__file__).resolve().parent.parent.parent
 os.environ["PROJECT_ROOT"] = str(project_root)
 sys.path.append(str(project_root))
 # from src.data.components.sar_dataset import TSXSSCDataset  # noqa: E402
-from src.models.components.res_scale_hyperprior import (  # noqa: E402
-    ResidualScaleHyperprior,
-)
 from src.models.components.res_scale_hyperprior_dpu import (  # noqa: E402
     ResidualScaleHyperpriorPatched,
 )
@@ -131,6 +128,8 @@ class CustomDataset(Dataset):
         """Get a patch by index."""
         with h5py.File(self.hdf5_path, "r") as f:
             patch = torch.from_numpy(f["patches"][idx]).float()
+            # The valid.h5 has 4 channels [real, imag, ADAM-NOC and MERLIN]. We discard the 2 references.
+            patch = patch[:, :, 0:2]
 
             patch = torch.square(patch)
             patch = torch.log(patch + 1e-2)
@@ -149,7 +148,7 @@ def load_data(
         dataset = torch.utils.data.Subset(
             dataset, random.sample(range(0, len(dataset)), args.subset_len)
         )
-    data_loader = torch.utils.data.DataLoader(
+    data_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
         dataset, batch_size=args.batch_size, shuffle=False, **kwargs
     )
     return data_loader
@@ -234,9 +233,7 @@ if __name__ == "__main__":
 
     # For DPU export / inspection, always use the patched model with export_dpu=True.
     # We still load weights from the training-time ResidualScaleHyperprior checkpoint.
-    if model_name in ("ResidualScaleHyperprior"):
-        model = ResidualScaleHyperprior(**model_params).cpu()
-    elif model_name in ("ResidualScaleHyperpriorPatched"):
+    if model_name in ("ResidualScaleHyperpriorPatched"):
         model_params["export_dpu"] = True
         print(f"Using ResidualScaleHyperpriorPatched for DPU with params: {model_params}.")
         model = ResidualScaleHyperpriorPatched(**model_params).cpu()

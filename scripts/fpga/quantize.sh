@@ -12,13 +12,16 @@ set -e # Exit on error
 # MODEL_DIR="DDC_FPGA/logs/train/sar_ddc/simple_ae/multiruns/2025-11-16_19-34-55/3/"
 # SMALL="--small"
 
-RUN_DIR="ResAE-relu_42_merlinʎ100_lr5e-05_b12_no-out-pad"
+RUN_DIR="DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-01-08_14-02-42/2" # random ADAM run after the restructuration of the code
+# "DDC_FPGA/logs/train/sar_ddc/hyperprior_dpu/runs/2025-12-15_10-34-01" # test_compressai_original_added_logs
+#"DDC_FPGA/logs/train/sar_ddc/hyperprior_dpu/runs/2025-12-01_15-58-26" # test_compressai_original_fixed_LowerBound_in_ResBlocks
+# "ResAE-relu_42_merlinʎ100_lr5e-05_b12_no-out-pad"
 
 # if RUN_DIR starts with "ResAE", then we use small model
-if [[ ${RUN_DIR} == ResAE* ]]; then
+if [[ ${RUN_DIR} == *simple_ae* ]]; then
     MODEL_NAME="ResidualSimpleAE"
 # else if ResSHyperAE
-elif [[ ${RUN_DIR} == ResSHyp* ]]; then
+elif [[ ${RUN_DIR} == *hyperprior* ]]; then
     MODEL_NAME="ResidualScaleHyperprior"
 else # crash
     echo "Unknown model type in RUN_DIR: ${RUN_DIR}"
@@ -53,4 +56,3 @@ echo "Generating the image graph for the compiled model. See " "quantize_result/
 xdputil xmodel quantize_result/${MODEL_NAME}_int.xmodel -s quantize_result/${MODEL_NAME}_graph.svg
 
 echo "-------------------- DONE ---------------------"
-echo "Hope you did not see too much red ..."
