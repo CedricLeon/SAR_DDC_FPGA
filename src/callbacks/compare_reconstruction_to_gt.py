@@ -5,6 +5,7 @@ from typing import Any, Mapping
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import wandb
 from lightning import Callback, LightningModule, Trainer
 from matplotlib.ticker import FuncFormatter
 
@@ -131,6 +132,67 @@ class CompareReconstructionToGT(Callback):
                 "This may lead to incorrect logging."
             )
 
+    def on_test_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        """Log the final reconstruction of the large patch at the end of testing."""
+        if self.with_compression:
+            recon = pl_module.forward(self.patch)
+            criterion = pl_module.criterion(recon, self.patch)
+            recon = recon["x_hat"]
+        else:
+            recon_real = pl_module.forward(self.patch[:, 0:1, :, :])
+            recon_imag = pl_module.forward(self.patch[:, 1:2, :, :])
+            recon = torch.cat([recon_real, recon_imag], dim=1)
+            criterion = pl_module.criterion(recon, self.patch)
+
+        # ----- Denorm the reconstructions  -----
+        recon_denorm = recon * (amp_max - amp_min) + amp_min
+        recon_lin = torch.exp(recon_denorm)
+        recon_linI = 0.5 * (
+            torch.square(recon_lin[:, 0, :, :]) + torch.square(recon_lin[:, 1, :, :])
+        )
+        recon_linA = torch.sqrt(recon_linI).squeeze().cpu().numpy()
+        recon_logI = torch.log(recon_linI + EPS).squeeze().cpu().numpy()
+        if self.clip_for_visualization:
+            recon_logI = clip(
+                recon_logI, self.mean_std_norm, self.clip_factor, self.clip_percentiles
+            )
+
+        # compute metrics
+        metrics_to_merlin = self._compute_metrics_to_merlin(criterion, recon_linA)
+
+        # Save image locally
+        log_dir = Path(trainer.log_dir) if trainer.log_dir else Path(trainer.default_root_dir)
+        save_path = log_dir / "reconstruction_test.png"
+
+        plt.imsave(save_path, recon_logI, cmap="gray")
+        print(f"[CompareReconstructionToGT] Saved test reconstruction to {save_path}")
+
+        # Log to WandB
+        if (
+            pl_module.logger is not None
+            and hasattr(pl_module.logger, "experiment")
+            and hasattr(pl_module.logger.experiment, "log")
+        ):
+            # Create a caption from metrics
+            # Filter out -1.0 metrics for cleaner caption
+            valid_metrics = {k: v for k, v in metrics_to_merlin.items() if v != -1.0}
+            caption = ", ".join([f"{k}={v:.4f}" for k, v in valid_metrics.items()])
+
+            pl_module.logger.experiment.log(
+                {"test/reconstruction_image": wandb.Image(str(save_path), caption=caption)}
+            )
+
+    def _compute_metrics_to_merlin(self, criterion: dict, recon_linA: np.ndarray) -> dict:
+        """Compute distortion metrics between reconstruction and MERLIN GT in LINEAR-AMPLITUDE."""
+        metrics_to_merlin = {"mse": -1.0, "psnr": -1.0, "bpp": -1.0, "ssim": -1.0, "ms_ssim": -1.0}
+        metrics_to_merlin["loss"] = criterion["loss"].item()
+        if self.merlin_linA is not None:
+            for key, value in get_all_distortion_metrics(recon_linA, self.merlin_linA).items():
+                metrics_to_merlin[key] = value
+        if self.with_compression:
+            metrics_to_merlin["bpp"] = criterion["bpp"].item()
+        return metrics_to_merlin
+
     def on_validation_batch_end(
         self,
         trainer: Trainer,
@@ -219,15 +281,7 @@ class CompareReconstructionToGT(Callback):
     ) -> tuple[Any, dict]:
         """Visualize the reconstruction, noisy input, MERLIN GT (if available) and their
         histograms."""
-        # ----- Compute metrics -----
-        metrics_to_merlin = {"mse": -1.0, "psnr": -1.0, "bpp": -1.0, "ssim": -1.0, "ms_ssim": -1.0}
-        metrics_to_merlin["loss"] = criterion["loss"].item()
-        # Compute MSE, PSNR between reconstructions and MERLIN GT in LINEAR-AMPLITUDE
-        if self.merlin_linA is not None:
-            for key, value in get_all_distortion_metrics(recon_linA, self.merlin_linA).items():
-                metrics_to_merlin[key] = value
-        if self.with_compression:
-            metrics_to_merlin["bpp"] = criterion["bpp"].item()
+        metrics_to_merlin = self._compute_metrics_to_merlin(criterion, recon_linA)
 
         # ----- Prepare images for visualization in LOG-I-----
         if self.clip_for_visualization:
