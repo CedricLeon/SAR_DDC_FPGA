@@ -140,6 +140,35 @@ class GDNPatched(nn.Module):
         return out
 
 
+class GDN1Patched(GDNPatched):
+    r"""Simplified GDN layer.
+
+    Introduced in `"Computationally Efficient Neural Image Compression"
+    <http://arxiv.org/abs/1912.08771>`_, by Johnston Nick, Elad Eban, Ariel
+    Gordon, and Johannes Ballé, (2019).
+
+    .. math::
+
+        y[i] = \frac{x[i]}{\beta[i] + \sum_j(\gamma[j, i] * |x[j]|}
+    """
+
+    def forward(self, x: Tensor) -> Tensor:
+        _, C, _, _ = x.size()
+
+        beta = self.beta_reparam(self.beta)
+        gamma = self.gamma_reparam(self.gamma)
+        gamma = gamma.reshape(C, C, 1, 1)
+        # Replace torch.abs by manual implementation to avoid using `aten::abs`
+        norm = F.conv2d(torch.abs(x), gamma, beta)
+
+        if not self.inverse:
+            norm = 1.0 / norm
+
+        out = x * norm
+
+        return out
+
+
 # Copilot rewrote half of the original CompressAI code, I don't trust it, so for the moment its just the original one commented out.
 
 

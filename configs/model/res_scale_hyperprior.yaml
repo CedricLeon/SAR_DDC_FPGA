@@ -3,7 +3,7 @@ _target_: src.models.sar_ddc_module.SARDDCModule
 net:
   _target_: src.models.components.res_scale_hyperprior_dpu.ResidualScaleHyperpriorPatched
   nb_channels_main: 128  # Number of channels for main transform
-  activation: "gdn"   # gdn | relu | leaky_relu | silu | gelu | gn_relu | identity
+  activation: "gdn"   # gdn | relu | gdn1 (GDN Simplified) | identity (no activation)
   no_output_padding: False
   export_dpu: False # Always false, only set when quantizing the network with Vitis-AI
 
