@@ -18,7 +18,7 @@ def main():
     """Convert H5 dataset of image patches to NumPy binary format (.npy)."""
     args = parser.parse_args()
     dataset_path = Path(args.dataset_path)
-    if not dataset_path.exists():
+    if not dataset_path.exists() or not dataset_path.is_file():
         raise FileNotFoundError(f"Dataset path {dataset_path} does not exist.")
 
     subset = args.subset

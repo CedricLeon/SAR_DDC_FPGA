@@ -10,7 +10,6 @@ Provided classes:
   - GDNPatched
   - EntropyModelPatched
   - EntropyBottleneckPatched
-  - src/models/components/res_scale_hyperprior_dpu.py
 """
 
 from __future__ import annotations
