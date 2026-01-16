@@ -64,6 +64,7 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
         N = nb_channels_main
         M = 2 * N  # Number of channels for hyperprior
         self.export_dpu: bool = export_dpu
+        self.activation: str = activation
 
         if export_dpu and not no_output_padding:
             raise ValueError(
