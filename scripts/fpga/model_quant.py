@@ -2,12 +2,7 @@
 This script will be used to quantize a PyTorch model for FPGA deployment.
 It is based on Vitis-AI resnet18 PyTorch model quantization example, available at: https://xilinx.github.io/Vitis-AI/3.0/html/docs/quickstart/mpsoc.html#pytorch-tutorial
 
-@TODO:
-- I might have to have this script in Vitis-AI folder, because I need to start the docker there
-- Guess the data_dir from model configuration file (to avoid messing up)
-- Write functional MerlinRDLoss function to compute the loss after evaluation
-- Write how my evaluation will work
-
+@TODO: update this docstring
 What I will do in this script:
 - Have 3 quantization mode: "float", perform no quantization: simply evaluates the float model, "calib" for calibration and "test" for evaluation.
 - Have the necessary argparse:
@@ -40,7 +35,6 @@ from tqdm import tqdm
 project_root = Path(__file__).resolve().parent.parent.parent
 os.environ["PROJECT_ROOT"] = str(project_root)
 sys.path.append(str(project_root))
-# from src.data.components.sar_dataset import TSXSSCDataset  # noqa: E402
 from src.models.components.res_scale_hyperprior_dpu import (  # noqa: E402
     ResidualScaleHyperpriorPatched,
 )
@@ -251,7 +245,9 @@ if __name__ == "__main__":
         state_dict = checkpoint["state_dict"]
         state_dict = {k.replace("net.", "", 1): v for k, v in state_dict.items()}
         ckpt_type = "Lightning"
-    message = model.load_state_dict(checkpoint, strict=False)
+        message = model.load_state_dict(state_dict, strict=False)
+    else:
+        message = model.load_state_dict(checkpoint, strict=False)
     print(f"     Loaded a {ckpt_type} checkpoint: {message}")
 
     model.eval()
