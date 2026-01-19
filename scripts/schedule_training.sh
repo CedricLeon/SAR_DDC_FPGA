@@ -2,6 +2,7 @@
 
 # Schedule execution of many training runs
 # Run from root folder with: bash scripts/schedule_training.sh
+python src/train.py -m experiment=ADAM seed=3 model.criterion.lmbda=1.5,2,5,10,20,50,100,200,500,1000 model.net.no_output_padding=True,False
 
 
 # # ---- with MERLIN normalization -----
