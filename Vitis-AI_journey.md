@@ -1,11 +1,83 @@
 # Vitis AI journey
 
 I'll use this file as a journal, just to keep track of what I tried and when.
-Once I understand the toolchain and its processes better, I'll make a step-by-step instructions for deployment.
+Once I understand the toolchain and its processes better, I'll make a step-by-step instructions for deployment, like so:
+
+## Full deployment and evaluation of the models (January 2026)
+##### 0. Train a model
+Or simply find the directory of logs in W&B.
+#### 1. Initialize Vitis-AI docker container
+If the current `vai_container` is dead (see NVMH error where CUDA is not available), `exit` it and restart it with:
+```bash
+[HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA$ ./scripts/vitis-ai-automation/setup_container.sh
+```
+which is equivalent to what we did [here](#adapting-vitis-ai-docker-container-to-my-requirements).
+
+> Note: using this script to prepare the docker container implies that we won't see the name of our conda environment `(vitis-ai-pytorch)` in our terminal.
+> However, it is already activated. This can be checked with `which python`.
+
+#### 2. Let Vitis-AI do its job
+Deploying a model using Vitis-AI requires to inspect it, quantize it, deploy it, compile it and evaluate it at various stages of the process.
+I have created a script that does all of that for use:
+```bash
+[HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ ./DDC_FPGA/scripts/fpga/quantize.sh
+```
+@TODOs:
+- I probably don't need all these evaluations, neither the image graph generation. I should make these arguments of the scripts.
+
+#### 3. Copy the compiled model to the Target
+```bash
+[HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ scp -r ResidualScaleHyperprior_pt/ root@10.0.0.2:/home/root/SAR_DDC/models/ --StrictHostKeyChecking=accept-new
+```
+
+#### 4. (Optional) Also update the inference script and maybe the data and the Target
+```bash
+# Data
+[HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/data/processed_hdf5/TSX_spatial_splits_5_256x256/test_1000.npy root@10.0.0.2:/home/root/SAR_DDC/data/test_1000.npy
+# Inference script
+[HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/scripts/fpga/inference.py root@10.0.0.2:/home/root/SAR_DDC/scripts/inference.py
+```
+
+#### 5. Perform inference on the Target
+In a new bash open an SSH session to the FPGA and call the python script
+```bash
+[HOST] leon_ce@bart:~$ ssh root@10.0.0.2
+[TARGET] root@xilinx-zcu102-20222:~# cd SAR_DDC/
+[TARGET] root@xilinx-zcu102-20222:~/SAR_DDC/# python3 scripts/inference.py --xmodel models/new_model_test/ResidualScaleHyperprior_pt.xmodel --data data/test_1000.npy --subset 100
+```
+
+#### 6. Transfer inference results back to Host
+==@TODO==
+
+
 
 ## Updating the model to be Vitis-AI-friendly
 
-### Overwriting CompressAI custom `torch.autograd.Function`
+### Dealing with the multiple DPU subgraphs (2026-01-16)
+Currently the models passes Vitis AI inspection, quantization, and compilation, but I struggle to execute it on the FPGA.
+That's because the full model is divided in **many** subgraphs, there are 19 DPU subgraphs and probably a lot more CPU ones.
+Then I have several options:
+1. Commit to the "Hybrid" execution: painfully rewrite my inference script to manually orchestrate the flow between CPU and DPU. This is very tedious and will lead to terrible performance.
+2. Simplify the model: avoid all unsupported ops to get 1 Subgraphs (or significantly less so that the Hybrid execution is possible).
+3. Register custom ops, most likely in C++.
+
+#### Simplifying the model.
+There are several ops that are not supported, mostly coming from the `th` (PyTorch C++ backend) library or custom layers. Here is the breakdown:
+
+- `aten::pow`: **Power function ($x^y$)**. Used in `GDN` (computing $x^2$) and `NonNegativeParametrizer`. DPU does not support arbitrary power/exponents.
+- `aten::max`: **Maximum value**. Used in `LowerBound` (custom clamping). DPU theoretically supports ReLU (max(0,x)), but `max(x, constant)` often falls back to CPU.
+- `nndct_sqrt`: **Square Root**. Used in `GDN` (inverse=True) and `Parametrizer` initialization. DPU does not support hardware square root.
+- `aten::_convolution`: **Standard Convolution**. Usually supported, but seeing it as a warning usually means the graph partitioner failed to merge it with other DPU-compatible ops (likely because it's sandwiched between unsupported ops).
+- `aten::rsqrt`: **Reciprocal Square Root ($1/\sqrt{x}$)**. Used in `GDN` (inverse=False). Not supported on DPU.
+- `aten::abs`: **Absolute Value ($|x|$)**. Used in `z = h_a(|y|)` to prepare the hyperprior. Not supported on DPU.
+- `aten::ones_like`: **Tensor creation**. Used in internal helper functions for shape handling.
+- `aten::clone`: **Memory copy**. Used in `EntropyModel.quantize`.
+- `aten::round`: **Rounding**. Used in `EntropyModel.quantize` to simulate integer discrete quantization. DPU works on integer arithmetic but doesn't expose a "round float to int" layer for the graph logic itself.
+- `aten::erfc`: **Complementary Error Function**. Used in `GaussianConditional` to estimate the Cumulative Distribution Function (CDF) for bit-rate estimation. This is a complex statistical function (Probability Math) completely outside the scope of DPU acceleration.
+
+Conclusion: Almost all unsupported ops come from **GDN** (Normalization) and **Entropy Modeling** (Probability/Quantization). The Convolutional layers themselves are fine.
+
+### Overwriting CompressAI custom `torch.autograd.Function` (December 2025)
 *Vitis-AI only supports a handful of operations. Obviously, custom backward operation are not supported, but they are also not needed during inference.*
 #### Redefining LowerBoundFunction
 *See [this issue](https://github.com/InterDigitalInc/CompressAI/issues/345) to better understand the role of the function in the first place.*
@@ -13,6 +85,22 @@ The original error from Vitis-AI model Inspector is `[VAIQ_ERROR][QUANTIZER_TORC
 #### Re-writing all CompressAI componentsto use LowerBoundFunctionPatched
 Now we create `Patched` versions of `GDN`, `EntropyBottleneck`, and `GaussianConditional` to use `LowerBoundFunctionPatched`.
 During the process I copied some compressai code for all these components. However, I got some problems with "unexpected keys" when loading the checkpiont. That's because they renamed some parameters between 1.2.6 and 1.2.8. Therefore, I bumped compressai to 1.2.8.
+
+
+### Adapting Vitis-AI Docker container to my requirements (October 2025)
+```bash
+# If old container still running, but must restart because NVMH
+exit
+docker rm vai_container_2
+# ---
+cd /mnt/vitisAI/Vitis-AI/
+./docker_run.sh xilinx/vitis-ai-pytorch-gpu:3.5.0.001-1eed93cde
+conda activate vitis-ai-pytorch
+pip install h5py omegaconf compressai torchmetrics  # hydra-core
+# We cannot install lightning, because it will bump torch 1.13.1+cu117 to torch-2.4.1 which is not compatible with vaic and vart that were built with PyTorch 1.13 (I suppose) and results in an OSError
+# Tell the container to use conda's `libstdc++` which is more recent and satisfies GLIBCXX_3.4.29
+export LD_PRELOAD=$CONDA_PREFIX/lib/libstdc++.so.6:$LD_PRELOAD
+```
 
 
 ### Convolution settings (tackled before LPS ~ 23/06/2025)
@@ -66,9 +154,9 @@ Below is the intended project structure on the Target:
 
 I couldn't find a smart way to install `h5py` on the Target, even using AMD package manager `dnf`. So I created a new script `convert_h5_to_np.py`:
 ```bash
-python scripts/dataset/convert_h5_to_np.py --dataset_path data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test.h5 --subset 500
+[HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA/$ python scripts/dataset/convert_h5_to_np.py --dataset_path data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test.h5 --subset 500
 # Afterwards transfer the dataset to the Target (It also took 6:41 mins)
-scp DDC_FPGA/data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test_500.npy root@10.0.0.2:/home/root/SAR_DDC/data/test_500.npy
+[HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA/$ scp data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test_500.npy root@10.0.0.2:/home/root/SAR_DDC/data/test_500.npy
 ```
 
 > Be careful, the Zynq US+ does not have infinite RAM, so choose the subset smartly. Or implement a better loading function in `inference.py`.
@@ -82,6 +170,8 @@ Because I don't want to create a VSCode server on the FPGA directly and I don't 
 
 *Perform inference*:
 ```bash
+[HOST](DDC_FPGA) leon_ce@bart:~$ ssh root@10.0.0.2
+[TARGET]root@xilinx-zcu102-20222:~# cd SAR_DDC
 [TARGET]root@xilinx-zcu102-20222:~/SAR_DDC# python3 scripts/inference.py --xmodel model/ResAE_pt.xmodel --data data/test_500.npy --subset 100
 ```
 
