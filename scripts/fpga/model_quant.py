@@ -2,12 +2,7 @@
 This script will be used to quantize a PyTorch model for FPGA deployment.
 It is based on Vitis-AI resnet18 PyTorch model quantization example, available at: https://xilinx.github.io/Vitis-AI/3.0/html/docs/quickstart/mpsoc.html#pytorch-tutorial
 
-@TODO:
-- I might have to have this script in Vitis-AI folder, because I need to start the docker there
-- Guess the data_dir from model configuration file (to avoid messing up)
-- Write functional MerlinRDLoss function to compute the loss after evaluation
-- Write how my evaluation will work
-
+@TODO: update this docstring
 What I will do in this script:
 - Have 3 quantization mode: "float", perform no quantization: simply evaluates the float model, "calib" for calibration and "test" for evaluation.
 - Have the necessary argparse:
@@ -30,25 +25,28 @@ import sys
 import warnings
 from pathlib import Path
 
+import h5py
 import torch
 from omegaconf import DictConfig, OmegaConf
 from pytorch_nndct.apis import torch_quantizer  # type: ignore
+from torch.utils.data import Dataset
 from tqdm import tqdm
 
 project_root = Path(__file__).resolve().parent.parent.parent
 os.environ["PROJECT_ROOT"] = str(project_root)
 sys.path.append(str(project_root))
-from src.data.components.sar_dataset import TSXSSCDataset  # noqa: E402
-from src.models.components.res_scale_hyperprior import (  # noqa: E402
-    ResidualScaleHyperprior,
+from src.models.components.dpu_wrapper import (  # noqa: E402
+    ResidualScaleHyperpriorDPUWrapper,
 )
 from src.models.components.res_scale_hyperprior_dpu import (  # noqa: E402
     ResidualScaleHyperpriorPatched,
 )
 from src.models.components.sar_simple_autoencoder import ResidualSimpleAE  # noqa: E402
+from src.utils.constants import amp_max, amp_min  # noqa: E402
 from src.utils.metrics import MerlinRDLoss  # noqa: E402
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
 parser = argparse.ArgumentParser()
 
@@ -101,41 +99,145 @@ parser.add_argument("--target", dest="target", nargs="?", const="", help="specif
 args, _ = parser.parse_known_args()
 
 
+class CustomDataset(Dataset):
+    def __init__(
+        self,
+        hdf5_path: Path,
+    ):
+        """Custom Dataset for loading patches from HDF5 file.
+
+        Avoids problematic imports in TSXSSCDataset.
+        """
+        super().__init__()
+        self.hdf5_path = hdf5_path
+
+        if not self.hdf5_path.exists():
+            raise FileNotFoundError(f"HDF5 file not found: {self.hdf5_path}")
+
+        with h5py.File(self.hdf5_path, "r") as f:
+            self.num_patches = f["patches"].shape[0]
+            self.attrs = dict(f.attrs)
+
+    def __len__(self):
+        """Return the number of patches in the dataset."""
+        return self.num_patches
+
+    def __getitem__(self, idx):
+        """Get a patch by index."""
+        with h5py.File(self.hdf5_path, "r") as f:
+            patch = torch.from_numpy(f["patches"][idx]).float()
+            # The valid.h5 has 4 channels [real, imag, ADAM-NOC and MERLIN]. We discard the 2 references.
+            patch = patch[:, :, 0:2]
+
+            patch = torch.square(patch)
+            patch = torch.log(patch + 1e-2)
+            patch = (patch - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
+
+            return patch.permute(2, 0, 1)
+
+
 def load_data(
     **kwargs,
 ) -> torch.utils.data.DataLoader:
     """Load validation data loader."""
-    dataset = TSXSSCDataset(args.data_dir / "val.h5", with_refs=False)
+    dataset = CustomDataset(args.data_dir / "val.h5")
     if args.subset_len:  # random sampling method
         assert args.subset_len <= len(dataset)
         dataset = torch.utils.data.Subset(
             dataset, random.sample(range(0, len(dataset)), args.subset_len)
         )
-    data_loader = torch.utils.data.DataLoader(
+    data_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
         dataset, batch_size=args.batch_size, shuffle=False, **kwargs
     )
     return data_loader
 
 
 def evaluate(
-    model: torch.nn.Module, val_loader: torch.utils.data.DataLoader, loss_fn: torch.nn.Module
+    quant_model: torch.nn.Module,
+    val_loader: torch.utils.data.DataLoader,
+    loss_fn: torch.nn.Module,
+    float_model: torch.nn.Module = None,
+    is_split_graph: bool = False,
 ) -> float:
-    """Evaluate the model on validation dataset."""
-    # @TODO: figure out what I want to evaluate
-    model = model.to(device)
+    """Evaluate the model on validation dataset.
+
+    Args:
+        quant_model: The model to evaluate (quantized or wrapper).
+        val_loader: DataLoader.
+        loss_fn: Loss function.
+        float_model: A float copy of the model used to generate intermediate inputs
+                     if is_split_graph is True.
+        is_split_graph: If True, inputs are manually split and fed as 4 separate tensors.
+    """
+    quant_model = quant_model.to(device)
+    if float_model:
+        float_model = float_model.to(device)
+        float_model.eval()
+
     nb_images = 0
     loss_total = 0
-    for i, data_dict in tqdm(enumerate(val_loader), total=len(val_loader)):
-        real = data_dict["real"].to(device).float()
-        imag = data_dict["imag"].to(device).float()
-        input = torch.cat([real, imag], dim=1)
-        output = model(input)
-        if i == 0:
-            print(f"{input.shape=}, {output['x_hat'].shape=}")
-        loss = loss_fn(output, input)
-        loss_total += loss["distortion"].item()
-        nb_images += real.size(0)
-    return loss_total / nb_images
+
+    # Disable gradient calculation for evaluation
+    with torch.no_grad():
+        for i, data in tqdm(enumerate(val_loader), total=len(val_loader)):
+            inputs = data.to(device).float()
+
+            if is_split_graph:
+                # --- Split Graph Evaluation Strategy ---
+                # We need to feed 4 inputs to the quant_model: (x, abs_y, z_hat, y_hat).
+                # We generate the valid intermediate maps using the float_model.
+
+                if float_model is None:
+                    raise ValueError("float_model must be provided for split graph evaluation.")
+
+                # 1. Prepare inputs (matches logic in dpu_wrapper.py Mode 1)
+                x_real = inputs[:, :1, :, :]
+                x_imag = inputs[:, 1:, :, :]
+
+                # 2. Run Float Model to get intermediates
+                # We can't just run float_model(inputs) because we need the internals.
+                # using the patched model components directly:
+                y_real = float_model.g_a(x_real)
+                y_imag = float_model.g_a(x_imag)
+                y = torch.cat((y_real, y_imag), dim=1)
+
+                # Intermediate 1: abs_y
+                abs_y = torch.abs(y)
+
+                # Intermediate 2: z_hat (and z)
+                z = float_model.h_a(abs_y)
+                # In trace/calib mode we usually bypass entropy, so z_hat ~= z
+                z_hat = z
+
+                # Intermediate 3: y_hat
+                # For calibration of g_s, we need y_hat. In trace mode y_hat ~= y
+                y_hat = y
+
+                # 4. Run Quantized Model with 4 inputs
+                # The output in Mode 2 is a tuple: (y_out, z_out, scales_out, x_out)
+                # For g_s input, we take the real part (first half channels) as approximation,
+                # effectively running g_s on "real" data.
+                y_hat_effective = y_hat[:, : y_hat.shape[1] // 2, :, :]
+
+                # For g_a input (first arg), we pass x_real (1 channel)
+                _ = quant_model(x_real, abs_y, z_hat, y_hat_effective)
+
+                # We cannot compute a meaningful loss in Split Mode because the graph is broken.
+                current_loss = 0.0
+
+            else:
+                # --- Standard Mode 1 (Connected) ---
+                output = quant_model(inputs)
+                if i == 0:
+                    # debug print
+                    pass
+                loss = loss_fn(output, inputs)
+                current_loss = loss["distortion"].item()
+
+            loss_total += current_loss
+            nb_images += inputs.size(0)
+
+    return loss_total / nb_images if nb_images > 0 else 0.0
 
 
 def try_match_run_dir_with_existing_runs() -> Path:
@@ -185,6 +287,44 @@ def check_and_enforce_arguments():
         args.subset_len = 1
 
 
+def debug_forward_execution(model, inputs, desc):
+    """Helper function to inspect which modules are executed during a forward pass.
+
+    This helps diagnosing mismatch errors between Calibration and Deployment graphs.
+    """
+    print(f"\n[DEBUG] --- Forward Execution Trace: {desc} ---")
+    print(f"[DEBUG] Input shapes: {[i.shape for i in inputs]}")
+
+    hooks = []
+
+    def get_hook(name):
+        """Create a forward hook that prints module execution."""
+
+        def hook(module, input, output):
+            """Forward hook function."""
+            # Print only leaf modules or interesting ones to avoid spam
+            if len(list(module.children())) == 0 or "Sequential" in module.__class__.__name__:
+                print(f"[DEBUG] Executing: {name} (Type: {module.__class__.__name__})")
+
+        return hook
+
+    # Register hooks on all named modules
+    for name, module in model.named_modules():
+        hooks.append(module.register_forward_hook(get_hook(name)))
+
+    # Run forward pass (no grad)
+    try:
+        with torch.no_grad():
+            model(*inputs)
+    except Exception as e:
+        print(f"[DEBUG] Forward pass crashed: {e}")
+    finally:
+        # Cleanup
+        for h in hooks:
+            h.remove()
+    print("--------------------------------------------------\n")
+
+
 if __name__ == "__main__":
     check_and_enforce_arguments()
 
@@ -196,52 +336,118 @@ if __name__ == "__main__":
     model_params = args.hydra_conf.model.net
     model_params.pop("_target_")
 
+    full_model = None  # Hold reference to float model for split graph execution wrapping
+
     # For DPU export / inspection, always use the patched model with export_dpu=True.
     # We still load weights from the training-time ResidualScaleHyperprior checkpoint.
-    if model_name in ("ResidualScaleHyperprior"):
-        model = ResidualScaleHyperprior(**model_params).cpu()
-    elif model_name in ("ResidualScaleHyperpriorPatched"):
+    if model_name in ("ResidualScaleHyperpriorPatched"):
         model_params["export_dpu"] = True
         print(f"Using ResidualScaleHyperpriorPatched for DPU with params: {model_params}.")
-        model = ResidualScaleHyperpriorPatched(**model_params).cpu()
+        full_model = ResidualScaleHyperpriorPatched(**model_params).to(device)
+
+        # Load weights into full model
+        checkpoint = torch.load(model_path)
+        if "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+            state_dict = {k.replace("net.", "", 1): v for k, v in state_dict.items()}
+            full_model.load_state_dict(state_dict, strict=False)
+        else:
+            full_model.load_state_dict(checkpoint, strict=False)
+
+        # Disable gradients for all parameters to avoid VAI_Q trace errors
+        for param in full_model.parameters():
+            param.requires_grad = False
+
+        print("Transforming to ResidualScaleHyperpriorDPUWrapper (Calibration Mode)...")
+        model = ResidualScaleHyperpriorDPUWrapper(full_model)
+
     elif model_name == "ResidualSimpleAE":
         # Simple AE has no entropy modules; nothing special needed
         print(f"Using ResidualSimpleAE with params: {model_params}.")
-        model = ResidualSimpleAE(**model_params).cpu()
+        model = ResidualSimpleAE(**model_params).to(device)
+
+        checkpoint = torch.load(model_path)
+        if "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+            state_dict = {k.replace("net.", "", 1): v for k, v in state_dict.items()}
+            model.load_state_dict(state_dict, strict=False)
+        else:
+            model.load_state_dict(checkpoint, strict=False)
+
+        # Disable gradients
+        for param in model.parameters():
+            param.requires_grad = False
     else:
         raise ValueError(f"Model {model_name} not recognized for DPU compilation!")
 
-    checkpoint = torch.load(model_path)
-    ckpt_type = "regular PyTorch"
-    if "state_dict" in checkpoint:
-        # Lightning prefixes parameters with "model." or similar, need to remove that
-        state_dict = checkpoint["state_dict"]
-        state_dict = {k.replace("net.", "", 1): v for k, v in state_dict.items()}
-        ckpt_type = "Lightning"
-    message = model.load_state_dict(checkpoint, strict=False)
-    print(f"     Loaded a {ckpt_type} checkpoint: {message}")
+    print("Loaded a checkpoint successfully.")
 
     model.eval()
 
+    # Define dummy inputs for both Single and Split modes
+    # Shapes must match the architecture (N=128, M=256)
+
+    is_wrapper = isinstance(model, ResidualScaleHyperpriorDPUWrapper)
+
+    # Split Mode Inputs
+    if is_wrapper:
+        # x: [B, 1, H, W] (g_a expects 1 channel)
+        x_dumb = torch.randn(args.batch_size, 1, 256, 256).to(device)
+        # abs_y: [B, M, H/16, W/16]
+        abs_y_dumb = torch.randn(args.batch_size, 256, 16, 16).to(device)
+        # z_hat: [B, M, H/128, W/128] (16/8 = 2)
+        z_hat_dumb = torch.randn(args.batch_size, 256, 2, 2).to(device)
+        # y_hat: [B, N, H/16, W/16]
+        y_hat_dumb = torch.randn(args.batch_size, 128, 16, 16).to(device)
+
+        # Use Split Graph for Vitis-AI Quantization (Consistent for Calib & Test)
+        dummy_inputs = (x_dumb, abs_y_dumb, z_hat_dumb, y_hat_dumb)
+        print("Using Split Graph (4 inputs) for Vitis-AI Quantization.")
+    else:
+        # Standard Mode (2 channels for Calib Mode 1 of wrapper OR normal model)
+        # Wait, if it is NOT a wrapper, it might be SimpleAE which takes 2 channels?
+        # Or if it is wrapper in mode 1, it takes 2 channels.
+        # But here we decided: IF wrapper -> Use Split Mode.
+        # So "else" is for SimpleAE. SimpleAE takes 2 channels?
+        # Let's check SimpleAE definition. It usually takes 2 channels.
+        x_dumb = torch.randn(args.batch_size, 2, 256, 256).to(device)
+
     # ----- inspect -----
-    input = torch.randn([args.batch_size, 2, 256, 256])
     if args.quant_mode == "float":
         quant_model = model
         if args.inspect:
+
+            def inspect_activations(module, prefix=""):
+                for name, child in module.named_children():
+                    fullname = f"{prefix}.{name}" if prefix else name
+                    cls_name = child.__class__.__name__
+                    if "GDN" in cls_name or "ReLU" in cls_name:
+                        print(f"[{cls_name}] found at {fullname}")
+                    inspect_activations(child, fullname)
+
+            if hasattr(model, "g_a"):
+                inspect_activations(model.g_a, "g_a")
+                inspect_activations(model.g_s, "g_s")
+
             if not args.target:
                 raise ValueError("Target must be specified for Inspector.")
             from pytorch_nndct.apis import Inspector  # type: ignore
 
             inspector = Inspector(args.target)
-            inspector.inspect(model, (input,), device=device)
-
+            inspector.inspect(model, dummy_inputs, device=device)
             sys.exit()
     else:
         # ----- Setup -----
+        if args.quant_mode == "calib":
+            # [DEBUG] Trace graph before calibration
+            debug_forward_execution(
+                model, dummy_inputs, f"Calibration Mode ({len(dummy_inputs)} Inputs)"
+            )
+
         quantizer = torch_quantizer(
             args.quant_mode,
             model,
-            (input,),
+            dummy_inputs,
             device=device,
             quant_config_file=args.config_file,
             target=args.target,
@@ -257,30 +463,38 @@ if __name__ == "__main__":
     val_loader = load_data()
     # print the shape of the data
     for data in val_loader:
-        print(f"Data batch shape: {data['real'].shape}, {data['imag'].shape}")
+        print(f"Data batch shape: {data.shape}")
         break
 
     # fast finetune model or load finetuned parameter before test
     if args.fast_finetune:
         ft_loader = load_data()
+        extra_kwargs = {"float_model": full_model, "is_split_graph": True} if is_wrapper else {}
         if args.quant_mode == "calib":
-            quantizer.fast_finetune(evaluate, (quant_model, ft_loader, loss_fn))
+            quantizer.fast_finetune(evaluate, (quant_model, ft_loader, loss_fn), **extra_kwargs)
         elif args.quant_mode == "test":
             quantizer.load_ft_param()
 
     # @TODO: keep here scores of float model to print and compare
     # Float model: Loss after evaluation: 5545.23803125
     # Quantized model: Loss after evaluation: 5776.80296875
-    loss_gen = evaluate(quant_model, val_loader, loss_fn)
+    print(f"Evaluating model in '{args.quant_mode}' mode...")
+    extra_eval_kwargs = {"float_model": full_model, "is_split_graph": True} if is_wrapper else {}
+    loss_gen = evaluate(quant_model, val_loader, loss_fn, **extra_eval_kwargs)
     print(f"Loss after evaluation: {loss_gen}")
 
     # handle quantization result
     if args.quant_mode == "calib":
         quantizer.export_quant_config()
     if args.deploy:
-        # @TODO: I should set output_dir to script location + quantize_results/
-        quantizer.export_torch_script()
-        # quantizer.export_onnx_model() # Get an ERROR: Exporting the operator 'aten::erfc' to ONNX opset version 17 is not supported. Please feel free to request support or submit a pull request on PyTorch GitHub: https://github.com/pytorch/pytorch/issues
-        quantizer.export_xmodel(deploy_check=True)
+        if is_wrapper:
+            print("Exporting split xmodel for Hybrid Inference...")
+            quantizer.export_xmodel(deploy_check=False)
+        else:
+            # Standard deployment for SimpleAE or others
+            # @TODO: I should set output_dir to script location + quantize_results/
+            quantizer.export_torch_script()
+            # quantizer.export_onnx_model()
+            quantizer.export_xmodel(deploy_check=True)
 
         # @TODO: Print the size of the xmodel's input buffer

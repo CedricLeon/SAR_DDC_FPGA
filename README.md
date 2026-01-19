@@ -14,9 +14,7 @@ This project implements the solution presented by Amao-Oliva et al. [1] availabl
 ### TODOs
 *I'll use this section as a TODO list, including ideas for future projects.*
 - [ ] "NWML" warning, see [NVML is the NVIDIA Management Library and is used on NVIDIA GPUs](https://discuss.pytorch.org/t/cant-initialize-nvml-error-with-rvc-project/194206)
-- [ ] Next runs:
-  - ...
-- [ ] Explain that the syntax is Python 3.8 compatible because it is used by the Vitis-AI container and we can't bump it. (It mostly implies using `Option[]` and `Union[]` from `typing` instead of `|`)
+- [ ] Add in README that the syntax is Python 3.8 compatible because it is used by the Vitis-AI container and we can't bump it. (It mostly implies using `Option[]` and `Union[]` from `typing` instead of `|`)
 
 ### Long-term Experiments/Upgrades
 **About SAR_DDC**

@@ -10,6 +10,26 @@ from src.models.sar_ddc_module import SARDDCModule
 from src.utils.metrics import estimate_bpp
 
 
+def clip(
+    img: np.ndarray,
+    mean_std_norm: bool = True,
+    clip_factor: int = 3,
+    percentiles: tuple[int, int] = (5, 95),
+) -> np.ndarray:
+    """Clip to either mean +/- clip_factor * std or percentiles[0]th/percentiles[1]th
+    percentile."""
+    if mean_std_norm:
+        img = img.clip(
+            img.mean() - clip_factor * img.std(),
+            img.mean() + clip_factor * img.std(),
+        )
+    else:
+        p5 = np.percentile(img, percentiles[0])
+        p95 = np.percentile(img, percentiles[1])
+        img = img.clip(p5, p95)
+    return img
+
+
 def extract_short_name_from_TSX_filepath(filepath: Path):
     """Extract short name from the given filepath.
 
@@ -75,7 +95,7 @@ def process_large_patch(
 
             # Process patches
             with torch.no_grad():
-                output = model(input_patch)
+                output = model.forward(input_patch)
 
             # Compute criterion if target is provided
             if target is not None:

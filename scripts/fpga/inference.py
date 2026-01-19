@@ -68,11 +68,17 @@ class MetricsTracker:
 
     @staticmethod
     def compute_psnr(a: np.ndarray, b: np.ndarray) -> float:
-        """Compute Peak Signal-to-Noise Ratio (PSNR) between two images."""
+        """Compute Peak Signal-to-Noise Ratio (PSNR) between two images.
+
+        Inputs:
+         - a: the predicted image, np.ndarray.
+         - b: the reference image, np.ndarray.
+        Returns:
+         - PSNR value as float.
+        """
         mse = MetricsTracker.compute_mse(a, b)
-        if mse == 0:
-            return float("inf")
-        return 10 * np.log10((DATA_RANGE**2) / mse)
+        peak = float(np.max(a))
+        return 20 * np.log10(peak) - 10 * np.log10(mse)
 
     @staticmethod
     def compute_ssim(a: np.ndarray, b: np.ndarray) -> float:
@@ -109,14 +115,14 @@ class MetricsTracker:
 
     def update(
         self,
-        x_hat_norm: np.ndarray,
+        recon_linA: np.ndarray,
         likelihoods: Dict[str, np.ndarray],
-        target_log: np.ndarray,
+        target_linA: np.ndarray,
     ) -> Dict[str, float]:
         """
-        x_hat_norm: reconstruction in normalized [0,1] domain, shape [B, H, W, C].
+        recon_linA: reconstruction linear amplitude, shape [B, H, W, 1].
         likelihoods: dict of likelihood tensors (for BPP).
-        target_log: reference in log-intensity scale (already denormalized).
+        target_linA: reference in linear amplitude.
 
         Returns per-batch metrics for the current reference.
         """
@@ -128,9 +134,9 @@ class MetricsTracker:
                 continue
 
             if name == "bpp":
-                value = fn(x_hat_norm, likelihoods)
+                value = fn(recon_linA, likelihoods)
             elif name in ("mse", "psnr", "ssim", "ms_ssim", "merlin"):
-                value = fn(x_hat_norm, target_log)
+                value = fn(recon_linA, target_linA)
             else:
                 continue
 
@@ -162,40 +168,41 @@ def load_npy_data(
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """Load data from NPY file.
 
-    The dataset should always contain ADAM-NOC and MERLIN GT.
+    Inputs:
+      - dataset_path: path to NPY file.
+      - subset_len: number of samples to load, -1 for all.
+    Returns:
+      - noisy: np.ndarray of the SLC patchesof shape [B, H, W, 2] with real and imag channels.
+      - ground_truths: dict with keys "adam_noc" and "merlin", each np.ndarray of shape [B, H, W, 1
     """
     data = np.load(dataset_path)
     if subset_len < 0 or subset_len > data.shape[0]:
         subset_len = data.shape[0]
-    slc_data = data[:subset_len, :, :, 0:2]  # [B, H, W, 2] real and imag channels only
+    noisy = data[:subset_len, :, :, 0:2]  # [B, H, W, 2] real and imag channels only
     ground_truths = {  # [B, H, W, 1] already in log-intensity
         "adam_noc": data[:subset_len, :, :, 2:3],
         "merlin": data[:subset_len, :, :, 3:4],
     }
-    return slc_data, ground_truths
+    return noisy, ground_truths
 
 
-def preprocess_input(data: np.ndarray, input_scale: float) -> np.ndarray:
-    """Data normalization and quantization (fixed-point INT8)."""
-    # Normalization is normally applied in TSXSSCDataset.__getitem__. Because we don't use it here, we must do it manually.
-    data = np.square(data)
-    data = np.log(data + 1e-2)
-    data = (data - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
-
-    # The DPU processes INT8 data. We can either quantize it ourselves or let Vitis AI handle it.
-    return (data * input_scale).astype(np.int8)
+def float_to_DPU_int(data_float: np.ndarray, input_scale: float) -> np.ndarray:
+    """Convert float data to DPU fixed-point INT8 using the given scale."""
+    return (data_float * input_scale).astype(np.int8)
 
 
-def postprocess_output(output_data_int: np.ndarray, output_scale: float) -> np.ndarray:
-    """Convert DPU fixed-point output back to float, denormalize the reconstruction, and convert in
-    Log-intensity scale."""
-    output_data_float = output_data_int.astype(np.float32) * output_scale
+def DPU_int_to_float(data_int: np.ndarray, scale: float) -> np.ndarray:
+    """Convert DPU fixed-point INT8 data back to float using the given scale."""
+    return data_int.astype(np.float32) * scale
 
-    # Convert to log-intensity like in evaluation
-    recon_lin = np.exp(output_data_float * (AMP_MAX - AMP_MIN) + AMP_MIN)
-    recon_lin = 0.5 * (recon_lin[..., 0:1] + recon_lin[..., 1:2])
-    recon_logI = np.log(recon_lin + EPS)
-    return recon_logI
+
+def denormalize_model_output(data_norm: np.ndarray) -> np.ndarray:
+    """Denormalize model output.
+
+    The model is fed with data in logarithm scale normalized with [AMP_MIN, AMP_MAX]. We revert
+    this normalization here.
+    """
+    return np.exp(data_norm * (AMP_MAX - AMP_MIN) + AMP_MIN)
 
 
 def get_child_subgraph_dpu(graph: xir.Graph) -> list[xir.Subgraph]:
@@ -221,13 +228,20 @@ def run_inference(xmodel_path: str, dataset_path: str, subset_len: int):
     print(f"Found {len(subgraphs)} DPU subgraphs.")
     runner = vart.Runner.create_runner(subgraphs[0], "run")
 
-    # Get tensor info
+    # Get model tensors info
     input_tensors = runner.get_input_tensors()
     output_tensors = runner.get_output_tensors()
     input_tensor = input_tensors[0]
     output_tensor = output_tensors[0]
     input_shape = tuple(input_tensor.dims)  # [B, H, W, C]
     output_shape = tuple(output_tensor.dims)  # [B, H, W, C]
+
+    for input_tensor in input_tensors:
+        print(f"Input tensor: {input_tensor.name=}, {input_tensor.dims=}, {input_tensor.dtype=}")
+    for output_tensor in output_tensors:
+        print(
+            f"Output tensor: {output_tensor.name=}, {output_tensor.dims=}, {output_tensor.dtype=}"
+        )
 
     # Get fixed-point scales for conversion @TODO check how that is computed
     input_fixpos = input_tensor.get_attr("fix_point")
@@ -248,94 +262,99 @@ def run_inference(xmodel_path: str, dataset_path: str, subset_len: int):
     output_data = [np.empty(output_shape, dtype=np.int8, order="C")]
 
     # Dataset
-    slc_data, ref_data = load_npy_data(dataset_path, subset_len)
+    noisy, ground_truths = load_npy_data(dataset_path, subset_len)
     print(
-        f"Loaded SLC data with shape {slc_data.shape} from {dataset_path}. References are {list(ref_data.keys())}, each with shape {ref_data['adam_noc'].shape}."
+        f"Loaded Noisy SLC data with shape {noisy.shape} from {dataset_path}. References are {list(ground_truths.keys())}, each with shape {ground_truths['adam_noc'].shape}."
     )
 
     # Three trackers: vs original input, vs ADAM-NOC, vs MERLIN
     metric_list = ["bpp", "mse", "psnr", "ssim", "ms_ssim", "merlin"]
-    tracker_orig = MetricsTracker(metrics_to_track=metric_list)
+    tracker_noisy = MetricsTracker(metrics_to_track=metric_list)
     tracker_adam = MetricsTracker(metrics_to_track=metric_list)
     tracker_merlin = MetricsTracker(metrics_to_track=metric_list)
     n_batches = 0
 
     # Inference loop
-    n_samples = len(slc_data)
+    n_samples = len(noisy)
     batch_size = input_shape[0]
     print(f"Running inference on {n_samples} (batch size: {batch_size}) samples...")
 
     for i in range(0, n_samples, batch_size):
         batch_end = min(i + batch_size, n_samples)
         valid_len = batch_end - i
-        batch_data = slc_data[i:batch_end]  # [valid_len, H, W, 2]
+        noisy_lin = noisy[i:batch_end]  # [valid_len, H, W, 2]
 
         # Pad last batch if needed @TODO Delete if we enforce a batch size of 1
-        if len(batch_data) < batch_size:
-            pad_size = batch_size - len(batch_data)
-            batch_data = np.pad(batch_data, ((0, pad_size), (0, 0), (0, 0), (0, 0)))
+        if len(noisy_lin) < batch_size:
+            pad_size = batch_size - len(noisy_lin)
+            noisy_lin = np.pad(noisy_lin, ((0, pad_size), (0, 0), (0, 0), (0, 0)))
 
         # Preprocess input (norm + quant) and store to DPU input buffer
-        print(f"{batch_data.shape=}, {input_data[0].shape=}, {input_scale=}")
-        input_data[0][:] = preprocess_input(batch_data, input_scale)
+        print(f"input_data info: {len(input_data)=}, {input_data[0].shape=}, {input_scale=}")
+
+        noisy_lin_int = float_to_DPU_int(noisy_lin, input_scale)
+        print(f"{noisy_lin_int.shape=}")
+        input_data[0][:] = noisy_lin_int
 
         # Execute on DPU (synchronous)
         job_id = runner.execute_async(input_data, output_data)
         runner.wait(job_id)
 
         # Read DPU output buffer and discard padded batches
-        batch_output_int = output_data[0][:valid_len]  # [valid_len, H, W, 2]
+        recon_norm_int = output_data[0][:valid_len]  # [valid_len, H, W, 2]
         # Bring back to float and denormalize
-        batch_output = postprocess_output(batch_output_int, output_scale)  # [valid_len, H, W, 1]
+        recon_norm = DPU_int_to_float(recon_norm_int, output_scale)
+        # Denormalize model output
+        recon_lin = denormalize_model_output(recon_norm)
+        # Convert to linear amplitude
+        recon_linA = np.sqrt(
+            0.5 * (np.square(recon_lin[..., 0:1]) + np.square(recon_lin[..., 1:2]))
+        )  # [B, H, W, 1]
 
-        # Build references in log-intensity
-        # original: compute log-intensity from real/imag in channel-last form
-        # batch_data (with padding) is [batch_size, H, W, 2]; we need only valid part
-        batch_data_valid = batch_data[:valid_len]  # [valid_len, H, W, 2]
-        orig_log = np.log(
-            0.5 * (np.square(batch_data_valid[..., 0:1]) + np.square(batch_data_valid[..., 1:2]))
-            + EPS
+        # Build references in linear amplitude
+        noisy_lin = noisy_lin[:valid_len]  # [valid_len, H, W, 2]
+        noisy_linA = np.sqrt(
+            np.square(noisy_lin[..., 0:1]) + np.square(noisy_lin[..., 1:2])
         )  # [valid_len, H, W, 1]
 
-        # ADAM-NOC and MERLIN already log-intensity [B, H, W]; expand channel dim to match [B, H, W, 1]
-        adam_slice = ref_data["adam_noc"][i:batch_end][:valid_len]  # [valid_len, H, W, 1]
-        merlin_slice = ref_data["merlin"][i:batch_end][:valid_len]  # [valid_len, H, W, 1]
+        # ADAM-NOC and MERLIN already linear amplitude [B, H, W]; expand channel dim to match [B, H, W, 1]
+        adam_linA = ground_truths["adam_noc"][i:batch_end][:valid_len]  # [valid_len, H, W, 1]
+        merlin_linA = ground_truths["merlin"][i:batch_end][:valid_len]  # [valid_len, H, W, 1]
 
         # Dummy likelihoods for BPP (same shape as output)
-        likelihoods = {"y": np.ones_like(batch_output, dtype=np.float32)}  # [valid_len, H, W, 1]
-
+        likelihoods = {"y": np.ones_like(recon_linA, dtype=np.float32)}  # [valid_len, H, W, 1]
         # Update trackers
-        batch_metrics_orig = tracker_orig.update(
-            x_hat_norm=batch_output,
-            likelihoods=likelihoods,
-            target_log=orig_log,
+        batch_metrics_noisy = tracker_noisy.update(
+            recon_linA,
+            likelihoods,
+            noisy_linA,
         )
         batch_metrics_adam = tracker_adam.update(
-            x_hat_norm=batch_output,
-            likelihoods=likelihoods,
-            target_log=adam_slice,
+            recon_linA,
+            likelihoods,
+            adam_linA,
         )
         batch_metrics_merlin = tracker_merlin.update(
-            x_hat_norm=batch_output,
-            likelihoods=likelihoods,
-            target_log=merlin_slice,
+            recon_linA,
+            likelihoods,
+            merlin_linA,
         )
         n_batches += 1
 
         if (i // batch_size) % 10 == 0:
             print(f"Processed batch {i // batch_size}:")
-            print(f"\t - {batch_metrics_orig=}")
+            print(f"\t - {batch_metrics_noisy=}")
             print(f"\t - {batch_metrics_adam=}")
             print(f"\t - {batch_metrics_merlin=}")
 
     # 8. Summary
-    avg_orig = tracker_orig.summary()
+    avg_noisy = tracker_noisy.summary()
     avg_adam = tracker_adam.summary()
     avg_merlin = tracker_merlin.summary()
 
     print("\nFinal Results:")
     print("  Vs original input:")
-    for name, value in sorted(avg_orig.items()):
+    for name, value in sorted(avg_noisy.items()):
         print(f"    {name}: {value:.4f}")
     print("  Vs ADAM-NOC:")
     for name, value in sorted(avg_adam.items()):
@@ -348,7 +367,7 @@ def run_inference(xmodel_path: str, dataset_path: str, subset_len: int):
     summary = {
         "n_samples": n_samples,
         "n_batches": n_batches,
-        "metrics_vs_original": avg_orig,
+        "metrics_vs_noisy": avg_noisy,
         "metrics_vs_adam_noc": avg_adam,
         "metrics_vs_merlin": avg_merlin,
     }

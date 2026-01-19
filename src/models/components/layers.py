@@ -1,8 +1,8 @@
 import torch.nn as nn
-from compressai.layers import GDN
+from compressai.layers import GDN, GDN1
 from torch import Tensor
 
-from src.models.components.compressai_dpu import GDNPatched
+from src.models.components.compressai_dpu import GDN1Patched, GDNPatched
 
 
 def conv(in_channels: int, out_channels: int, kernel_size: int = 5, stride: int = 1) -> nn.Conv2d:
@@ -64,16 +64,13 @@ def make_activation(
             return GDNPatched(channels, inverse=inverse)
         else:
             return GDN(channels, inverse=inverse)
+    if t == "gdn1":
+        if use_patched_gdn:
+            return GDN1Patched(channels, inverse=inverse)
+        else:
+            return GDN1(channels, inverse=inverse)
     if t == "relu":
         return nn.ReLU(inplace=True)
-    if t in ("lrelu", "leaky_relu"):
-        return nn.LeakyReLU(0.1, inplace=True)
-    if t == "silu":
-        return nn.SiLU(inplace=True)
-    if t == "gelu":
-        return nn.GELU()
     if t in ("identity", "none"):
         return nn.Identity()
-    if t in ("gn_relu", "groupnorm_relu"):
-        return nn.Sequential(nn.GroupNorm(8, channels), nn.ReLU(inplace=True))
     raise ValueError(f"Unknown activation type: {act_name}")

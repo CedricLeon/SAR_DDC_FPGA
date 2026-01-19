@@ -2,6 +2,15 @@
 # Tmp files used for Copilot context
 compressai_original.py
 docker_run.sh
+# FPGA-specific files
+fpga_results/
+
+# ----- Lightning-Hydra-Template -----
+configs/local/default.yaml
+/data/
+/logs/
+.env
+tmp/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -149,13 +158,6 @@ dmypy.json
 *.tar
 *.tar.gz
 *.zip
-
-# Lightning-Hydra-Template
-configs/local/default.yaml
-/data/
-/logs/
-.env
-tmp_to_download/
 
 # Aim logging
 .aim

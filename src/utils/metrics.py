@@ -1,17 +1,90 @@
 import math
-from typing import Dict, Literal, Union
+from typing import Dict, Literal, Optional, Union
 
+import numpy as np
 import torch
 from compressai.registry import register_criterion
 from torch import Tensor, nn
 from torchmetrics import MeanSquaredError
+from torchmetrics.functional.image import (
+    multiscale_structural_similarity_index_measure,
+    structural_similarity_index_measure,
+)
 from torchmetrics.image import (
     MultiScaleStructuralSimilarityIndexMeasure,
     PeakSignalNoiseRatio,
     StructuralSimilarityIndexMeasure,
 )
 
-from src.utils.constants import amp_max, amp_min
+from src.utils.constants import EPS, amp_max, amp_min
+from src.utils.debug import print_statistics
+
+
+def get_all_distortion_metrics(
+    predicted: Union[Tensor, np.ndarray],
+    target: Union[Tensor, np.ndarray],
+) -> Dict[str, float]:
+    """Compute all distortion metrics between predicted and target tensors.
+
+    Args:
+        predicted (Union[Tensor, np.ndarray]): Predicted tensor
+        target (Union[Tensor, np.ndarray]): Target tensor
+    Returns:
+        Dict[str, float]: Dictionary containing MSE, PSNR, SSIM, and MS-SSIM values
+    """
+    if isinstance(predicted, np.ndarray):
+        predicted = torch.from_numpy(predicted)
+    if isinstance(target, np.ndarray):
+        target = torch.from_numpy(target)
+    mse_value = mse(predicted, target)
+    psnr_value = psnr(predicted, target, mse_value)
+
+    # Ensure tensors have shape [N, C, H, W]
+    if predicted.ndim == 2:
+        predicted = predicted.unsqueeze(0).unsqueeze(0)
+    elif predicted.ndim == 3:
+        predicted = predicted.unsqueeze(0)
+    if target.ndim == 2:
+        target = target.unsqueeze(0).unsqueeze(0)
+    elif target.ndim == 3:
+        target = target.unsqueeze(0)
+    ssim_value = ssim(predicted, target)
+    ms_ssim_value = ms_ssim(predicted, target)
+    return {
+        "mse": mse_value,
+        "psnr": psnr_value,
+        "ssim": ssim_value,
+        "ms_ssim": ms_ssim_value,
+    }
+
+
+def mse(predicted: Tensor, target: Tensor) -> float:
+    """Compute Mean Squared Error (MSE) loss between predicted and target tensors."""
+    return torch.mean((predicted - target) ** 2).item()
+
+
+def psnr(predicted: Tensor, target: Tensor, mse_value: Optional[float] = None) -> float:
+    """Compute Peak Signal-to-Noise Ratio (PSNR) between predicted and target tensors."""
+    mse_value = mse_value if mse_value is not None else mse(predicted, target)
+    peak = float(torch.max(predicted))
+    psnr_value = 20 * math.log10(peak) - 10 * math.log10(mse_value)
+    return psnr_value
+
+
+def ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = None) -> float:
+    """Compute Structural Similarity Index Measure (SSIM)."""
+    if data_range is None:
+        data_range = float(torch.max(predicted))
+    return structural_similarity_index_measure(predicted, target, data_range=data_range).item()
+
+
+def ms_ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = None) -> float:
+    """Compute Multi-Scale Structural Similarity Index Measure (MS-SSIM)."""
+    if data_range is None:
+        data_range = float(torch.max(predicted))
+    return multiscale_structural_similarity_index_measure(
+        predicted, target, data_range=data_range
+    ).item()
 
 
 def estimate_bpp(
@@ -42,7 +115,7 @@ class MerlinRDLoss(nn.Module):
             raise NotImplementedError(f"{metric} is not supported!")
         self.metric = metric
 
-        self.lmbda = lmbda
+        self.lmbda = lmbda if lmbda >= 0 else None  # deactivate rate if lmbda < 0
 
         self.mse = MeanSquaredError()  # nn.MSELoss(reduction="sum")
         self.psnr = PeakSignalNoiseRatio(data_range=(2 * amp_min, 2 * amp_max))
@@ -52,36 +125,56 @@ class MerlinRDLoss(nn.Module):
         )
 
     def forward(self, output: Dict[str, Tensor], target: Tensor) -> Dict[str, Tensor]:
+        """Compute rate-distortion loss.
+
+        Args:
+            output (Dict[str, Tensor]): Model output containing 'x_hat' and 'likelihoods'
+            target (Tensor): Target tensor, in linear scale
+        Returns:
+            Dict[str, Tensor]: Dictionary containing loss, bpp, and distortion metrics
+        """
         out = {}
         # Rate term (estimated bpp)
         out["bpp"] = estimate_bpp(output)
 
-        # Denorm the reconstructions and target before computing losses
-        r_denorm = output["x_hat"] * (2 * amp_max - 2 * amp_min) + 2 * amp_min
-        b_denorm = target * (2 * amp_max - 2 * amp_min) + 2 * amp_min
+        # Denorm the reconstructions before computing losses
+        log_hat_R = 2 * (output["x_hat"] * (amp_max - amp_min) + amp_min)
+        # print_statistics("      Predicted Reflectivity log_hat_R", log_hat_R)
+        # ----- Classic MERLIN Loss (0.5 * log(r) + b^2 / r) -----
+        hat_R = torch.exp(log_hat_R) + 1e-6  # must be non-zero
+        # print_statistics("      Predicted Reflectivity hat_R", hat_R)
+        b_square = torch.square(target)
+        # print_statistics("      b_square", b_square)
+        merlin_loss = 0.5 * log_hat_R + b_square / hat_R
+        # ----- In Log-Scale MERLIN Loss (0.5 * log_r + exp(2*log_b - log_r)) -----
+        # log_b = torch.log(torch.square(target) + EPS)
+        # print_statistics("      Target (square + log )", log_b)
+        # merlin_loss = 0.5 * log_hat_R + torch.exp(2 * log_b - log_hat_R)
 
-        out["mse"] = self.mse(r_denorm, b_denorm)
-        out["psnr"] = self.psnr(r_denorm, b_denorm)
-        out["ssim"] = self.ssim(r_denorm, b_denorm)
-        out["ms_ssim"] = self.ms_ssim(r_denorm, b_denorm)
-
-        # ----- MERLIN Loss -----
-        # # Classic:      (0.5 * log(r) + b^2 / r)
-        # r_denorm = torch.exp(r_denorm)
-        # b_denorm = torch.exp(b_denorm)
-        # merlin_loss = 0.5 * torch.log(r_denorm + 1e-2) + torch.square(b_denorm) / (
-        #     r_denorm + 1e-6
-        # )
-        # In Log-Scale: (0.5 * r + exp(2*b - r))
-        merlin_loss = 0.5 * r_denorm + torch.exp(2 * b_denorm - r_denorm)
         out["merlin"] = torch.mean(merlin_loss)
+
+        # These metrics are just used for monitoring purposes, I compute them in log-scale
+        clean = log_hat_R
+        noisy = torch.log(b_square + EPS)
+
+        out["mse"] = self.mse(clean, noisy)
+        out["psnr"] = self.psnr(clean, noisy)
+        out["ssim"] = self.ssim(clean, noisy)
+        out["ms_ssim"] = self.ms_ssim(clean, noisy)
+
+        # print(
+        #     f"[DEBUG]: {out['merlin']=}, {out['mse']=}, {out['psnr']=}, {out['ssim']=}, {out['ms_ssim']=}"
+        # )
 
         if self.metric == "merlin" or self.metric == "mse":
             out["distortion"] = out[self.metric]
         elif self.metric == "ssim" or self.metric == "ms_ssim":
             out["distortion"] = 1 - out[self.metric]
 
-        out["loss"] = self.lmbda * out["distortion"] + out["bpp"]
+        if self.lmbda is None:
+            out["loss"] = out["distortion"]
+        else:
+            out["loss"] = self.lmbda * out["distortion"] + out["bpp"]
         return out
 
 
@@ -98,12 +191,11 @@ class MerlinLoss(nn.Module):
         super().__init__()
 
         self.mse = MeanSquaredError()
-        self.psnr = PeakSignalNoiseRatio(data_range=(amp_min, amp_max))
-        self.ssim = StructuralSimilarityIndexMeasure(data_range=(amp_min, amp_max))
-        self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=(amp_min, amp_max))
-
-        self.count_calls: int | None = None  # 0 to enable printing
-        self.print_every_n_call = 50
+        self.psnr = PeakSignalNoiseRatio(data_range=(2 * amp_min, 2 * amp_max))
+        self.ssim = StructuralSimilarityIndexMeasure(data_range=(2 * amp_min, 2 * amp_max))
+        self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(
+            data_range=(2 * amp_min, 2 * amp_max)
+        )
 
     def forward(self, predicted: torch.Tensor, target: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Compute MERLIN loss.
@@ -117,41 +209,25 @@ class MerlinLoss(nn.Module):
         """
         out = {}
 
-        loss_denorm = 0.5 * predicted + torch.exp(2 * target - predicted)
-        out["loss_denorm"] = torch.mean(loss_denorm)
+        # Denorm the reconstructions before computing losses
+        log_hat_R = 2 * (predicted * (amp_max - amp_min) + amp_min)
+        # ----- Classic MERLIN Loss (0.5 * log(r) + b^2 / r) -----
+        hat_R = torch.exp(log_hat_R) + 1e-6  # must be non-zero
+        b_square = torch.square(target)
+        merlin_loss = 0.5 * log_hat_R + b_square / hat_R
+        # ----- In Log-Scale MERLIN Loss (0.5 * log_r + exp(2*log_b - log_r)) -----
+        # log_b = torch.log(torch.square(target) + EPS)
+        # print_statistics("      Target (square + log )", log_b)
+        # merlin_loss = 0.5 * log_hat_R + torch.exp(2 * log_b - log_hat_R)
 
-        # Denorm the reconstructions and target before computing losses
-        predicted_denorm = predicted * (2 * amp_max - 2 * amp_min) + 2 * amp_min
-        target_denorm = target * (2 * amp_max - 2 * amp_min) + 2 * amp_min
+        clean = log_hat_R
+        noisy = torch.log(b_square + EPS)
 
-        # MERLIN loss in log-scale: Sum over pixels 0.5 * r + exp(2*b - r)
-        # Use mean instead of sum for numerical stability. therefore we scale lr by HxW
-        term1 = 0.5 * predicted_denorm
-        term2 = torch.exp(2 * target_denorm - predicted_denorm)
+        out["loss"] = torch.mean(merlin_loss)
 
-        # # TO CONSIDER: Clamp the exponential term to prevent overflow
-        # term2 = torch.clamp(term2, max=1e6)
-        if torch.isnan(term2).any():
-            print(
-                f"NaN detected in term2: pred_range=[{predicted_denorm.min()}, {predicted_denorm.max()}], target_range=[{target_denorm.min()}, {target_denorm.max()}]"
-            )
-
-        out["loss_term1"] = torch.mean(term1)
-        out["loss_term2"] = torch.mean(term2)
-        out["loss"] = torch.mean(term1 + term2)
-
-        out["mse"] = self.mse(predicted_denorm, target_denorm)
-        out["psnr"] = self.psnr(predicted_denorm, target_denorm)
-        out["ssim"] = self.ssim(predicted_denorm, target_denorm)
-        out["ms_ssim"] = self.ms_ssim(predicted_denorm, target_denorm)
-
-        # Print predicted statistics every nth calls
-        if self.count_calls is not None:
-            if self.count_calls % self.print_every_n_call == 0:
-                print(
-                    f"[MerlinLoss: {out['loss']:.3f}] Call {self.count_calls}: Predicted min {predicted.min().item():.4f}, max {predicted.max().item():.4f}, mean {predicted.mean().item():.4f}, std {predicted.std().item():.4f}, isNaN {torch.isnan(predicted).any().item()}."
-                    f" Target min {target.min().item():.4f}, max {target.max().item():.4f}, mean {target.mean().item():.4f}, std {target.std().item():.4f}, isNaN {torch.isnan(target).any().item()}."
-                )
-            self.count_calls += 1
+        out["mse"] = self.mse(clean, noisy)
+        out["psnr"] = self.psnr(clean, noisy)
+        out["ssim"] = self.ssim(clean, noisy)
+        out["ms_ssim"] = self.ms_ssim(clean, noisy)
 
         return out
