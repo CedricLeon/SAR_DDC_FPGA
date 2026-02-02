@@ -42,7 +42,7 @@ class LowerBoundPatched(nn.Module):  # (no custom autograd.Function)
     Note: During *training*, CompressAI's original LowerBound uses a custom
     gradient that still passes gradients when moving towards the bound. If you
     need identical training behavior, use the original implementation from
-    `context/compressai_original.py` instead of this patched version.
+    `compressai.ops.bound_ops` instead of this patched version.
     """
 
     bound: Tensor
@@ -52,7 +52,8 @@ class LowerBoundPatched(nn.Module):  # (no custom autograd.Function)
         self.register_buffer("bound", torch.tensor(float(bound)))
 
     def forward(self, x: Tensor) -> Tensor:
-        return torch.max(x, self.bound)
+        return F.relu(x - self.bound) + self.bound
+        # return torch.max(x, self.bound)
 
 
 # -------------------------------------------------------------------------
