@@ -3,9 +3,26 @@ from typing import Any, Callable, Dict, Iterable
 import numpy as np
 
 # Normalization constants
-AMP_MIN = -4.605170249938965
+AMP_MIN = 4.605170249938965
 AMP_MAX = 10.742239952087402
 EPS = 1e-2
+
+
+# -----------------------------------------------------------------------------
+# LOGGING UTILS
+# -----------------------------------------------------------------------------
+
+
+def print_tensor_stats(name: str, tensor: np.ndarray):
+    """Print statistics of a given tensor."""
+    print(
+        f"{name}: shape={tensor.shape}, dtype={tensor.dtype}, min={tensor.min():.4f}, max={tensor.max():.4f}, mean={tensor.mean():.4f}, std={tensor.std():.4f}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# PROCESSING UTILS
+# -----------------------------------------------------------------------------
 
 
 def clip(
@@ -41,7 +58,6 @@ class MetricsTracker:
             "psnr": self.compute_psnr,
             "ssim": self.compute_ssim,
             "ms_ssim": self.compute_ms_ssim,
-            "merlin": self.compute_merlin_loss,
         }
         self._sums: Dict[str, float] = {name: 0.0 for name in self._metric_names}
         self._count: int = 0
@@ -75,53 +91,6 @@ class MetricsTracker:
     def compute_ms_ssim(a: np.ndarray, b: np.ndarray) -> float:
         """Compute MS-SSIM."""
         return 0.0  # Placeholder
-
-    @staticmethod
-    def compute_merlin_loss(r_linA: np.ndarray, b_linA: np.ndarray) -> float:
-        """Compute MERLIN loss.
-
-        Inputs are Linear Amplitude.
-        Formula logic from inference.py: 0.5 * r_log + exp(2*b_log - r_log)
-        Using r_log = log(r_linA^2) = 2*log(r_linA) might be cleaner?
-        Let's convert to Log-Intensity first like in inference.py implied context.
-        Actually inference.py compute_merlin_loss takes r_log, b_log?
-        Wait, inference.py `update` calls `fn(recon_linA, target_linA)`.
-        So the inputs to compute_merlin_loss ARE linA.
-        BUT the formula says: 0.5 * r_log + exp(2*b_log - r_log).
-        So we must convert linA to logI inside the function if inference.py implementation didn't do it?
-        Looking at inference.py:
-           metrics_to_merlin = self.compute_merlin_loss
-           ...
-           value = fn(recon_linA, target_linA)
-        But compute_merlin_loss vars are named r_log, b_log.
-        If inputs are linA, we need to convert.
-        r_log (Log-Intensity) = log(r_linA^2) = 2 * log(r_linA)
-        Let's assume inputs are Linear Amplitude and convert.
-        """
-        r_log = 2 * np.log(r_linA + EPS)
-        b_log = 2 * np.log(b_linA + EPS)
-
-        # M = 0.5 * r_log + exp(2*b_log - r_log) ??
-        # Let's check logic:
-        # Original MERLIN Loss: L = log(R) + S/R  where R is reflectivity (Intensity), S is observed intensity.
-        # r_log is log(R). b_log is log(S).
-        # S = exp(b_log). R = exp(r_log).
-        # Loss = r_log + exp(b_log) / exp(r_log) = r_log + exp(b_log - r_log).
-        # This differs from 0.5 * ... check inference.py carefully.
-        # inference.py: 0.5 * r_log + np.exp(2 * b_log - r_log)??
-        # If inputs were Log-Amplitude, then 2*b_log is Log-Intensity.
-        # IF inputs are LinA, then r_log as defined above IS Log-Intensity.
-        # So maybe inference.py formula assumes specific input type?
-        # Let's stick to simple MSE/PSNR for now or standard MERLIN: log(mean) + obs/mean.
-        # Using inference.py formula directly for consistency:
-        merlin_loss = 0.5 * r_log + np.exp(b_log - r_log)  # Wait, 2*b_log - r_log?
-        # If b_log is Log-Intensity, then exp(b_log) is S.
-        # If inputs are linA, b_log = 2*log(linA) = log(linA^2) = log(I).
-        # So exp(b_log - r_log) = S/R.
-        # The 0.5 factor? Maybe loss is define on Amplitude?
-        # Let's just use:
-        loss = r_log + np.exp(b_log - r_log)
-        return float(np.mean(loss))
 
     @staticmethod
     def estimate_bpp(x_shape_holder: np.ndarray, likelihoods: Dict[str, np.ndarray]) -> float:
@@ -159,18 +128,29 @@ class MetricsTracker:
             return {k: 0.0 for k in self._sums}
         return {k: v / self._count for k, v in self._sums.items()}
 
+    @property
+    def count(self) -> int:
+        """Return the number of updates."""
+        return self._count
+
+
+# -----------------------------------------------------------------------------
+# VISUALIZATION UTILS
+# -----------------------------------------------------------------------------
+
 
 def visualize_patches(
-    noisy_complex: np.ndarray,
-    recon_complex: np.ndarray,
-    adam_linA: np.ndarray,
-    merlin_linA: np.ndarray,
+    noisy_logI: np.ndarray,
+    recon_logI: np.ndarray,
+    adam_logI: np.ndarray,
+    merlin_logI: np.ndarray,
     save_path: str,
     num_patches: int = 5,
 ):
     """Generate and save a 4-row comparison figure.
 
-    If matplotlib is missing, skips visualization.
+    If matplotlib is missing, skips visualization. Expects all inputs to be in log-Intensity
+    format.
     """
     try:
         import matplotlib.pyplot as plt
@@ -179,61 +159,41 @@ def visualize_patches(
         print(f"Would have saved to: {save_path}")
         return
 
-    N = min(num_patches, len(noisy_complex))
-    fig, axes = plt.subplots(4, N, figsize=(4 * N, 16))
+    N = min(num_patches, len(noisy_logI))
+    _, axes = plt.subplots(4, N, figsize=(4 * N, 16))
     if N == 1:
         axes = axes.reshape(4, 1)
 
-    # Prepare Data: Convert Complex -> Log Intensity for visualization
-    def complex_to_logI(c):
-        """Convert complex array to Log Intensity."""
-        # c: [H, W, 2]
-        Inten = np.square(c[..., 0]) + np.square(c[..., 1])
-        return np.log(Inten + EPS)
-
-    def linA_to_logI(a):
-        """Convert Linear Amplitude to Log Intensity."""
-        # a: [H, W, 1]
-        Inten = np.square(a[..., 0])
-        return np.log(Inten + EPS)
-
     for i in range(N):
-        # Row 0: Original Noisy (LogI)
-        noisy_logI = complex_to_logI(noisy_complex[i])
+        # Clipping
         noisy_disp = clip(noisy_logI)
-
-        # Row 1: Reconstruction (LogI)
-        recon_logI = complex_to_logI(recon_complex[i])
         recon_disp = clip(recon_logI)
-
-        # Row 2: MERLIN GT (LogI)
-        merlin_logI = linA_to_logI(merlin_linA[i])
         merlin_disp = clip(merlin_logI)
-
-        # Row 3: ADAM NOC GT (LogI)
-        adam_logI = linA_to_logI(adam_linA[i])
         adam_disp = clip(adam_logI)
 
-        # Plot
+        # Row 0: Original Noisy (LogI)
         axes[0, i].imshow(noisy_disp, cmap="gray")
         axes[0, i].axis("off")
         if i == 0:
             axes[0, i].set_title("Noisy Input")
 
+        # Row 1: Reconstruction (LogI)
         axes[1, i].imshow(recon_disp, cmap="gray")
         axes[1, i].axis("off")
         if i == 0:
             axes[1, i].set_title("Reconstruction")
 
-        axes[2, i].imshow(merlin_disp, cmap="gray")
+        # Row 2: ADAM NOC GT (LogI)
+        axes[2, i].imshow(adam_disp, cmap="gray")
         axes[2, i].axis("off")
         if i == 0:
-            axes[2, i].set_title("MERLIN GT")
+            axes[2, i].set_title("ADAM NOC GT")
 
-        axes[3, i].imshow(adam_disp, cmap="gray")
+        # Row 3: MERLIN GT (LogI)
+        axes[3, i].imshow(merlin_disp, cmap="gray")
         axes[3, i].axis("off")
         if i == 0:
-            axes[3, i].set_title("ADAM NOC GT")
+            axes[3, i].set_title("MERLIN GT")
 
     plt.tight_layout()
     plt.savefig(save_path)
