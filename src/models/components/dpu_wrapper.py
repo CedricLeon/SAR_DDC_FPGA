@@ -1,4 +1,4 @@
-from typing import Dict, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -7,17 +7,19 @@ from torch import Tensor
 from src.models.components.res_scale_hyperprior_dpu import (
     ResidualScaleHyperpriorPatched,
 )
+from src.utils.debug import log_tensor_shape
 
 
 class ResidualScaleHyperpriorDPUWrapper(nn.Module):
     """Unified Wrapper for Vitis-AI Calibration and Deployment.
 
-    This class handles two distinct modes of operation to ensure node name consistency
-    between Calibration (full graph) and Deployment (split graph).
+    This class handles two distinct modes of operation: Calibration (full graph) and Deployment (split graph).
+    It is necessary to implement both modes in the same graph because Vitis-AI's quantization tool (VAI_Q) expects consistent
+    node names throughout the deployment process.
 
     Mode 1: Calibration/Evaluation (Single Input)
     - Input: x (image)
-    - Behavior: Runs full model logic (g_a -> entropy(CPU) -> g_s).
+    - Behavior: Runs full model logic (g_a -> h_a -> entropy(CPU) -> g_s).
     - Purpose: Generate valid statistics for quantization. Neural layers are exposed,
       Entropy layers are hidden (so VAI_Q doesn't trace them).
 
@@ -36,13 +38,17 @@ class ResidualScaleHyperpriorDPUWrapper(nn.Module):
         self.h_s = original_model.h_s
         self.g_s = original_model.g_s
 
+        self.DEBUG_MODE = True
+        self.i_batch = 0
+
         # 2. Hidden Submodules (Invisible to VAI_Q)
         # We need these for Calibration Mode to calculate correct data flow.
         if hasattr(original_model, "entropy_bottleneck"):
             self._entropy_bottleneck = [original_model.entropy_bottleneck]
             self._gaussian_conditional = [original_model.gaussian_conditional]
-        elif hasattr(original_model, "_entropy_bottleneck"):
-            # If already wrapped, reuse the existing hidden lists
+        elif hasattr(
+            original_model, "_entropy_bottleneck"
+        ):  # If already wrapped, reuse the existing hidden lists
             self._entropy_bottleneck = original_model._entropy_bottleneck
             self._gaussian_conditional = original_model._gaussian_conditional
         else:
@@ -50,35 +56,13 @@ class ResidualScaleHyperpriorDPUWrapper(nn.Module):
                 "Input model must have 'entropy_bottleneck' or '_entropy_bottleneck'."
             )
 
-    def forward(
-        self,
-        x_in: Tensor,
-        abs_y_in: Tensor = None,
-        z_hat_in: Tensor = None,
-        y_hat_in: Tensor = None,
-    ) -> Union[Dict[str, Tensor], Tuple[Tensor, Tensor, Tensor, Tensor]]:
-        """Forward pass for the wrapper."""
-        # --- Mode 2: Deployment (Split Graph) ---
-        # Triggered when all 4 inputs are provided
-        if abs_y_in is not None and z_hat_in is not None and y_hat_in is not None:
-            # 1. Main Encoder (g_a)
-            y_out = self.g_a(x_in)
-            # 2. Hyper Encoder (h_a)
-            z_out = self.h_a(abs_y_in)
-            # 3. Hyper Decoder (h_s)
-            scales_out = self.h_s(z_hat_in)
-            # 4. Main Decoder (g_s)
-            x_out = self.g_s(y_hat_in)
+    def manual_abs_operaion(self, x: Tensor) -> Tensor:
+        """Manual Absolute Operation to replace torch.abs for Vitis-AI compatibility."""
+        return torch.sqrt(x * x + 1e-6)  # Adding a small epsilon for numerical stability
 
-            return y_out, z_out, scales_out, x_out
-
-        # --- Mode 1: Calibration (Full Graph) ---
-        # Triggered when only x_in is provided
-
-        # Retrieve hidden modules (Unused in DPU Calibration Trace to avoid Unsupported Ops)
-        # entropy_bottleneck = self._entropy_bottleneck[0]
-        # gaussian_conditional = self._gaussian_conditional[0]
-
+    def forward_mode1_calibration(self, x_in: Tensor) -> Dict[str, Tensor]:
+        """Forward pass for Calibration Mode (Full Graph)."""
+        print(f"Calibration Mode Forward Pass, batch {self.i_batch}")
         # Enforce 2-channel input for logic consistency
         x_real = x_in[:, :1, :, :]
         x_imag = x_in[:, 1:, :, :]
@@ -89,25 +73,18 @@ class ResidualScaleHyperpriorDPUWrapper(nn.Module):
         y = torch.cat((y_real, y_imag), dim=1)
 
         # Hyperprior
-        # We use torch.abs locally. Vitis-AI will flag this as CPU layer, which is fine.
-        # It creates a graph: DPU(g_a) -> CPU(abs) -> DPU(h_a)
-        z = torch.abs(y)
-
+        z = self.manual_abs_operaion(
+            y
+        )  # z = torch.abs(y) # `torch.abs()` is flagged as a CPU layer by Vitis-AI
         z = self.h_a(z)
-
-        # BYPASS Complex Entropy Logic for Vitis-AI Trace
-        # Real logic: z_hat, z_likelihoods = entropy_bottleneck(z)
-        # Trace logic: Direct pass-through.
-        # We lose the quantization noise (z_hat ~ z), but this is acceptable for
-        # calibrating the activation ranges of the subsequent layers.
-        z_hat = z
-
+        # z_hat, z_likelihoods = self._entropy_bottleneck[0](z)
+        z_likelihoods = torch.ones_like(z)
+        z_hat = z  # Trace logic: Direct pass-through.
         scales = self.h_s(z_hat)
 
-        # Entropy coding
-        # Real logic: y_hat, y_likelihoods = gaussian_conditional(y, scales)
-        # Trace logic: Direct pass-through.
-        y_hat = y
+        # y_hat, y_likelihoods = self._gaussian_conditional[0](y, scales)
+        y_likelihoods = torch.ones_like(y)
+        y_hat = y  # Trace logic: Direct pass-through.
 
         # Split
         y_hat_real = y_hat[:, : y_hat.shape[1] // 2, :, :]
@@ -118,14 +95,53 @@ class ResidualScaleHyperpriorDPUWrapper(nn.Module):
         x_hat_imag = self.g_s(y_hat_imag)
         x_hat = torch.cat((x_hat_real, x_hat_imag), dim=1)
 
-        # Return Dictionary to match original model output structure for Loss calculation
-        # We return dummy likelihoods to prevent downstream code from crashing if it checks keys.
-        return {
+        if self.DEBUG_MODE:  # and self.i_batch == 10:
+            # self.i_batch = 0
+            log_tensor_shape("Input x", x_in)
+            log_tensor_shape("g_a.y", y)
+            log_tensor_shape("h_a.z", z)
+            log_tensor_shape("GC.z_likelihoods", z_likelihoods)
+            log_tensor_shape("h_s.scales", scales)
+            log_tensor_shape("EB.y_likelihoods", y_likelihoods)
+            log_tensor_shape("g_s.y_hat_real", y_hat_real)
+            log_tensor_shape("Output x_hat", x_hat)
+
+        self.i_batch += 1
+        results_dict = {
             "x_hat": x_hat,
             "y_hat": y_hat,
-            "likelihoods": {"y": torch.ones_like(y_hat), "z": torch.ones_like(z_hat)},
+            "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
         }
+        return results_dict
 
+    def forward_mode2_deployment(
+        self, x_in: Tensor, abs_y_in: Tensor, z_hat_in: Tensor, y_hat_in: Tensor
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Forward pass for Deployment Mode (Split Graph)."""
+        # 1. Main Encoder (g_a)
+        y_out = self.g_a(x_in)
+        # 2. Hyper Encoder (h_a)
+        z_out = self.h_a(abs_y_in)
+        # 3. Hyper Decoder (h_s)
+        scales_out = self.h_s(z_hat_in)
+        # 4. Main Decoder (g_s)
+        x_out = self.g_s(y_hat_in)
 
-# Helper alias to keep model_quant.py happy if it imports this name
-ResidualScaleHyperpriorCalibrationWrapper = ResidualScaleHyperpriorDPUWrapper
+        return y_out, z_out, scales_out, x_out
+
+    def forward(
+        self,
+        x_in: Tensor,
+        abs_y_in: Optional[Tensor] = None,
+        z_hat_in: Optional[Tensor] = None,
+        y_hat_in: Optional[Tensor] = None,
+    ) -> Union[Dict[str, Tensor], Tuple[Tensor, Tensor, Tensor, Tensor]]:
+        """Forward pass for the wrapper."""
+        # --- Mode 2: Deployment (Split Graph) ---
+        # Triggered when all 4 inputs are provided
+        if abs_y_in is not None and z_hat_in is not None and y_hat_in is not None:
+            return self.forward_mode2_deployment(x_in, abs_y_in, z_hat_in, y_hat_in)
+
+        # --- Mode 1: Calibration (Full Graph) ---
+        # Triggered when only x_in is provided
+        return self.forward_mode1_calibration(x_in)

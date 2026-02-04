@@ -24,12 +24,13 @@ import random
 import sys
 import warnings
 from pathlib import Path
+from typing import Optional
 
 import h5py
 import torch
 from omegaconf import DictConfig, OmegaConf
 from pytorch_nndct.apis import torch_quantizer  # type: ignore
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 from tqdm import tqdm
 
 project_root = Path(__file__).resolve().parent.parent.parent
@@ -55,19 +56,6 @@ parser.add_argument(
     default=None,
     help="Path to the directory of the run. It must contains at the minimum the run config `.hydra/config.yaml` and the last checkpoint `checkpoints/last.ckpt`.",
 )
-
-# # Deprecated
-# parser.add_argument(
-#     "--data_dir",
-#     default="/path/to/imagenet/",
-#     help="Data set directory, when quant_mode=calib, it is for calibration, while quant_mode=test it is for evaluation",
-# )
-# parser.add_argument(
-#     "--model_dir",
-#     default="/path/to/trained_model/",
-#     help="Trained model file path. Download pretrained model from the following url and put it in model_dir specified path: https://download.pytorch.org/models/resnet18-5c106cde.pth",
-# )
-
 parser.add_argument("--config_file", default=None, help="quantization configuration file")
 parser.add_argument(
     "--subset_len",
@@ -133,41 +121,32 @@ class CustomDataset(Dataset):
             patch = torch.log(patch + 1e-2)
             patch = (patch - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
 
-            return patch.permute(2, 0, 1)
+            return patch.permute(2, 0, 1)  # C, H, W
 
 
-def load_data(
-    **kwargs,
-) -> torch.utils.data.DataLoader:
-    """Load validation data loader."""
-    dataset = CustomDataset(args.data_dir / "val.h5")
-    if args.subset_len:  # random sampling method
-        assert args.subset_len <= len(dataset)
-        dataset = torch.utils.data.Subset(
-            dataset, random.sample(range(0, len(dataset)), args.subset_len)
-        )
-    data_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
-        dataset, batch_size=args.batch_size, shuffle=False, **kwargs
-    )
-    return data_loader
+def load_data(subset_len: int, split: str = "val", **kwargs) -> DataLoader:
+    """Load validation data loader and subset if specified."""
+    dataset = CustomDataset(args.data_dir / f"{split}.h5")
+    if subset_len and subset_len <= len(dataset):  # random sampling method
+        dataset = Subset(dataset, random.sample(range(0, len(dataset)), subset_len))
+    return DataLoader(dataset, batch_size=args.batch_size, shuffle=False, **kwargs)
 
 
 def evaluate(
     quant_model: torch.nn.Module,
-    val_loader: torch.utils.data.DataLoader,
+    val_loader: DataLoader,
     loss_fn: torch.nn.Module,
-    float_model: torch.nn.Module = None,
+    float_model: Optional[torch.nn.Module] = None,
     is_split_graph: bool = False,
 ) -> float:
     """Evaluate the model on validation dataset.
 
     Args:
-        quant_model: The model to evaluate (quantized or wrapper).
-        val_loader: DataLoader.
-        loss_fn: Loss function.
-        float_model: A float copy of the model used to generate intermediate inputs
-                     if is_split_graph is True.
-        is_split_graph: If True, inputs are manually split and fed as 4 separate tensors.
+        quant_model (nn.Module): The model to evaluate (quantized or wrapper).
+        val_loader (DataLoader): The data used to compute the loss.
+        loss_fn (nn.Module): Loss function.
+        float_model (nn.Module | None): A float copy of the model used to generate intermediate inputs if is_split_graph is True.
+        is_split_graph (bool): If True, inputs are manually split and fed as 4 separate tensors.
     """
     quant_model = quant_model.to(device)
     if float_model:
@@ -228,44 +207,28 @@ def evaluate(
             else:
                 # --- Standard Mode 1 (Connected) ---
                 output = quant_model(inputs)
-                if i == 0:
-                    # debug print
-                    pass
                 loss = loss_fn(output, inputs)
                 current_loss = loss["distortion"].item()
 
             loss_total += current_loss
             nb_images += inputs.size(0)
 
-    return loss_total / nb_images if nb_images > 0 else 0.0
-
-
-def try_match_run_dir_with_existing_runs() -> Path:
-    """Try to match run_dir with existing runs."""
-    dir_prefix = Path("DDC_FPGA/logs/train/sar_ddc/")
-    existing_runs = {
-        "ResSHyp-relu_42_merlinʎ100_lr5e-05_b12": "hyperprior/multiruns/2025-11-18_09-45-37/6",
-        "ResAE-relu_42_merlinʎ100_lr5e-05_b12": "simple_ae/multiruns/2025-11-16_19-34-55/3/",
-        "ResAE-relu_42_merlinʎ100_lr5e-05_b12_no-out-pad": "simple_ae/runs/2025-11-19_15-22-34",
-        "ResSHyp_export_dpu_test": "hyperprior_dpu/runs/2025-12-01_13-36-00",
-    }
-    run_path = existing_runs.get(args.run_dir, None)
-    if run_path is None:
-        raise RuntimeError(f"Cannot find matching run for {args.run_dir}!")
-    return dir_prefix / run_path
+    return loss_total / nb_images
 
 
 def check_and_enforce_arguments():
     """Check and enforce arguments."""
+    for arg in args.__dict__:
+        print(f"Argument {arg}: {args.__dict__[arg]}")
+
     run_dir = Path(args.run_dir)
     if not run_dir.exists():
-        run_dir = try_match_run_dir_with_existing_runs()
+        raise RuntimeError(f"args.run_dir {run_dir} does not exist!")
 
     args.model_dir = run_dir / "checkpoints"
     config_path = run_dir / ".hydra" / "config.yaml"
-    # read hydra config to find data_dir
     args.hydra_conf = OmegaConf.load(config_path)
-    assert type(args.hydra_conf) is DictConfig
+    # assert type(args.hydra_conf) is DictConfig # Will always be true
 
     args.data_dir = Path(args.hydra_conf.data.get("hdf5_dir", None))
     if not args.data_dir or not args.data_dir.exists():
@@ -293,7 +256,7 @@ def debug_forward_execution(model, inputs, desc):
     This helps diagnosing mismatch errors between Calibration and Deployment graphs.
     """
     print(f"\n[DEBUG] --- Forward Execution Trace: {desc} ---")
-    print(f"[DEBUG] Input shapes: {[i.shape for i in inputs]}")
+    print(f"    [DEBUG] Input shapes: {[i.shape for i in inputs]}")
 
     hooks = []
 
@@ -301,10 +264,15 @@ def debug_forward_execution(model, inputs, desc):
         """Create a forward hook that prints module execution."""
 
         def hook(module, input, output):
-            """Forward hook function."""
-            # Print only leaf modules or interesting ones to avoid spam
-            if len(list(module.children())) == 0 or "Sequential" in module.__class__.__name__:
-                print(f"[DEBUG] Executing: {name} (Type: {module.__class__.__name__})")
+            """Forward hook function that prints only leaf modules or interesting ones to avoid
+            spam."""
+            if (
+                len(list(module.children())) == 0
+                # or "Sequential" in module.__class__.__name__
+                or "Entropy" in module.__class__.__name__
+                or "Gaussian" in module.__class__.__name__
+            ):
+                print(f"    [DEBUG] Executing: {name} (Type: {module.__class__.__name__})")
 
         return hook
 
@@ -317,7 +285,7 @@ def debug_forward_execution(model, inputs, desc):
         with torch.no_grad():
             model(*inputs)
     except Exception as e:
-        print(f"[DEBUG] Forward pass crashed: {e}")
+        print(f"    [DEBUG] Forward pass crashed: {e}")
     finally:
         # Cleanup
         for h in hooks:
@@ -325,20 +293,71 @@ def debug_forward_execution(model, inputs, desc):
     print("--------------------------------------------------\n")
 
 
+def determine_split_mode(args) -> bool:
+    """Determine if we should use Split Graph (4 inputs) or Standard Graph (1 input).
+
+    Mode Strategy:
+    - We enforce Split Mode (True) for ALL operations to avoid Vitis-AI graph mismatch errors
+      between Calibration and Test/Deployment phases.
+    - Calibration will be performed on the split graph. NOTE: This means 'fast_finetune'
+      will likely be ineffective or skipped as we cannot compute gradients across the split.
+    """
+    if args.fast_finetune:
+        print("[WARNING] 'fast_finetune' is requested but we are forcing Split Mode.")
+        print("          Finetuning requires a connected graph derivative which is not available.")
+        print("          Disabling fast_finetune.")
+        args.fast_finetune = False
+
+    return True  # Always use Split Mode
+
+    # Old logic:
+    # if args.deploy or args.inspect:
+    #     return True
+    # if args.quant_mode in ["calib", "test", "float"]:
+    #     return False
+
+
+def initialize_dummy_inputs(split_mode: bool):
+    """Initialize dummy inputs for model quantization.
+
+    Args:
+        split_mode (bool): If True, initializes inputs for Split Graph mode (4 inputs).
+                           If False, initializes input for Standard mode (1 input with 2 channels).
+    Returns:
+        tuple: Dummy inputs for the model.
+    """
+    # Split Graph Mode Inputs
+    if split_mode:
+        print("Using Split Graph (4 inputs) for Vitis-AI Quantization.")
+        # x: [B, 1, H, W] (g_a expects 1 channel)
+        x_dumb = torch.randn(args.batch_size, 1, 256, 256).to(device)
+        # abs_y: [B, M, H/16, W/16]
+        abs_y_dumb = torch.randn(args.batch_size, 256, 16, 16).to(device)
+        # z_hat: [B, M, H/128, W/128] (16/8 = 2)
+        z_hat_dumb = torch.randn(args.batch_size, 256, 2, 2).to(device)
+        # y_hat: [B, N, H/16, W/16]
+        y_hat_dumb = torch.randn(args.batch_size, 128, 16, 16).to(device)
+        return (x_dumb, abs_y_dumb, z_hat_dumb, y_hat_dumb)
+    # Standard Mode Input
+    else:
+        print("Using Standard Graph (1 input) for Vitis-AI Quantization.")
+        x_dumb = torch.randn(args.batch_size, 2, 256, 256).to(device)
+        return (x_dumb,)
+
+
 if __name__ == "__main__":
     check_and_enforce_arguments()
 
     # ---- Find the model -----
     model_path = args.model_dir / "last.ckpt"
-    # We can use hydra.utils.instantiate() because it would try to import lightning, which we don't have int this Vitis-Ai container.
-    # So we parse the network._target_ and instantiate the model directly.
+    # We cannot use hydra.utils.instantiate() because it would try to import lightning, which we don't have int this Vitis-AI container.
+    # Instead, we parse the network._target_ and instantiate the model directly.
     model_name = args.hydra_conf.model.net._target_.split(".")[-1]
     model_params = args.hydra_conf.model.net
     model_params.pop("_target_")
 
     full_model = None  # Hold reference to float model for split graph execution wrapping
 
-    # For DPU export / inspection, always use the patched model with export_dpu=True.
     # We still load weights from the training-time ResidualScaleHyperprior checkpoint.
     if model_name in ("ResidualScaleHyperpriorPatched"):
         model_params["export_dpu"] = True
@@ -347,7 +366,7 @@ if __name__ == "__main__":
 
         # Load weights into full model
         checkpoint = torch.load(model_path)
-        if "state_dict" in checkpoint:
+        if "state_dict" in checkpoint:  # Lightning checkpoint format
             state_dict = checkpoint["state_dict"]
             state_dict = {k.replace("net.", "", 1): v for k, v in state_dict.items()}
             full_model.load_state_dict(state_dict, strict=False)
@@ -362,21 +381,9 @@ if __name__ == "__main__":
         model = ResidualScaleHyperpriorDPUWrapper(full_model)
 
     elif model_name == "ResidualSimpleAE":
-        # Simple AE has no entropy modules; nothing special needed
-        print(f"Using ResidualSimpleAE with params: {model_params}.")
-        model = ResidualSimpleAE(**model_params).to(device)
-
-        checkpoint = torch.load(model_path)
-        if "state_dict" in checkpoint:
-            state_dict = checkpoint["state_dict"]
-            state_dict = {k.replace("net.", "", 1): v for k, v in state_dict.items()}
-            model.load_state_dict(state_dict, strict=False)
-        else:
-            model.load_state_dict(checkpoint, strict=False)
-
-        # Disable gradients
-        for param in model.parameters():
-            param.requires_grad = False
+        raise NotImplementedError(
+            "ResidualSimpleAE was a temporary solution. It is not implemented for DPU export anymore."
+        )
     else:
         raise ValueError(f"Model {model_name} not recognized for DPU compilation!")
 
@@ -384,13 +391,10 @@ if __name__ == "__main__":
 
     model.eval()
 
-    # Define dummy inputs for both Single and Split modes
-    # Shapes must match the architecture (N=128, M=256)
-
-    is_wrapper = isinstance(model, ResidualScaleHyperpriorDPUWrapper)
-
-    # Split Mode Inputs
-    if is_wrapper:
+    # ---- Determine Split Mode and Initialize Dummy Inputs -----
+    split_mode = determine_split_mode(args)
+    if split_mode:
+        print("Using Split Graph (4 inputs) for Vitis-AI Quantization.")
         # x: [B, 1, H, W] (g_a expects 1 channel)
         x_dumb = torch.randn(args.batch_size, 1, 256, 256).to(device)
         # abs_y: [B, M, H/16, W/16]
@@ -399,36 +403,16 @@ if __name__ == "__main__":
         z_hat_dumb = torch.randn(args.batch_size, 256, 2, 2).to(device)
         # y_hat: [B, N, H/16, W/16]
         y_hat_dumb = torch.randn(args.batch_size, 128, 16, 16).to(device)
-
-        # Use Split Graph for Vitis-AI Quantization (Consistent for Calib & Test)
         dummy_inputs = (x_dumb, abs_y_dumb, z_hat_dumb, y_hat_dumb)
-        print("Using Split Graph (4 inputs) for Vitis-AI Quantization.")
     else:
-        # Standard Mode (2 channels for Calib Mode 1 of wrapper OR normal model)
-        # Wait, if it is NOT a wrapper, it might be SimpleAE which takes 2 channels?
-        # Or if it is wrapper in mode 1, it takes 2 channels.
-        # But here we decided: IF wrapper -> Use Split Mode.
-        # So "else" is for SimpleAE. SimpleAE takes 2 channels?
-        # Let's check SimpleAE definition. It usually takes 2 channels.
+        print("Using Standard Graph (1 input) for Vitis-AI Quantization.")
         x_dumb = torch.randn(args.batch_size, 2, 256, 256).to(device)
+        dummy_inputs = (x_dumb,)
 
     # ----- inspect -----
     if args.quant_mode == "float":
         quant_model = model
         if args.inspect:
-
-            def inspect_activations(module, prefix=""):
-                for name, child in module.named_children():
-                    fullname = f"{prefix}.{name}" if prefix else name
-                    cls_name = child.__class__.__name__
-                    if "GDN" in cls_name or "ReLU" in cls_name:
-                        print(f"[{cls_name}] found at {fullname}")
-                    inspect_activations(child, fullname)
-
-            if hasattr(model, "g_a"):
-                inspect_activations(model.g_a, "g_a")
-                inspect_activations(model.g_s, "g_s")
-
             if not args.target:
                 raise ValueError("Target must be specified for Inspector.")
             from pytorch_nndct.apis import Inspector  # type: ignore
@@ -449,7 +433,7 @@ if __name__ == "__main__":
             model,
             dummy_inputs,
             device=device,
-            quant_config_file=args.config_file,
+            quant_config_file=args.config_file,  # Not implemented yet
             target=args.target,
         )
         quant_model = quantizer.quant_model
@@ -460,41 +444,29 @@ if __name__ == "__main__":
     loss_fn = MerlinRDLoss(**loss_params).to(device)
 
     # ----- Load data -----
-    val_loader = load_data()
-    # print the shape of the data
+    val_loader = load_data(subset_len=args.subset_len, split="val")
     for data in val_loader:
         print(f"Data batch shape: {data.shape}")
         break
 
     # fast finetune model or load finetuned parameter before test
     if args.fast_finetune:
-        ft_loader = load_data()
-        extra_kwargs = {"float_model": full_model, "is_split_graph": True} if is_wrapper else {}
+        ft_loader = load_data(subset_len=50, split="train")
         if args.quant_mode == "calib":
-            quantizer.fast_finetune(evaluate, (quant_model, ft_loader, loss_fn), **extra_kwargs)
+            quantizer.fast_finetune(evaluate, (quant_model, ft_loader, loss_fn))
         elif args.quant_mode == "test":
             quantizer.load_ft_param()
 
-    # @TODO: keep here scores of float model to print and compare
-    # Float model: Loss after evaluation: 5545.23803125
-    # Quantized model: Loss after evaluation: 5776.80296875
     print(f"Evaluating model in '{args.quant_mode}' mode...")
-    extra_eval_kwargs = {"float_model": full_model, "is_split_graph": True} if is_wrapper else {}
-    loss_gen = evaluate(quant_model, val_loader, loss_fn, **extra_eval_kwargs)
+    extra_kwargs_wrapper = {"float_model": full_model, "is_split_graph": split_mode}
+    loss_gen = evaluate(quant_model, val_loader, loss_fn, **extra_kwargs_wrapper)
     print(f"Loss after evaluation: {loss_gen}")
 
-    # handle quantization result
+    # Handle quantization result
     if args.quant_mode == "calib":
         quantizer.export_quant_config()
     if args.deploy:
-        if is_wrapper:
-            print("Exporting split xmodel for Hybrid Inference...")
-            quantizer.export_xmodel(deploy_check=False)
-        else:
-            # Standard deployment for SimpleAE or others
-            # @TODO: I should set output_dir to script location + quantize_results/
-            quantizer.export_torch_script()
-            # quantizer.export_onnx_model()
-            quantizer.export_xmodel(deploy_check=True)
-
-        # @TODO: Print the size of the xmodel's input buffer
+        print("Exporting split xmodel for Hybrid Inference...")
+        quantizer.export_xmodel(deploy_check=False)
+        # quantizer.export_torch_script()
+        # quantizer.export_onnx_model()
