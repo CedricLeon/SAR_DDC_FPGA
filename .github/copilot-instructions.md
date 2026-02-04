@@ -50,6 +50,7 @@ python src/train.py experiment=<example> debug=fdr
 - **Script**: `scripts/dataset/create_dataset.py` processes raw CoSAR/SSC files into patches.
 - **Format**: HDF5 with naming convention `<split>_<nb_imgs>_<preservation>_<normalization>.hdf5`.
 - **Math**: All models expect data in log-scale, normalized via min-max. The normalization is done in the LightningModules. Be mindful about double-normalization and correctly denormalizing outputs.
+- **Reconstruction Scaling**: Due to the MERLIN self-supervised loss strategy, the network reconstructs reflectivity with full power despite partial input. When computing reconstruction intensity from Real/Imag outputs, average them (factor 0.5) to match the original signal scale.
 - **Visualization**: All visualizations must be done with log-scale intensity data, opposed to metrics computations that must be done in linear scale, on amplitude data.
 
 ### Testing
