@@ -27,7 +27,7 @@ I have created a script that does all of that for use:
 
 #### 3. Copy the compiled model to the Target
 ```bash
-[HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ scp -r ResidualScaleHyperprior_pt/ root@10.0.0.2:/home/root/SAR_DDC/models/ --StrictHostKeyChecking=accept-new
+[HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ scp -r ResidualScaleHyperpriorDPUWrapper_pt/ root@10.0.0.2:/home/root/SAR_DDC/models/
 ```
 
 #### 4. (Optional) Also update the inference script and maybe the data and the Target
@@ -35,7 +35,10 @@ I have created a script that does all of that for use:
 # Data
 [HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/data/processed_hdf5/TSX_spatial_splits_5_256x256/test_1000.npy root@10.0.0.2:/home/root/SAR_DDC/data/test_1000.npy
 # Inference script
-[HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/scripts/fpga/inference.py root@10.0.0.2:/home/root/SAR_DDC/scripts/inference.py
+[HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/scripts/fpga/inference_hybrid.py root@10.0.0.2:/home/root/SAR_DDC/scripts/
+# Utils
+[HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/src/models/components/compressai_dpu.py root@10.0.0.2:/home/root/SAR_DDC/scripts/
+[HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/scripts/fpga/inference_utils.py root@10.0.0.2:/home/root/SAR_DDC/scripts/
 ```
 
 #### 5. Perform inference on the Target
@@ -43,7 +46,7 @@ In a new bash open an SSH session to the FPGA and call the python script
 ```bash
 [HOST] leon_ce@bart:~$ ssh root@10.0.0.2
 [TARGET] root@xilinx-zcu102-20222:~# cd SAR_DDC/
-[TARGET] root@xilinx-zcu102-20222:~/SAR_DDC/# python3 scripts/inference.py --xmodel models/new_model_test/ResidualScaleHyperprior_pt.xmodel --data data/test_1000.npy --subset 100
+[TARGET] root@xilinx-zcu102-20222:~/SAR_DDC/# python3 scripts/inference.py --xmodel models/ResidualScaleHyperpriorDPUWrapper/ResidualScaleHyperpriorDPUWrapper_pt.xmodel --data data/test_1000.npy --subset 100
 ```
 
 #### 6. Transfer inference results back to Host
