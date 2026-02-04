@@ -14,6 +14,7 @@ Provided classes:
 
 from __future__ import annotations
 
+import math
 import warnings
 from typing import Any, Callable, List, Optional, Tuple, Union
 
@@ -26,7 +27,17 @@ from compressai._CXX import pmf_to_quantized_cdf as _pmf_to_quantized_cdf
 from compressai.entropy_models.entropy_models import _EntropyCoder
 from torch import Tensor
 
-from src.utils.debug import log_tensor_shape
+
+def get_scale_table(min: float = 0.11, max: float = 256, levels: int = 64) -> Tensor:
+    """Returns table of logarithmically scales.
+
+    Mirrors `compressai.models.base.get_scale_table` default behavior.
+
+    This helper is used to generate the default scale table for GaussianConditional
+    when it hasn't been persisted in the checkpoint (which is common, as standard
+    training uses continuous approximation and doesn't populate the table).
+    """
+    return torch.exp(torch.linspace(math.log(min), math.log(max), levels))
 
 
 # -------------------------------------------------------------------------
@@ -168,9 +179,6 @@ class GDN1Patched(GDNPatched):
         out = x * norm
 
         return out
-
-
-# Copilot rewrote half of the original CompressAI code, I don't trust it, so for the moment its just the original one commented out.
 
 
 def default_entropy_coder():
