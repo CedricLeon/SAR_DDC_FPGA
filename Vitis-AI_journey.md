@@ -50,7 +50,9 @@ In a new bash open an SSH session to the FPGA and call the python script
 ```
 
 #### 6. Transfer inference results back to Host
-==@TODO==
+```bash
+[TARGET] root@xilinx-zcu102-20222:~# scp -r results/inference_ResidualScaleHyperpriorDPUWrapper_pt_2021-11-21_13-58-02/ leon_ce@10.0.0.1: ~/dev/Vitis-AI/DDC_FPGA/results/fpga/
+```
 
 
 
