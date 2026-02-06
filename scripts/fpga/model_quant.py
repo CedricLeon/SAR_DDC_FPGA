@@ -43,7 +43,7 @@ from src.models.components.res_scale_hyperprior_dpu import (  # noqa: E402
     ResidualScaleHyperpriorPatched,
 )
 from src.models.components.sar_simple_autoencoder import ResidualSimpleAE  # noqa: E402
-from src.utils.constants import amp_max, amp_min  # noqa: E402
+from src.utils.constants import AMP_MAX, AMP_MIN  # noqa: E402
 from src.utils.metrics import MerlinRDLoss  # noqa: E402
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -119,7 +119,7 @@ class CustomDataset(Dataset):
 
             patch = torch.square(patch)
             patch = torch.log(patch + 1e-2)
-            patch = (patch - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
+            patch = (patch - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
 
             return patch.permute(2, 0, 1)  # C, H, W
 
@@ -137,7 +137,6 @@ def evaluate(
     val_loader: DataLoader,
     loss_fn: torch.nn.Module,
     float_model: Optional[torch.nn.Module] = None,
-    is_split_graph: bool = False,
 ) -> float:
     """Evaluate the model on validation dataset.
 
@@ -145,8 +144,7 @@ def evaluate(
         quant_model (nn.Module): The model to evaluate (quantized or wrapper).
         val_loader (DataLoader): The data used to compute the loss.
         loss_fn (nn.Module): Loss function.
-        float_model (nn.Module | None): A float copy of the model used to generate intermediate inputs if is_split_graph is True.
-        is_split_graph (bool): If True, inputs are manually split and fed as 4 separate tensors.
+        float_model (nn.Module | None): A float copy of the model used to generate intermediate inputs.
     """
     quant_model = quant_model.to(device)
     if float_model:
@@ -161,54 +159,47 @@ def evaluate(
         for i, data in tqdm(enumerate(val_loader), total=len(val_loader)):
             inputs = data.to(device).float()
 
-            if is_split_graph:
-                # --- Split Graph Evaluation Strategy ---
-                # We need to feed 4 inputs to the quant_model: (x, abs_y, z_hat, y_hat).
-                # We generate the valid intermediate maps using the float_model.
+            # --- Split Graph Evaluation Strategy ---
+            # We need to feed 4 inputs to the quant_model: (x, abs_y, z_hat, y_hat).
+            # We generate the valid intermediate maps using the float_model.
 
-                if float_model is None:
-                    raise ValueError("float_model must be provided for split graph evaluation.")
+            if float_model is None:
+                raise ValueError("float_model must be provided for split graph evaluation.")
 
-                # 1. Prepare inputs (matches logic in dpu_wrapper.py Mode 1)
-                x_real = inputs[:, :1, :, :]
-                x_imag = inputs[:, 1:, :, :]
+            # 1. Prepare inputs (matches logic in dpu_wrapper.py Mode 1)
+            x_real = inputs[:, :1, :, :]
+            x_imag = inputs[:, 1:, :, :]
 
-                # 2. Run Float Model to get intermediates
-                # We can't just run float_model(inputs) because we need the internals.
-                # using the patched model components directly:
-                y_real = float_model.g_a(x_real)
-                y_imag = float_model.g_a(x_imag)
-                y = torch.cat((y_real, y_imag), dim=1)
+            # 2. Run Float Model to get intermediates
+            # We can't just run float_model(inputs) because we need the internals.
+            # using the patched model components directly:
+            y_real = float_model.g_a(x_real)
+            y_imag = float_model.g_a(x_imag)
+            y = torch.cat((y_real, y_imag), dim=1)
 
-                # Intermediate 1: abs_y
-                abs_y = torch.abs(y)
+            # Intermediate 1: abs_y
+            abs_y = torch.abs(y)
 
-                # Intermediate 2: z_hat (and z)
-                z = float_model.h_a(abs_y)
-                # In trace/calib mode we usually bypass entropy, so z_hat ~= z
-                z_hat = z
+            # Intermediate 2: z_hat (and z)
+            z = float_model.h_a(abs_y)
+            # In trace/calib mode we usually bypass entropy, so z_hat ~= z
+            z_hat = z
 
-                # Intermediate 3: y_hat
-                # For calibration of g_s, we need y_hat. In trace mode y_hat ~= y
-                y_hat = y
+            # Intermediate 3: y_hat
+            # For calibration of g_s, we need y_hat. In trace mode y_hat ~= y
+            y_hat = y
 
-                # 4. Run Quantized Model with 4 inputs
-                # The output in Mode 2 is a tuple: (y_out, z_out, scales_out, x_out)
-                # For g_s input, we take the real part (first half channels) as approximation,
-                # effectively running g_s on "real" data.
-                y_hat_effective = y_hat[:, : y_hat.shape[1] // 2, :, :]
+            # 4. Run Quantized Model with 4 inputs
+            # The output in Mode 2 is a tuple: (y_out, z_out, scales_out, x_out)
+            # For g_s input, we take the real part (first half channels) as approximation,
+            # effectively running g_s on "real" data.
+            y_hat_effective = y_hat[:, : y_hat.shape[1] // 2, :, :]
 
-                # For g_a input (first arg), we pass x_real (1 channel)
-                _ = quant_model(x_real, abs_y, z_hat, y_hat_effective)
+            # For g_a input (first arg), we pass x_real (1 channel)
+            _ = quant_model(x_real, abs_y, z_hat, y_hat_effective)
 
-                # We cannot compute a meaningful loss in Split Mode because the graph is broken.
-                current_loss = 0.0
-
-            else:
-                # --- Standard Mode 1 (Connected) ---
-                output = quant_model(inputs)
-                loss = loss_fn(output, inputs)
-                current_loss = loss["distortion"].item()
+            # We cannot compute a meaningful loss in Split Mode because the graph is broken.
+            current_loss = 0.0
 
             loss_total += current_loss
             nb_images += inputs.size(0)
@@ -293,58 +284,6 @@ def debug_forward_execution(model, inputs, desc):
     print("--------------------------------------------------\n")
 
 
-def determine_split_mode(args) -> bool:
-    """Determine if we should use Split Graph (4 inputs) or Standard Graph (1 input).
-
-    Mode Strategy:
-    - We enforce Split Mode (True) for ALL operations to avoid Vitis-AI graph mismatch errors
-      between Calibration and Test/Deployment phases.
-    - Calibration will be performed on the split graph. NOTE: This means 'fast_finetune'
-      will likely be ineffective or skipped as we cannot compute gradients across the split.
-    """
-    if args.fast_finetune:
-        print("[WARNING] 'fast_finetune' is requested but we are forcing Split Mode.")
-        print("          Finetuning requires a connected graph derivative which is not available.")
-        print("          Disabling fast_finetune.")
-        args.fast_finetune = False
-
-    return True  # Always use Split Mode
-
-    # Old logic:
-    # if args.deploy or args.inspect:
-    #     return True
-    # if args.quant_mode in ["calib", "test", "float"]:
-    #     return False
-
-
-def initialize_dummy_inputs(split_mode: bool):
-    """Initialize dummy inputs for model quantization.
-
-    Args:
-        split_mode (bool): If True, initializes inputs for Split Graph mode (4 inputs).
-                           If False, initializes input for Standard mode (1 input with 2 channels).
-    Returns:
-        tuple: Dummy inputs for the model.
-    """
-    # Split Graph Mode Inputs
-    if split_mode:
-        print("Using Split Graph (4 inputs) for Vitis-AI Quantization.")
-        # x: [B, 1, H, W] (g_a expects 1 channel)
-        x_dumb = torch.randn(args.batch_size, 1, 256, 256).to(device)
-        # abs_y: [B, M, H/16, W/16]
-        abs_y_dumb = torch.randn(args.batch_size, 256, 16, 16).to(device)
-        # z_hat: [B, M, H/128, W/128] (16/8 = 2)
-        z_hat_dumb = torch.randn(args.batch_size, 256, 2, 2).to(device)
-        # y_hat: [B, N, H/16, W/16]
-        y_hat_dumb = torch.randn(args.batch_size, 128, 16, 16).to(device)
-        return (x_dumb, abs_y_dumb, z_hat_dumb, y_hat_dumb)
-    # Standard Mode Input
-    else:
-        print("Using Standard Graph (1 input) for Vitis-AI Quantization.")
-        x_dumb = torch.randn(args.batch_size, 2, 256, 256).to(device)
-        return (x_dumb,)
-
-
 if __name__ == "__main__":
     check_and_enforce_arguments()
 
@@ -392,22 +331,16 @@ if __name__ == "__main__":
     model.eval()
 
     # ---- Determine Split Mode and Initialize Dummy Inputs -----
-    split_mode = determine_split_mode(args)
-    if split_mode:
-        print("Using Split Graph (4 inputs) for Vitis-AI Quantization.")
-        # x: [B, 1, H, W] (g_a expects 1 channel)
-        x_dumb = torch.randn(args.batch_size, 1, 256, 256).to(device)
-        # abs_y: [B, M, H/16, W/16]
-        abs_y_dumb = torch.randn(args.batch_size, 256, 16, 16).to(device)
-        # z_hat: [B, M, H/128, W/128] (16/8 = 2)
-        z_hat_dumb = torch.randn(args.batch_size, 256, 2, 2).to(device)
-        # y_hat: [B, N, H/16, W/16]
-        y_hat_dumb = torch.randn(args.batch_size, 128, 16, 16).to(device)
-        dummy_inputs = (x_dumb, abs_y_dumb, z_hat_dumb, y_hat_dumb)
-    else:
-        print("Using Standard Graph (1 input) for Vitis-AI Quantization.")
-        x_dumb = torch.randn(args.batch_size, 2, 256, 256).to(device)
-        dummy_inputs = (x_dumb,)
+    print("Using Split Graph (4 inputs) for Vitis-AI Quantization.")
+    # x: [B, 1, H, W] (g_a expects 1 channel)
+    x_dumb = torch.randn(args.batch_size, 1, 256, 256).to(device)
+    # abs_y: [B, M, H/16, W/16]
+    abs_y_dumb = torch.randn(args.batch_size, 256, 16, 16).to(device)
+    # z_hat: [B, M, H/128, W/128] (16/8 = 2)
+    z_hat_dumb = torch.randn(args.batch_size, 256, 2, 2).to(device)
+    # y_hat: [B, N, H/16, W/16]
+    y_hat_dumb = torch.randn(args.batch_size, 128, 16, 16).to(device)
+    dummy_inputs = (x_dumb, abs_y_dumb, z_hat_dumb, y_hat_dumb)
 
     # ----- inspect -----
     if args.quant_mode == "float":
@@ -453,13 +386,13 @@ if __name__ == "__main__":
     if args.fast_finetune:
         ft_loader = load_data(subset_len=50, split="train")
         if args.quant_mode == "calib":
-            quantizer.fast_finetune(evaluate, (quant_model, ft_loader, loss_fn))
+            quantizer.fast_finetune(evaluate, (quant_model, ft_loader, loss_fn, full_model))
         elif args.quant_mode == "test":
             quantizer.load_ft_param()
 
     print(f"Evaluating model in '{args.quant_mode}' mode...")
-    extra_kwargs_wrapper = {"float_model": full_model, "is_split_graph": split_mode}
-    loss_gen = evaluate(quant_model, val_loader, loss_fn, **extra_kwargs_wrapper)
+    print(f"Evaluating model in '{args.quant_mode}' mode...")
+    loss_gen = evaluate(quant_model, val_loader, loss_fn, full_model)
     print(f"Loss after evaluation: {loss_gen}")
 
     # Handle quantization result
