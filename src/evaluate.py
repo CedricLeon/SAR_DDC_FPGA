@@ -21,7 +21,7 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 from src.data.sar_datamodule import TSXSSCDataModule  # noqa: E402
 from src.models.merlin_module import MerlinModule  # noqa: E402
 from src.models.sar_ddc_module import SARDDCModule  # noqa: E402
-from src.utils.constants import EPS, amp_max, amp_min  # noqa: E402
+from src.utils.constants import AMP_MAX, AMP_MIN, EPS  # noqa: E402
 from src.utils.metrics import (  # noqa: E402
     estimate_bpp,
     get_all_distortion_metrics,
@@ -324,8 +324,8 @@ def _evaluate_on_test(
                 )
 
             # Convert model output to linear amplitude
-            recon_real_denorm: Tensor = recon_real * (amp_max - amp_min) + amp_min
-            recon_imag_denorm: Tensor = recon_imag * (amp_max - amp_min) + amp_min
+            recon_real_denorm: Tensor = recon_real * (AMP_MAX - AMP_MIN) + AMP_MIN
+            recon_imag_denorm: Tensor = recon_imag * (AMP_MAX - AMP_MIN) + AMP_MIN
             recon_real_lin: Tensor = torch.exp(recon_real_denorm)
             recon_imag_lin: Tensor = torch.exp(recon_imag_denorm)
             recon_linA: Tensor = torch.sqrt(
@@ -425,8 +425,8 @@ def _evaluate_tile_and_visualize(
     # bpp_avg = 0.5 * (metrics_r.get("bpp", -1) + metrics_i.get("bpp", -1))
 
     # Convert to linear amplitude per channel and build log-intensity like in callback
-    recon_real_lin: Tensor = torch.exp(recon_real.squeeze() * (amp_max - amp_min) + amp_min)
-    recon_imag_lin: Tensor = torch.exp(recon_imag.squeeze() * (amp_max - amp_min) + amp_min)
+    recon_real_lin: Tensor = torch.exp(recon_real.squeeze() * (AMP_MAX - AMP_MIN) + AMP_MIN)
+    recon_imag_lin: Tensor = torch.exp(recon_imag.squeeze() * (AMP_MAX - AMP_MIN) + AMP_MIN)
     recon_I: Tensor = 0.5 * (recon_real_lin + recon_imag_lin)
     recon_linA: Tensor = torch.sqrt(recon_I)
     recon_logI: Tensor = torch.log(recon_I + EPS)

@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +17,9 @@ from fpga.entropy_models_dpu import EntropyBottleneckDPU, GaussianConditionalDPU
 from src.models.components.res_scale_hyperprior_dpu import (
     ResidualScaleHyperpriorPatched,
 )
-from src.utils.constants import EPS, amp_max, amp_min
+from src.utils.constants import AMP_MAX, AMP_MIN, EPS
+
+warnings.filterwarnings("ignore", message="You are using `torch.load` with `weights_only=False`")
 
 
 def preprocess_batch(data_npy, subset=5):
@@ -37,7 +40,7 @@ def preprocess_batch(data_npy, subset=5):
     # inference_hybrid.py: x_sq = np.square(x_complex) -> x_log = np.log(x_sq + EPS).
     # Then x_norm = ...
 
-    x_norm = (x_log - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
+    x_norm = (x_log - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
 
     # Transpose to NCHW
     x_norm = np.transpose(x_norm, (0, 3, 1, 2))

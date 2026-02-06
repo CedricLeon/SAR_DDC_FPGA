@@ -9,7 +9,7 @@ import wandb
 from lightning import Callback, LightningModule, Trainer
 from matplotlib.ticker import FuncFormatter
 
-from src.utils.constants import EPS, amp_max, amp_min
+from src.utils.constants import AMP_MAX, AMP_MIN, EPS
 from src.utils.metrics import get_all_distortion_metrics, ms_ssim, mse, psnr, ssim
 from src.utils.processing_utils import clip, process_large_patch
 from src.utils.sar_utils import symmetrize
@@ -145,7 +145,7 @@ class CompareReconstructionToGT(Callback):
             criterion = pl_module.criterion(recon, self.patch)
 
         # ----- Denorm the reconstructions  -----
-        recon_denorm = recon * (amp_max - amp_min) + amp_min
+        recon_denorm = recon * (AMP_MAX - AMP_MIN) + AMP_MIN
         recon_lin = torch.exp(recon_denorm)
         recon_linI = 0.5 * (
             torch.square(recon_lin[:, 0, :, :]) + torch.square(recon_lin[:, 1, :, :])
@@ -230,7 +230,7 @@ class CompareReconstructionToGT(Callback):
                     criterion = pl_module.criterion(recon, self.patch)
 
         # ----- Denorm the reconstructions  -----
-        recon_denorm = recon * (amp_max - amp_min) + amp_min
+        recon_denorm = recon * (AMP_MAX - AMP_MIN) + AMP_MIN
         recon_lin = torch.exp(recon_denorm)
         recon_linI = 0.5 * (
             torch.square(recon_lin[:, 0, :, :]) + torch.square(recon_lin[:, 1, :, :])

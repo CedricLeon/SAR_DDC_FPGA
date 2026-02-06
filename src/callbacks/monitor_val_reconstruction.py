@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from lightning import Callback, LightningModule, Trainer
 
-from src.utils.constants import EPS, amp_max, amp_min
+from src.utils.constants import AMP_MAX, AMP_MIN, EPS
 from src.utils.processing_utils import clip
 
 
@@ -68,7 +68,7 @@ class MonitorValReconstruction(Callback):
                 reconstructions = torch.cat([recon_real, recon_imag], dim=1)
                 criterion = pl_module.criterion(reconstructions, target=input)
         # Denormalize reconstructions
-        recon_denorm = reconstructions * (amp_max - amp_min) + amp_min
+        recon_denorm = reconstructions * (AMP_MAX - AMP_MIN) + AMP_MIN
         recon_lin = torch.exp(recon_denorm)
         recon_linI = 0.5 * (
             torch.square(recon_lin[:, 0, :, :]) + torch.square(recon_lin[:, 1, :, :])

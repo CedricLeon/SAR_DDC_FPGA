@@ -6,7 +6,7 @@ import torchmetrics.functional as TMF
 import torchmetrics.functional.image as F
 from torch import Tensor
 
-from src.utils.constants import EPS, amp_max, amp_min
+from src.utils.constants import AMP_MAX, AMP_MIN, EPS
 from src.utils.metrics import mse, psnr
 
 
@@ -68,7 +68,7 @@ class SARDDCModule(lightning.LightningModule):
 
     def forward(self, x: Tensor):
         """Normalize x and forward pass through the network."""
-        x = (torch.log(torch.square(x) + EPS) - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
+        x = (torch.log(torch.square(x) + EPS) - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
         return self.net(x)
 
     def _log_metrics(
@@ -175,7 +175,7 @@ class SARDDCModule(lightning.LightningModule):
         all_metrics["test/aux"] = self.net.aux_loss().item()
 
         # Convert to linear amplitude
-        recon_denorm = output["x_hat"] * (amp_max - amp_min) + amp_min
+        recon_denorm = output["x_hat"] * (AMP_MAX - AMP_MIN) + AMP_MIN
         recon_lin = torch.exp(recon_denorm)
         clean_im_real = torch.square(recon_lin[:, 0, :, :])
         clean_im_imag = torch.square(recon_lin[:, 1, :, :])

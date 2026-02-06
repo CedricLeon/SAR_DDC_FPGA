@@ -16,7 +16,7 @@ from torchmetrics.image import (
     StructuralSimilarityIndexMeasure,
 )
 
-from src.utils.constants import EPS, amp_max, amp_min
+from src.utils.constants import AMP_LIN_MAX, AMP_MAX, AMP_MIN, EPS
 from src.utils.debug import print_statistics
 
 
@@ -63,10 +63,14 @@ def mse(predicted: Tensor, target: Tensor) -> float:
     return torch.mean((predicted - target) ** 2).item()
 
 
-def psnr(predicted: Tensor, target: Tensor, mse_value: Optional[float] = None) -> float:
-    """Compute Peak Signal-to-Noise Ratio (PSNR) between predicted and target tensors."""
-    mse_value = mse_value if mse_value is not None else mse(predicted, target)
-    peak = float(torch.max(predicted))
+def psnr(predicted_linA: Tensor, target_linA: Tensor, mse_value: Optional[float] = None) -> float:
+    """Compute Peak Signal-to-Noise Ratio (PSNR) between predicted_linA and target_linA tensors.
+
+    Both tensors must be in linear Amplitude scale as peak=AMP_LIN_MAX is used for PSNR
+    computation.
+    """
+    mse_value = mse_value if mse_value is not None else mse(predicted_linA, target_linA)
+    peak = AMP_LIN_MAX
     psnr_value = 20 * math.log10(peak) - 10 * math.log10(mse_value)
     return psnr_value
 
@@ -118,10 +122,10 @@ class MerlinRDLoss(nn.Module):
         self.lmbda = lmbda if lmbda >= 0 else None  # deactivate rate if lmbda < 0
 
         self.mse = MeanSquaredError()  # nn.MSELoss(reduction="sum")
-        self.psnr = PeakSignalNoiseRatio(data_range=(2 * amp_min, 2 * amp_max))
-        self.ssim = StructuralSimilarityIndexMeasure(data_range=(2 * amp_min, 2 * amp_max))
+        self.psnr = PeakSignalNoiseRatio(data_range=(2 * AMP_MIN, 2 * AMP_MAX))
+        self.ssim = StructuralSimilarityIndexMeasure(data_range=(2 * AMP_MIN, 2 * AMP_MAX))
         self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(
-            data_range=(2 * amp_min, 2 * amp_max)
+            data_range=(2 * AMP_MIN, 2 * AMP_MAX)
         )
 
     def forward(self, output: Dict[str, Tensor], target: Tensor) -> Dict[str, Tensor]:
@@ -138,7 +142,7 @@ class MerlinRDLoss(nn.Module):
         out["bpp"] = estimate_bpp(output)
 
         # Denorm the reconstructions before computing losses
-        log_hat_R = 2 * (output["x_hat"] * (amp_max - amp_min) + amp_min)
+        log_hat_R = 2 * (output["x_hat"] * (AMP_MAX - AMP_MIN) + AMP_MIN)
         # print_statistics("      Predicted Reflectivity log_hat_R", log_hat_R)
         # ----- Classic MERLIN Loss (0.5 * log(r) + b^2 / r) -----
         hat_R = torch.exp(log_hat_R) + 1e-6  # must be non-zero
@@ -191,10 +195,10 @@ class MerlinLoss(nn.Module):
         super().__init__()
 
         self.mse = MeanSquaredError()
-        self.psnr = PeakSignalNoiseRatio(data_range=(2 * amp_min, 2 * amp_max))
-        self.ssim = StructuralSimilarityIndexMeasure(data_range=(2 * amp_min, 2 * amp_max))
+        self.psnr = PeakSignalNoiseRatio(data_range=(2 * AMP_MIN, 2 * AMP_MAX))
+        self.ssim = StructuralSimilarityIndexMeasure(data_range=(2 * AMP_MIN, 2 * AMP_MAX))
         self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(
-            data_range=(2 * amp_min, 2 * amp_max)
+            data_range=(2 * AMP_MIN, 2 * AMP_MAX)
         )
 
     def forward(self, predicted: torch.Tensor, target: torch.Tensor) -> Dict[str, torch.Tensor]:
@@ -210,7 +214,7 @@ class MerlinLoss(nn.Module):
         out = {}
 
         # Denorm the reconstructions before computing losses
-        log_hat_R = 2 * (predicted * (amp_max - amp_min) + amp_min)
+        log_hat_R = 2 * (predicted * (AMP_MAX - AMP_MIN) + AMP_MIN)
         # ----- Classic MERLIN Loss (0.5 * log(r) + b^2 / r) -----
         hat_R = torch.exp(log_hat_R) + 1e-6  # must be non-zero
         b_square = torch.square(target)

@@ -36,7 +36,7 @@ from tqdm import tqdm
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src.models.merlin_module import MerlinModule
 from src.models.sar_ddc_module import SARDDCModule
-from src.utils.constants import amp_max, amp_min
+from src.utils.constants import AMP_MAX, AMP_MIN
 from src.utils.processing_utils import extract_short_name_from_TSX_filepath
 from src.utils.sar_utils import (
     extract_patches,
@@ -167,8 +167,8 @@ def _predict_linA(model: torch.nn.Module, batch: torch.Tensor) -> torch.Tensor:
     ), "Model output must be a Tensor or dict with 'x_hat'"
 
     # Denormalize, average, return linear amplitude
-    recon_real_lin = torch.exp(recon_real * (amp_max - amp_min) + amp_min)
-    recon_imag_lin = torch.exp(recon_imag * (amp_max - amp_min) + amp_min)
+    recon_real_lin = torch.exp(recon_real * (AMP_MAX - AMP_MIN) + AMP_MIN)
+    recon_imag_lin = torch.exp(recon_imag * (AMP_MAX - AMP_MIN) + AMP_MIN)
     recon_linA = torch.sqrt(
         0.5 * (torch.square(recon_real_lin) + torch.square(recon_imag_lin))
     )  # [B,H,W]
