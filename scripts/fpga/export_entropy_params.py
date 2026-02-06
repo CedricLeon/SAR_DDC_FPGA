@@ -5,11 +5,10 @@ from pathlib import Path
 import numpy as np
 
 # Add project root to sys path
-import rootutils
 import torch
 from omegaconf import OmegaConf
 
-rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from src.models.components.compressai_dpu import get_scale_table  # noqa: E402
 from src.models.components.res_scale_hyperprior_dpu import (  # noqa: E402

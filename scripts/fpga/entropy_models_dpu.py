@@ -28,7 +28,7 @@ Key Differences from PyTorch Checkpoints:
 """
 
 import math
-import os
+from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
@@ -279,9 +279,9 @@ class GaussianConditionalDPU:
         return outputs, likelihood
 
 
-def load_entropy_models_dpu(npz_path: str) -> Tuple[EntropyBottleneckDPU, GaussianConditionalDPU]:
+def load_entropy_models_dpu(npz_path: Path) -> Tuple[EntropyBottleneckDPU, GaussianConditionalDPU]:
     """Load Entropy Models from an .npz parameter file."""
-    if not os.path.exists(npz_path):
+    if not npz_path.exists():
         raise FileNotFoundError(f"Entropy parameters not found at {npz_path}")
 
     data = np.load(npz_path)
