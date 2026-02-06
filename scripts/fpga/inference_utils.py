@@ -1,12 +1,14 @@
-from typing import Any, Callable, Dict, Iterable
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
+import vart  # type: ignore
+import xir  # type: ignore
 
 # Normalization constants
 AMP_MIN = 4.605170249938965
 AMP_MAX = 10.742239952087402
 EPS = 1e-2
-
+AMP_LIN_MAX = 545.2018433569272
 
 # -----------------------------------------------------------------------------
 # LOGGING UTILS
@@ -69,17 +71,9 @@ class MetricsTracker:
 
     @staticmethod
     def compute_psnr(a: np.ndarray, b: np.ndarray) -> float:
-        """Compute PSNR (peak assumed to be max of 'a').
-
-        Ideally peak should be derived from range, but for SAR Amplitude it varies. We follow
-        inference.py implementation using max(a).
-        """
+        """Compute PSNR."""
         mse = MetricsTracker.compute_mse(a, b)
-        if mse == 0:
-            return 100.0
-        peak = float(np.max(a))
-        if peak == 0:
-            return 0.0
+        peak = AMP_LIN_MAX
         return 20 * np.log10(peak) - 10 * np.log10(mse)
 
     @staticmethod
@@ -99,6 +93,11 @@ class MetricsTracker:
         num_pixels = B * H * W
         bpp = sum((np.log(lh).sum() / (-np.log(2) * num_pixels)) for lh in likelihoods.values())
         return float(bpp)
+
+    def reset(self):
+        """Reset all metrics."""
+        self._sums = {name: 0.0 for name in self._metric_names}
+        self._count = 0
 
     def update(
         self,
@@ -198,3 +197,144 @@ def visualize_patches(
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
+
+
+# -----------------------------------------------------------------------------
+# DPU UTILS
+# -----------------------------------------------------------------------------
+
+
+def float_to_DPU_int(data_float: np.ndarray, input_scale: float) -> np.ndarray:
+    """Convert float data to DPU fixed-point INT8 using the given scale."""
+    return (data_float * input_scale).astype(np.int8)
+
+
+def DPU_int_to_float(data_int: np.ndarray, scale: float) -> np.ndarray:
+    """Convert DPU fixed-point INT8 data back to float using the given scale."""
+    return data_int.astype(np.float32) * scale
+
+
+class DPUSubgraphRunner:
+    """Helper to wrap a single DPU subgraph runner."""
+
+    def __init__(self, runner: Any, subgraph: Any, name: str):
+        self.runner = runner
+        self.name = name
+
+        # ----- IO Shapes -----
+        self.input_tensors = runner.get_input_tensors()
+        self.output_tensors = runner.get_output_tensors()
+        # We assume 1 input and 1 output for simplicity based on our wrapper
+        self.input_shape = tuple(self.input_tensors[0].dims)  # [N, H, W, C]
+        self.output_shape = tuple(self.output_tensors[0].dims)  # [N, H, W, C]
+        # Get fixed-point scales for conversion
+        input_fixpos = self.input_tensors[0].get_attr("fix_point")
+        output_fixpos = self.output_tensors[0].get_attr("fix_point")
+        self.input_scale = 2.0**input_fixpos
+        self.output_scale = 2.0 ** (-output_fixpos)
+
+        print(
+            f"[{name}] In: {self.input_shape} (scale={self.input_scale}), Out: {self.output_shape} (scale={self.output_scale})"
+        )
+
+    def run(self, input_data: np.ndarray) -> np.ndarray:
+        """Run inference on a batch of data.
+
+        input_data: Float numpy array matching input shape (NCHW or NHWC).
+        """
+        # 1. Quantize Input (Float -> Int8)
+        input_int8 = float_to_DPU_int(input_data, self.input_scale)
+
+        # 2. Prepare Buffers
+        # VART needs input/output buffers with exact shape from DPU, order="C" ensures data is laid out in row-major order
+        input_buffer = np.ascontiguousarray(input_int8)
+        output_buffer = np.empty(self.output_shape, dtype=np.int8, order="C")
+
+        # 3. Execute (job_id is returned)
+        job_id = self.runner.execute_async([input_buffer], [output_buffer])
+        self.runner.wait(job_id)
+
+        # 4. Dequantize Output (Int8 -> Float)
+        output_float = DPU_int_to_float(output_buffer, self.output_scale)
+
+        return output_float
+
+
+# -----------------------------------------------------------------------------
+# TILING UTILS
+# -----------------------------------------------------------------------------
+
+
+def pad_to_multiple(image: np.ndarray, patch_size: int) -> tuple[np.ndarray, tuple[int, int]]:
+    """Pad image using reflection so its dimensions are multiples of patch_size.
+
+    Args:
+        image: Input image [H, W, C]
+        patch_size: Size of the patch
+
+    Returns:
+        padded_image: The padded image
+        (h_pad, w_pad): The amount of padding added to height and width
+    """
+    h, w = image.shape[:2]
+    h_pad = (patch_size - h % patch_size) % patch_size
+    w_pad = (patch_size - w % patch_size) % patch_size
+
+    if h_pad == 0 and w_pad == 0:
+        return image, (0, 0)
+
+    # Pad with reflection ((top, bottom), (left, right), (channels...))
+    pad_width = ((0, h_pad), (0, w_pad)) + ((0, 0),) * (image.ndim - 2)
+    padded_image = np.pad(image, pad_width, mode="reflect")
+    return padded_image, (h_pad, w_pad)
+
+
+def extract_patches(image: np.ndarray, patch_size: int) -> np.ndarray:
+    """Extract non-overlapping patches from the image.
+
+    Args:
+        image: Input image [H, W, C] (must be divisible by patch_size)
+
+    Returns:
+        patches: Array of shape [N_patches, patch_size, patch_size, C]
+    """
+    h, w = image.shape[:2]
+    c = image.shape[2]
+
+    # Reshape to (n_h, patch_h, n_w, patch_w, C)
+    n_h = h // patch_size
+    n_w = w // patch_size
+
+    reshaped = image.reshape(n_h, patch_size, n_w, patch_size, c)
+    # Transpose to (n_h, n_w, patch_h, patch_w, C)
+    transposed = reshaped.transpose(0, 2, 1, 3, 4)
+    # Reshape to (N, patch_h, patch_w, C)
+    patches = transposed.reshape(-1, patch_size, patch_size, c)
+    return patches
+
+
+def reconstruct_from_patches(
+    patches: np.ndarray, image_shape: tuple[int, int], patch_size: int
+) -> np.ndarray:
+    """Reconstruct image from non-overlapping patches.
+
+    Args:
+        patches: [N, patch_size, patch_size, C]
+        image_shape: (H, W) of the target image (must be divisible by patch_size)
+        patch_size: size of patches
+
+    Returns:
+        Reconstructed image [H, W, C]
+    """
+    h, w = image_shape
+    c = patches.shape[-1]
+    n_h = h // patch_size
+    n_w = w // patch_size
+
+    # Reshape to (n_h, n_w, patch_h, patch_w, c)
+    reshaped_patches = patches.reshape(n_h, n_w, patch_size, patch_size, c)
+    # Transpose to (n_h, patch_h, n_w, patch_w, c)
+    transposed = reshaped_patches.transpose(0, 2, 1, 3, 4)
+    # Reshape to (H, W, C)
+    image = transposed.reshape(h, w, c)
+    return image
