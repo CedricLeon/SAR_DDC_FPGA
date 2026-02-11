@@ -226,8 +226,8 @@ def run_hybrid_inference(
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # ---- Paths and Logging ----
-    model_name = xmodel.name.replace(".xmodel", "")
-    output_dir = Path(f"results/inference_{model_name}_{timestamp}")
+    model_name_and_timestamp = xmodel.parent.name
+    output_dir = Path(f"results/FPGA_inference_{model_name_and_timestamp}")
     output_dir.mkdir(parents=True, exist_ok=True)
     global log_file
     log_file = output_dir / "inference.log"
@@ -241,6 +241,14 @@ def run_hybrid_inference(
     subgraph_map = identify_subgraphs(graph)
     log(f"Loading Entropy Models from {entropy_params_path}...")
     eb, gc = load_entropy_models_dpu(entropy_params_path)
+
+    # Copy train_config.yaml if available
+    train_config_src = xmodel.parent / "train_config.yaml"
+    if train_config_src.exists():
+        import shutil
+
+        shutil.copy(train_config_src, output_dir / "train_config.yaml")
+        log(f"Copied train_config.yaml to {output_dir}")
 
     # 2. Create Runners
     log("Creating DPU Runners...")
@@ -343,7 +351,7 @@ def run_hybrid_inference(
         json.dump(summary, f, indent=4)
 
     # Save Visualization arrays
-    vis_dir = output_dir / "reconstructions"
+    vis_dir = output_dir / "reconstructions_test_set"
     vis_dir.mkdir(parents=True, exist_ok=True)
     log(f"Saving reconstruction (log-I) arrays to {vis_dir}...")
     np.save(vis_dir / "vis_noisy.npy", np.array(vis_noisy_test_set))
@@ -400,6 +408,8 @@ def run_hybrid_inference(
         recon_linI = np.exp(recon_logI)
         recon_linI = 0.5 * (np.square(recon_linI[..., 0]) + np.square(recon_linI[..., 1]))
         recon_linA = np.sqrt(recon_linI)
+        if verbose:
+            print_tensor_stats(f" - recon_linA ({tile_path.name})", recon_linA)
         # Noisy to linA
         noisy_sq = np.square(noisy_tile)
         noisy_linI = noisy_sq[..., 0] + noisy_sq[..., 1]
@@ -418,12 +428,14 @@ def run_hybrid_inference(
                     f"  Reference GT file {ref_path} not found for metrics comparison."
                 )
             ref_linA = np.load(ref_path)  # [H, W]
+            if verbose:
+                print_tensor_stats(f" - {ref_name} linA ({tile_path.name})", ref_linA)
 
             tile_metrics[f"psnr_{ref_name}"] = MetricsTracker.compute_psnr(recon_linA, ref_linA)
             tile_metrics[f"mse_{ref_name}"] = MetricsTracker.compute_mse(recon_linA, ref_linA)
 
-        log(f"  Metrics: {tile_metrics}")
-        log(f"  Time: {time.time() - start_tile:.2f}s")
+        log(f"Metrics: {tile_metrics}")
+        log(f"Time: {time.time() - start_tile:.2f}s")
 
         # Save
         save_path = output_dir / f"{tile_path.name}_recon_linA.npy"
@@ -433,7 +445,7 @@ def run_hybrid_inference(
         with open(meta_path, "w") as f:
             json.dump(tile_metrics, f, indent=4)
         log(f"Finished evaluating {tile_path.name}.")
-    log("Evaluation Complete.")
+    log(f"Evaluation Complete, results stored in {output_dir}.")
 
 
 if __name__ == "__main__":
