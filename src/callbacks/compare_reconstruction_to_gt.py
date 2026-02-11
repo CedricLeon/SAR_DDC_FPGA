@@ -214,7 +214,9 @@ class CompareReconstructionToGT(Callback):
         # Only log on specified epochs and for the first batch
         if (trainer.current_epoch % self.log_every_n_epochs != 0) or batch_idx > 0:
             return
-        print(f"\n[CompareReconstructionToGT] Epoch {trainer.current_epoch}.")
+
+        if self.verbose:
+            print(f"\n[CompareReconstructionToGT] Epoch {trainer.current_epoch}.")
 
         # ----- Forward pass to get reconstruction and metrics -----
         with torch.no_grad():
