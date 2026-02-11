@@ -15,13 +15,19 @@ this script:
 import warnings
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Mapping
 
 import hydra
 import rootutils
 import torch
 import wandb
 from lightning import LightningModule, Trainer
+from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig, OmegaConf
+
+# rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+
+# from src.callbacks.compare_reconstruction_to_gt import CompareReconstructionToGT  # noqa: E402
 
 warnings.filterwarnings(
     "ignore",
@@ -32,21 +38,18 @@ warnings.filterwarnings("ignore", category=FutureWarning, message=".*weights_onl
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
-# from src.data.sar_datamodule import TSXSSCDataModule  # noqa: E402
-# from src.models.sar_ddc_module import SARDDCModule  # noqa: E402
-
 # =============== User settings ===============
 ENTITY = "cedric-leonard"
-PROJECT = "SAR_DDC-RD-curve"
+PROJECT = "SAR_DDC_FPGA"
 CHECKPOINT_NAME = "last.ckpt"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 FILTERS_CONFIG = [
-    # ("model.criterion.lmbda", "==", 100),
-    ("retested_on", "is_none", None),  # skip already re-tested runs
-    # ("_timestamp", ">", datetime(2024, 10, 1).timestamp()),  # skip too old runs
+    ("model.criterion.lmbda", "in", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]),
+    ("seed", "!=", 42),  # Filter by inequality
+    ("model.net.activation", "!=", "gdn1"),  # Filter string inequality
+    ("retested_on", "is_none", None),
 ]
-# For other filters add them directly to the main
-# ============================================
 
 
 def check_single_condition(value, op, test_value) -> bool:
@@ -55,6 +58,10 @@ def check_single_condition(value, op, test_value) -> bool:
         return value == test_value
     elif op == "!=":
         return value != test_value
+    elif op == "in":
+        return value in test_value
+    elif op == "not in":
+        return value not in test_value
     elif op == "is_none":
         return value is None
     elif op == "exists":
@@ -79,11 +86,11 @@ def run_matches_config_filters(run_cfg: dict) -> bool:
 
 def instantiate_model_and_load_weights(hydra_cfg: DictConfig, ckpt_path: Path) -> LightningModule:
     """Instantiate the model from training config and load weights from checkpoint."""
-    print(f"Instantiating model <{hydra_cfg.model._target_}>")
+    print(f"    Instantiating model <{hydra_cfg.model._target_}>")
     model: LightningModule = hydra.utils.instantiate(hydra_cfg.model)
     checkpoint = torch.load(str(ckpt_path), map_location="cpu")
     msg = model.load_state_dict(checkpoint["state_dict"], strict=True)
-    print(f"Loaded checkpoint state_dict with message: {msg}")
+    print(f"    Loaded checkpoint state_dict with message: {msg}")
     model.to(DEVICE)
     model.eval()
     return model
@@ -97,45 +104,122 @@ def build_test_dataloader(hydra_cfg: DictConfig):
     return datamodule.test_dataloader()
 
 
-def evaluate_model(model: LightningModule, test_loader):
-    """Run Lightning test loop and return metrics dict."""
+class DictLogger(Logger):
+    """A dummy logger that captures metrics in a dictionary."""
+
+    def __init__(self):
+        super().__init__()
+        self._metrics = {}
+
+    @property
+    def name(self) -> str:
+        """Name of the logger."""
+        return "DictLogger"
+
+    @property
+    def version(self) -> str:
+        """Version of the logger."""
+        return "0.1"
+
+    @property
+    def experiment(self) -> Any:
+        """The callback calls self.logger.experiment.log(...)"""
+        return self
+
+    def log_hyperparams(self, params: Any, *args, **kwargs):
+        """DummyLogger."""
+        pass
+
+    def log_metrics(self, metrics: Mapping[str, float], step: int | None = None):
+        """Update the internal metrics dictionary with new values."""
+        self._metrics.update(metrics)
+
+    def log(self, metrics: Mapping[str, Any]):
+        """Custom log method to support .experiment.log({...}) style calls."""
+        self._metrics.update(metrics)
+
+    def save(self):
+        """DummyLogger."""
+        pass
+
+    def finalize(self, status: str):
+        """DummyLogger."""
+        pass
+
+
+def evaluate_model_captured(model: LightningModule, test_loader, hydra_cfg: DictConfig):
+    """Run Lightning test loop and return metrics dict, capturing callback logs."""
+
+    # Setup dummy logger to capture callback outputs
+    dict_logger = DictLogger()
+
+    # Instantiate callbacks from config if available
+    callbacks = []
+    if "callbacks" in hydra_cfg and "compare_recon_to_gt" in hydra_cfg.callbacks:
+        gt_callback = hydra.utils.instantiate(hydra_cfg.callbacks.compare_recon_to_gt)
+        callbacks.append(gt_callback)
+
     trainer = Trainer(
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        logger=False,
+        logger=dict_logger,  # Pass our dummy logger
+        callbacks=callbacks,
+        enable_checkpointing=False,
     )
+    gt_callback.on_fit_start(trainer, model)  # Manually call to setup any internal state
+
     results = trainer.test(model, dataloaders=test_loader, verbose=False)
-    # results is a list of dicts (one per dataloader)
-    print(f"  Obtained test metrics ({len(results)=}): {results}")
-    return results[0] if results else {}
+
+    final_metrics = {}
+    if results:
+        final_metrics.update(results[0])
+
+    # Add metrics captured by the callback (e.g. from DictLogger)
+    if dict_logger._metrics:
+        print(f"    Captured {len(dict_logger._metrics)} additional metrics from callbacks.")
+        for k, v in dict_logger._metrics.items():
+            if not isinstance(v, wandb.Image):
+                final_metrics[k] = v
+
+    return final_metrics
 
 
-def rename_old_test_metrics(summary_dict: dict) -> dict:
-    """Move existing test/* metrics to old_test/* to preserve them."""
-    updated = {}
+def clean_summary_dict(summary_dict: dict) -> dict:
+    """Remove 'old_test/*' keys and 'test/*' keys to start fresh."""
+    cleaned = {}
     for k, v in summary_dict.items():
+        if k.startswith("old_test/"):
+            continue  # Remove clutter from previous runs
         if k.startswith("test/"):
-            updated[f"old_{k}"] = v
-        else:
-            updated[k] = v
-    return updated
+            continue  # Remove current wrong metrics (will be replaced)
+        cleaned[k] = v
+    return cleaned
 
 
 def update_wandb_run(run, new_metrics: dict):
     """Update W&B summary and config for the run."""
-    print(f"  Updating W&B summary for run {run.id}")
-    # Backup old test metrics
-    summary = run.summary._json_dict
-    summary = rename_old_test_metrics(summary)
+    print(f"    Updating W&B summary for run {run.id}")
 
-    # Add new ones
+    # Get current summary
+    summary = run.summary._json_dict
+
+    # Filter test keys for display
+    test_keys_before = {k: v for k, v in summary.items() if "test/" in k}
+    print(
+        f"    [Before] {len(test_keys_before)} test metrics found. test/psnr={test_keys_before.get('test/psnr', 'N/A')}dB, test/psnr_merlin={test_keys_before.get('test/psnr_merlin', 'N/A')}dB."
+    )
+    summary = clean_summary_dict(summary)
     summary.update(new_metrics)
+
+    # actually summary is dict, let's just look at new_metrics
+    print(
+        f"    [After] {len(new_metrics)} new test metrics to be saved. test/psnr={new_metrics.get('test/psnr', 'N/A')}dB, test/psnr_merlin={new_metrics.get('test/psnr_merlin', 'N/A')}dB."
+    )
 
     # Update summary and mark the timestamp in config
     run.summary._json_dict = summary
     run.config["retested_on"] = datetime.now().isoformat()
     run.update()
-    print("  Updated successfully.\n")
 
 
 def main():
@@ -146,12 +230,14 @@ def main():
     # ----- Filtering -----
     # Apply FILTERS_CONFIG
     matching_runs = [r for r in runs if run_matches_config_filters(r.config)]
-    # Individual skips by run id
-    # matching_runs = [r for r in matching_runs if r.id in ["bo73yess"]]
+    # Uncomment the following line to test on a single run (replace ID with a valid one)
+    # matching_runs = [r for r in matching_runs if r.id in ["ykihmv1p"]]
     print(f"{len(matching_runs)} runs match the filters: {FILTERS_CONFIG}")
 
-    for run in matching_runs:
-        print(f"Processing run {run.id} ({run.name})")
+    for i, run in enumerate(matching_runs):
+        print(
+            f"\n\033[32mProcessing run {i + 1}/{len(matching_runs)}: ID={run.id} ({run.name}), lambda={run.config.get('lambda', None)}, seed={run.config.get('seed', None)}, created {run.created_at}...\033[0m"
+        )
 
         output_dir = Path(run.config["paths"]["output_dir"])
         ckpt_path = Path(output_dir) / "checkpoints" / CHECKPOINT_NAME
@@ -159,33 +245,17 @@ def main():
         if isinstance(cfg, DictConfig):
             hydra_cfg = cfg
 
-        model = instantiate_model_and_load_weights(hydra_cfg, ckpt_path)
-        test_loader = build_test_dataloader(hydra_cfg)
-        metrics = evaluate_model(model, test_loader)
-        update_wandb_run(run, metrics)
+        try:
+            model = instantiate_model_and_load_weights(hydra_cfg, ckpt_path)
+            test_loader = build_test_dataloader(hydra_cfg)
+            metrics = evaluate_model_captured(model, test_loader, hydra_cfg)
+            update_wandb_run(run, metrics)
+        except Exception as e:
+            print(f"    ERROR processing run {run.id}: {e}")
+            import traceback
 
-        # # --- Load model and data ---
-        # cfg = run.config
-        # try:
-        #     model = load_model_from_run(cfg)
-        #     test_loader = build_test_dataloader(cfg["data"])
-        # except Exception as e:
-        #     print(f"  ❌ Failed to load run {run.id}: {e}")
-        #     continue
-
-        # # --- Evaluate ---
-        # try:
-        #     metrics = evaluate_model(model, test_loader)
-        # except Exception as e:
-        #     print(f"  ❌ Failed to evaluate run {run.id}: {e}")
-        #     continue
-
-        # # --- Update W&B ---
-        # try:
-        #     update_wandb_run(run, metrics)
-        # except Exception as e:
-        #     print(f"  ❌ Failed to update W&B for run {run.id}: {e}")
-        #     continue
+            traceback.print_exc()
+            continue
 
 
 if __name__ == "__main__":
