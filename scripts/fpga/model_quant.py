@@ -33,6 +33,8 @@ from pytorch_nndct.apis import torch_quantizer  # type: ignore
 from torch.utils.data import DataLoader, Dataset, Subset
 from tqdm import tqdm
 
+warnings.simplefilter(action="ignore", category=FutureWarning)
+
 project_root = Path(__file__).resolve().parent.parent.parent
 os.environ["PROJECT_ROOT"] = str(project_root)
 sys.path.append(str(project_root))
@@ -42,7 +44,6 @@ from src.models.components.dpu_wrapper import (  # noqa: E402
 from src.models.components.res_scale_hyperprior_dpu import (  # noqa: E402
     ResidualScaleHyperpriorPatched,
 )
-from src.models.components.sar_simple_autoencoder import ResidualSimpleAE  # noqa: E402
 from src.utils.constants import AMP_MAX, AMP_MIN  # noqa: E402
 from src.utils.metrics import MerlinRDLoss  # noqa: E402
 
