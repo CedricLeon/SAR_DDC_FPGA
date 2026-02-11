@@ -19,6 +19,7 @@ data:
 model:
   net:
     no_output_padding: True
+    activation: "relu"
   criterion:
     metric: "merlin" # "mse" or "ssim" or "ms_ssim"
     lmbda: 100
@@ -32,9 +33,11 @@ callbacks:
     blend_method: "count"
     stride: 256
     log_every_n_epochs: 2
+    verbose: True
   monitor_val_recon:
     log_every_n_epochs: 2
     num_images: 4
+    verbose: False
 
 trainer:
   min_epochs: 1

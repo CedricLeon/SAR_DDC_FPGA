@@ -16,6 +16,7 @@ class MonitorValReconstruction(Callback):
         self,
         log_every_n_epochs: int,
         num_images: int = 3,
+        verbose: bool = False,
     ):
         super().__init__()
         self.log_every_n_epochs = log_every_n_epochs
@@ -25,6 +26,8 @@ class MonitorValReconstruction(Callback):
         self.mean_std_norm = True  # True: use mean/std, False use percentiles
         self.clip_factor = 3  # Clip to mean +/- self.clip_factor * std
         self.clip_percentiles = (5, 95)  # Clip to these percentiles
+
+        self.verbose = verbose
 
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
         """Determine if the model uses compression based on its class name."""
@@ -48,7 +51,8 @@ class MonitorValReconstruction(Callback):
         # Only log on specified epochs and for the first batch
         if (trainer.current_epoch % self.log_every_n_epochs != 0) or batch_idx > 0:
             return
-        print(f"\n[MonitorValReconstruction] Epoch {trainer.current_epoch}.")
+        if self.verbose:
+            print(f"\n[MonitorValReconstruction] Epoch {trainer.current_epoch}.")
 
         # Get the first few images from the batch
         num_images_to_show = min(self.num_images, batch["real"].shape[0])
@@ -105,12 +109,14 @@ class MonitorValReconstruction(Callback):
                 clip_info = f" (clipped with {'mean/std' if self.mean_std_norm else f'percentiles {self.clip_percentiles}'})"
             else:
                 clip_info = " (no clipping)"
-            print(
-                f"    RECON N°{i} Log-Intensity{clip_info}: min={recon_logI_i.min():.4f}, max={recon_logI_i.max():.4f}, mean={recon_logI_i.mean():.4f}, std={recon_logI_i.std():.4f}. Is NaN={np.isnan(recon_logI_i).any()}."
-            )
-            print(
-                f"    NOISY N°{i} Log-Intensity{clip_info}: min={noisy_logI.min():.4f}, max={noisy_logI.max():.4f}, mean={noisy_logI.mean():.4f}, std={noisy_logI.std():.4f}, Is NaN={np.isnan(noisy_logI).any()}."
-            )
+
+            if self.verbose:
+                print(
+                    f"    RECON N°{i} Log-Intensity{clip_info}: min={recon_logI_i.min():.4f}, max={recon_logI_i.max():.4f}, mean={recon_logI_i.mean():.4f}, std={recon_logI_i.std():.4f}. Is NaN={np.isnan(recon_logI_i).any()}."
+                )
+                print(
+                    f"    NOISY N°{i} Log-Intensity{clip_info}: min={noisy_logI.min():.4f}, max={noisy_logI.max():.4f}, mean={noisy_logI.mean():.4f}, std={noisy_logI.std():.4f}, Is NaN={np.isnan(noisy_logI).any()}."
+                )
 
             # Row 0: Input reflectivity
             im0 = axes[0, i].imshow(noisy_logI, cmap="gray")

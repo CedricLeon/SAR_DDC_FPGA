@@ -5,3 +5,4 @@ compare_recon_to_gt:
   split_large_patch: False
   blend_method: "count"
   stride: 256
+  verbose: False

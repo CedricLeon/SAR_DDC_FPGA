@@ -26,6 +26,7 @@ class CompareReconstructionToGT(Callback):
         split_large_patch: bool = False,
         blend_method: str = "linear",
         stride: int = -1,
+        verbose: bool = False,
     ):
         super().__init__()
         self.patch_dir = Path(patch_dir) / "visualization"
@@ -41,15 +42,17 @@ class CompareReconstructionToGT(Callback):
         self.stride = stride
 
         self.with_compression = None
+        self.verbose = verbose
 
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
         """Find the large patch and convert it to a torch tensor."""
-        print(
-            f"\n[CompareReconstructionToGT] Setting up Callback. {self.clip_for_visualization=}, {self.clip_factor=}, {self.split_large_patch=} ({self.blend_method=}, {self.stride=})"
-        )
-        print(
-            f"    Called with {pl_module.__class__.__name__}: net = {pl_module.net.__class__.__name__}, criterion = {pl_module.criterion.__class__.__name__}."
-        )
+        if self.verbose:
+            print(
+                f"\n[CompareReconstructionToGT] Setting up Callback. {self.clip_for_visualization=}, {self.clip_factor=}, {self.split_large_patch=} ({self.blend_method=}, {self.stride=})"
+            )
+            print(
+                f"    Called with {pl_module.__class__.__name__}: net = {pl_module.net.__class__.__name__}, criterion = {pl_module.criterion.__class__.__name__}."
+            )
         if pl_module.__class__.__name__ == "MerlinModule":
             self.with_compression = False
         elif pl_module.__class__.__name__ == "SARDDCModule":
@@ -71,10 +74,11 @@ class CompareReconstructionToGT(Callback):
 
         # --- load and symmetrize ---
         patch_data = np.load(self.patch_path)  # [H, W, 2]
-        print(f"    Loaded RAW PATCH from {self.patch_path}.")
-        print(
-            f"        RAW PATCH (shape={patch_data.shape}) statistics: min={patch_data.min():.4f}, max={patch_data.max():.4f}, mean={patch_data.mean():.4f}, std={patch_data.std():.4f}. Is NaN={np.isnan(patch_data).any()}."
-        )
+        if self.verbose:
+            print(f"    Loaded RAW PATCH from {self.patch_path}.")
+            print(
+                f"        RAW PATCH (shape={patch_data.shape}) statistics: min={patch_data.min():.4f}, max={patch_data.max():.4f}, mean={patch_data.mean():.4f}, std={patch_data.std():.4f}. Is NaN={np.isnan(patch_data).any()}."
+            )
         patch_data = symmetrize(patch_data)
 
         # --- Prepare noisy patch data as numpy arrays for visualization ---
@@ -82,12 +86,13 @@ class CompareReconstructionToGT(Callback):
         self.noisy_linA = np.sqrt(noisy_linI)
         self.noisy_logI = np.log(noisy_linI + EPS)
         del noisy_linI
-        print(
-            f"        NOISY LIN-A (shape={self.noisy_linA.shape}) statistics: min={self.noisy_linA.min():.4f}, max={self.noisy_linA.max():.4f}, mean={self.noisy_linA.mean():.4f}, std={self.noisy_linA.std():.4f}. Is NaN={np.isnan(self.noisy_linA).any()}."
-        )
-        print(
-            f"        NOISY LOG-I (shape={self.noisy_logI.shape}) statistics: min={self.noisy_logI.min():.4f}, max={self.noisy_logI.max():.4f}, mean={self.noisy_logI.mean():.4f}, std={self.noisy_logI.std():.4f}. Is NaN={np.isnan(self.noisy_logI).any()}."
-        )
+        if self.verbose:
+            print(
+                f"        NOISY LIN-A (shape={self.noisy_linA.shape}) statistics: min={self.noisy_linA.min():.4f}, max={self.noisy_linA.max():.4f}, mean={self.noisy_linA.mean():.4f}, std={self.noisy_linA.std():.4f}. Is NaN={np.isnan(self.noisy_linA).any()}."
+            )
+            print(
+                f"        NOISY LOG-I (shape={self.noisy_logI.shape}) statistics: min={self.noisy_logI.min():.4f}, max={self.noisy_logI.max():.4f}, mean={self.noisy_logI.mean():.4f}, std={self.noisy_logI.std():.4f}. Is NaN={np.isnan(self.noisy_logI).any()}."
+            )
 
         # --- Store as torch tensors on device for forward passes ---
         patch_tensor = torch.from_numpy(patch_data).to(pl_module.device).float()
@@ -106,17 +111,19 @@ class CompareReconstructionToGT(Callback):
             self.merlin_linA = merlin_patch_dict["denoised"]["full"]
             self.merlin_logI = np.log(np.square(self.merlin_linA) + EPS)
 
-            print(f"    Loaded MERLIN GT from {self.merlin_gt_path}.")
-            print(
-                f"        MERLIN LIN-A (shape={self.merlin_linA.shape}) statistics: min={self.merlin_linA.min():.4f}, max={self.merlin_linA.max():.4f}, mean={self.merlin_linA.mean():.4f}, std={self.merlin_linA.std():.4f}. Is NaN={np.isnan(self.merlin_linA).any()}."
-            )
+            if self.verbose:
+                print(f"    Loaded MERLIN GT from {self.merlin_gt_path}.")
+                print(
+                    f"        MERLIN LIN-A (shape={self.merlin_linA.shape}) statistics: min={self.merlin_linA.min():.4f}, max={self.merlin_linA.max():.4f}, mean={self.merlin_linA.mean():.4f}, std={self.merlin_linA.std():.4f}. Is NaN={np.isnan(self.merlin_linA).any()}."
+                )
 
             # Quick print metrics between noisy and MERLIN GT
             metrics = get_all_distortion_metrics(self.noisy_linA, self.merlin_linA)
-            print("        Initial metrics between Noisy and MERLIN GT:", end="")
-            for key, value in metrics.items():
-                print(f" {key}={value:.4f}", end=",")
-            print()
+            if self.verbose:
+                print("        Initial metrics between Noisy and MERLIN GT:", end="")
+                for key, value in metrics.items():
+                    print(f" {key}={value:.4f}", end=",")
+                print()
             found_merlin = True
             break
 
@@ -165,7 +172,8 @@ class CompareReconstructionToGT(Callback):
         save_path = log_dir / "reconstruction_test.png"
 
         plt.imsave(save_path, recon_logI, cmap="gray")
-        print(f"[CompareReconstructionToGT] Saved test reconstruction to {save_path}")
+        if self.verbose:
+            print(f"[CompareReconstructionToGT] Saved test reconstruction to {save_path}")
 
         # Log to WandB
         if (
@@ -237,12 +245,13 @@ class CompareReconstructionToGT(Callback):
         )
         recon_linA = torch.sqrt(recon_linI).squeeze().cpu().numpy()
         recon_logI = torch.log(recon_linI + EPS).squeeze().cpu().numpy()
-        print(
-            f"    RECON LIN-A: min={recon_linA.min():.4f}, max={recon_linA.max():.4f}, mean={recon_linA.mean():.4f}, std={recon_linA.std():.4f}. Is NaN={np.isnan(recon_linA).any()}."
-        )
-        print(
-            f"    NOISY LIN-A: min={self.noisy_linA.min():.4f}, max={self.noisy_linA.max():.4f}, mean={self.noisy_linA.mean():.4f}, std={self.noisy_linA.std():.4f}."
-        )
+        if self.verbose:
+            print(
+                f"    RECON LIN-A: min={recon_linA.min():.4f}, max={recon_linA.max():.4f}, mean={recon_linA.mean():.4f}, std={recon_linA.std():.4f}. Is NaN={np.isnan(recon_linA).any()}."
+            )
+            print(
+                f"    NOISY LIN-A: min={self.noisy_linA.min():.4f}, max={self.noisy_linA.max():.4f}, mean={self.noisy_linA.mean():.4f}, std={self.noisy_linA.std():.4f}."
+            )
 
         fig_A, metrics_to_merlin = self._visualize_with_histograms(
             recon_linA,
