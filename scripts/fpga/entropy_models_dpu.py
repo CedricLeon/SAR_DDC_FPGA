@@ -158,6 +158,9 @@ class EntropyBottleneckDPU:
             prob = cdf_row[idx_c + 1] - cdf_row[idx_c]
             prob = np.maximum(prob, 1e-10)
 
+            # SUPER WEIRD: Normalize to probabilities (assuming 16-bit precision standard in CompressAI)
+            prob = prob / 65536.0
+
             # Assign back
             if layout == "NCHW":
                 pmf[:, c, :, :] = prob
