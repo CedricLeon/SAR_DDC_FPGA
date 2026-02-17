@@ -152,7 +152,7 @@ class GDNPatched(nn.Module):
         return out
 
 
-class GDN1Patched(GDNPatched):
+class GDN1Patched(nn.Module):
     r"""Simplified GDN layer.
 
     Introduced in `"Computationally Efficient Neural Image Compression"
@@ -163,6 +163,29 @@ class GDN1Patched(GDNPatched):
 
         y[i] = \frac{x[i]}{\beta[i] + \sum_j(\gamma[j, i] * |x[j]|}
     """
+
+    def __init__(
+        self,
+        in_channels: int,
+        inverse: bool = False,
+        beta_min: float = 1e-6,
+        gamma_init: float = 0.1,
+    ):
+        super().__init__()
+
+        beta_min = float(beta_min)
+        gamma_init = float(gamma_init)
+        self.inverse = bool(inverse)
+
+        self.beta_reparam = NonNegativeParametrizerPatched(minimum=beta_min)
+        beta = torch.ones(in_channels)
+        beta = self.beta_reparam.init(beta)
+        self.beta = nn.Parameter(beta)
+
+        self.gamma_reparam = NonNegativeParametrizerPatched()
+        gamma = gamma_init * torch.eye(in_channels)
+        gamma = self.gamma_reparam.init(gamma)
+        self.gamma = nn.Parameter(gamma)
 
     def forward(self, x: Tensor) -> Tensor:
         _, C, _, _ = x.size()
