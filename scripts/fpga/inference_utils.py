@@ -8,7 +8,7 @@ import xir  # type: ignore
 AMP_MIN = 4.605170249938965
 AMP_MAX = 10.742239952087402
 EPS = 1e-2
-AMP_LIN_MAX = 545.2018433569272
+AMP_LIN_99 = 545.2018433569272
 
 # -----------------------------------------------------------------------------
 # LOGGING UTILS
@@ -73,7 +73,7 @@ class MetricsTracker:
     def compute_psnr(a: np.ndarray, b: np.ndarray) -> float:
         """Compute PSNR."""
         mse = MetricsTracker.compute_mse(a, b)
-        peak = AMP_LIN_MAX
+        peak = AMP_LIN_99
         return 20 * np.log10(peak) - 10 * np.log10(mse)
 
     @staticmethod

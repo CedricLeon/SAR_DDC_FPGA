@@ -9,7 +9,7 @@ M = 10.089038980848645
 # Amplitude: log(sqrt(intensity) + 1e-2)
 AMP_MIN = 4.605170249938965
 AMP_MAX = 10.742239952087402
-AMP_LIN_MAX = 545.2018433569272
+AMP_LIN_99 = 545.2018433569272
 
 # ################ /!\ DEPRECATED /!\ ################
 # # ----- Intensity: log(a^2 + b^2 + epsilon)-----

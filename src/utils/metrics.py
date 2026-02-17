@@ -16,7 +16,7 @@ from torchmetrics.image import (
     StructuralSimilarityIndexMeasure,
 )
 
-from src.utils.constants import AMP_LIN_MAX, AMP_MAX, AMP_MIN, EPS
+from src.utils.constants import AMP_LIN_99, AMP_MAX, AMP_MIN, EPS
 from src.utils.debug import print_statistics
 
 
@@ -66,12 +66,16 @@ def mse(predicted: Tensor, target: Tensor) -> float:
 def psnr(predicted_linA: Tensor, target_linA: Tensor, mse_value: Optional[float] = None) -> float:
     """Compute Peak Signal-to-Noise Ratio (PSNR) between predicted_linA and target_linA tensors.
 
-    Both tensors must be in linear Amplitude scale as peak=AMP_LIN_MAX is used for PSNR
-    computation.
+    Both tensors must be in linear Amplitude scale as peak=AMP_LIN_99 is used for PSNR computation.
     """
+    # Clip target and predictions to 99% of distribution to avoid outliers dominating the PSNR computation.
+    # While this is "cheating" if comparing to other methods that do not use this clipping,
+    # these PSNR values are only use across experiments that always use this clipping.
+    predicted_linA = torch.clamp(predicted_linA, max=AMP_LIN_99)
+    target_linA = torch.clamp(target_linA, max=AMP_LIN_99)
+    # Compute MSE and PSNR on 99% of the value
     mse_value = mse_value if mse_value is not None else mse(predicted_linA, target_linA)
-    peak = AMP_LIN_MAX
-    psnr_value = 20 * math.log10(peak) - 10 * math.log10(mse_value)
+    psnr_value = 20 * math.log10(AMP_LIN_99) - 10 * math.log10(mse_value)
     return psnr_value
 
 
@@ -195,11 +199,9 @@ class MerlinLoss(nn.Module):
         super().__init__()
 
         self.mse = MeanSquaredError()
-        self.psnr = PeakSignalNoiseRatio(data_range=(2 * AMP_MIN, 2 * AMP_MAX))
-        self.ssim = StructuralSimilarityIndexMeasure(data_range=(2 * AMP_MIN, 2 * AMP_MAX))
-        self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(
-            data_range=(2 * AMP_MIN, 2 * AMP_MAX)
-        )
+        self.psnr = PeakSignalNoiseRatio(data_range=AMP_LIN_99)
+        self.ssim = StructuralSimilarityIndexMeasure(data_range=AMP_LIN_99)
+        self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=AMP_LIN_99)
 
     def forward(self, predicted: torch.Tensor, target: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Compute MERLIN loss.
