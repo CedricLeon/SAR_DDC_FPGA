@@ -60,6 +60,17 @@ class MonitorValReconstruction(Callback):
         # Prepare input and target deterministically (always use real as input, imag as target)
         input = torch.cat((batch["real"], batch["imag"]), dim=1).contiguous()
 
+        if self.verbose:
+            print(
+                f"    Input shape: {input.shape}, dtype: {input.dtype}, min: {input.min().item():.4f}, max: {input.max().item():.4f}, mean: {input.mean().item():.4f}, std: {input.std().item():.4f}. Is NaN={torch.isnan(input).any().item()}."
+            )
+            input_norm = (torch.log(torch.square(input) + EPS) - 2 * AMP_MIN) / (
+                2 * AMP_MAX - 2 * AMP_MIN
+            )
+            print(
+                f"    Normalized input shape: {input_norm.shape}, dtype: {input_norm.dtype}, min: {input_norm.min().item():.4f}, max: {input_norm.max().item():.4f}, mean: {input_norm.mean().item():.4f}, std: {input_norm.std().item():.4f}. Is NaN={torch.isnan(input_norm).any().item()}."
+            )
+
         # Forward pass to get reconstructions
         with torch.no_grad():
             if self.with_compression:
