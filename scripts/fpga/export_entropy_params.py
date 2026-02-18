@@ -78,20 +78,24 @@ if __name__ == "__main__":
     eb_medians = (
         eb.quantiles[:, 0, 1].detach().cpu().numpy()
     )  # Ensure medians extraction quantiles is (C, 1, 3). Medians at index 1.
-    eb_quantized_cdf = eb._quantized_cdf.detach().cpu().numpy()
-    eb_offset = eb._offset.detach().cpu().numpy()
-    eb_cdf_length = eb._cdf_length.detach().cpu().numpy()
+    eb_quantized_cdf = eb._quantized_cdf.detach().cpu().numpy().astype(np.int32)
+    eb_offset = eb._offset.detach().cpu().numpy().astype(np.int32)
+    eb_cdf_length = eb._cdf_length.detach().cpu().numpy().astype(np.int32)
+
     if eb_quantized_cdf.size == 0:
         raise ValueError("Error: EntropyBottleneck CDF is empty! Update failed.")
 
     gc = model.gaussian_conditional
-    gc_scale_table = gc.scale_table.detach().cpu().numpy()
+    gc_scale_table = gc.scale_table.detach().cpu().numpy().astype(np.float32)
+    # Added for Real Inference (C++ rANS)
+    gc_quantized_cdf = gc.quantized_cdf.detach().cpu().numpy().astype(np.int32)
+    gc_cdf_length = gc.cdf_length.detach().cpu().numpy().astype(np.int32)
+    gc_offset = gc.offset.detach().cpu().numpy().astype(np.int32)
+
     if (
         gc.scale_table is None or gc_scale_table.size == 0
     ):  # Should never be the case due to update above
         raise RuntimeError("Error: GaussianConditional scale_table is None!")
-
-    # We don't necessarily need GC CDFs if we use the DPU hybrid implementation that computes likelihoods via erf (continuous), but standard compressai uses them.
 
     print("Checks:")
     print(f"  - EB medians shape: {eb_medians.shape}")
@@ -99,13 +103,19 @@ if __name__ == "__main__":
     print(f"  - EB offset shape: {eb_offset.shape}")
     print(f"  - EB CDF length shape: {eb_cdf_length.shape}")
     print(f"  - GC scale table shape: {gc_scale_table.shape}")
+    print(f"  - GC CDF shape: {gc_quantized_cdf.shape}")
 
     np.savez(
         args.output,
+        # Legacy/DPU keys
         eb_quantized_cdf=eb_quantized_cdf,
         eb_offset=eb_offset,
         eb_cdf_length=eb_cdf_length,
         eb_medians=eb_medians,
         gc_scale_table=gc_scale_table,
+        # New Real Inference keys
+        gc_quantized_cdf=gc_quantized_cdf,
+        gc_cdf_length=gc_cdf_length,
+        gc_offset=gc_offset,
     )
     print(f"Entropy models parameters saved to {args.output}.")
