@@ -3,7 +3,7 @@
 
 This script manages the execution of a "split" model where:
 - Neural Network subgraphs (g_a, h_a, h_s, g_s) run on the DPU.
-- Entropy operations (quantization, likelihoods) run on the CPU (using Numpy).
+- Entropy operations (compression and decompression) run on the CPU (using Numpy and C++ implementation of rANS).
 
 Usage (/!\\ Only on FPGA /!\\):
     python3 inference_hybrid.py --xmodel model.xmodel --data test.npy --params entropy_params.npz
@@ -28,22 +28,30 @@ except ImportError:
     print("ERROR: Vitis-AI libraries (vart, xir) not found")
     sys.exit(1)
 
-from entropy_models_dpu import (
-    EntropyBottleneckDPU,
-    GaussianConditionalDPU,
-    load_entropy_models_dpu,
+from entropy_models_inference import (
+    EntropyBottleneck,
+    GaussianConditional,
 )
 from inference_utils import (
     AMP_MAX,
     AMP_MIN,
     EPS,
-    DPUSubgraphRunner,
     MetricsTracker,
     extract_patches,
     pad_to_multiple,
     print_tensor_stats,
     reconstruct_from_patches,
 )
+
+log_file = ""
+
+
+def log(msg):
+    """Manual logging function."""
+    print(msg)
+    with open(log_file, "a") as f:
+        f.write(msg + "\n")
+
 
 # -----------------------------------------------------------------------------
 # CONSTANTS & CONFIG
@@ -58,14 +66,79 @@ W_HYPER = W_LATENT // S_HYPER  # width of latent representation z
 C_MAIN = 128  # Number channels main autoencoder (g_a, g_s)
 C_HYPER = C_MAIN * 2  # Number channels hyperprior (h_a, h_s)
 
-log_file = ""
+
+# -----------------------------------------------------------------------------
+# DPU RUNNER HELPER
+# -----------------------------------------------------------------------------
+class DPUSubgraphRunner:
+    """Helper to wrap a single DPU subgraph runner."""
+
+    def __init__(self, runner: vart.Runner, subgraph: xir.Subgraph, name: str):
+        self.runner = runner
+        self.name = name
+
+        # ----- IO Shapes -----
+        self.input_tensors = runner.get_input_tensors()
+        self.output_tensors = runner.get_output_tensors()
+        # We assume 1 input and 1 output for simplicity based on our wrapper
+        self.input_shape = tuple(self.input_tensors[0].dims)  # [N, H, W, C]
+        self.output_shape = tuple(self.output_tensors[0].dims)  # [N, H, W, C]
+        # Get fixed-point scales for conversion
+        input_fixpos = self.input_tensors[0].get_attr("fix_point")
+        output_fixpos = self.output_tensors[0].get_attr("fix_point")
+        self.input_scale = 2.0**input_fixpos
+        self.output_scale = 2.0 ** (-output_fixpos)
+
+        print(
+            f"[{name}] In: {self.input_shape} (scale={self.input_scale}), Out: {self.output_shape} (scale={self.output_scale})"
+        )
+
+    def run(self, input_data: np.ndarray) -> np.ndarray:
+        """Run inference on a batch of data.
+
+        input_data: Float numpy array matching input shape (NCHW or NHWC).
+        """
+        # Note: VART expects NHWC but PyTorch is NCHW.
+        # expected_dims = len(self.input_shape)
+        # if expected_dims == 4:
+        #     # Heuristic check for NCHW vs NHWC
+        #     # DPU usually HWC.
+        #     if input_data.shape != self.input_shape:
+        #         # Try simple transpose (N, H, W, C) from (N, C, H, W)
+        #         # assuming input_data is NCHW
+        #         input_data = input_data.transpose(0, 2, 3, 1)
+
+        # 1. Quantize Input (Float -> Int8)
+        input_int8 = float_to_DPU_int(input_data, self.input_scale)
+
+        # 2. Prepare Buffers
+        # VART needs input/output buffers with exact shape from DPU, order="C" ensures data is laid out in row-major order (unlike Fortran order)
+        input_buffer = np.ascontiguousarray(input_int8)
+        output_buffer = np.empty(self.output_shape, dtype=np.int8, order="C")
+
+        # 3. Execute (job_id is returned)
+        job_id = self.runner.execute_async([input_buffer], [output_buffer])
+        self.runner.wait(job_id)
+
+        # 4. Dequantize Output (Int8 -> Float)
+        output_float = DPU_int_to_float(output_buffer, self.output_scale)
+
+        # # 5. Transpose back to NCHW if needed
+        # if expected_dims == 4:
+        #     # (N, H, W, C) -> (N, C, H, W)
+        #     output_float = output_float.transpose(0, 3, 1, 2)
+
+        return output_float
 
 
-def log(msg):
-    """Manual logging function."""
-    print(msg)
-    with open(log_file, "a") as f:
-        f.write(msg + "\n")
+def float_to_DPU_int(data_float: np.ndarray, input_scale: float) -> np.ndarray:
+    """Convert float data to DPU fixed-point INT8 using the given scale."""
+    return (data_float * input_scale).astype(np.int8)
+
+
+def DPU_int_to_float(data_int: np.ndarray, scale: float) -> np.ndarray:
+    """Convert DPU fixed-point INT8 data back to float using the given scale."""
+    return data_int.astype(np.float32) * scale
 
 
 # -----------------------------------------------------------------------------
@@ -73,52 +146,64 @@ def log(msg):
 # -----------------------------------------------------------------------------
 
 
-def identify_subgraphs(graph: xir.Graph) -> Dict[str, xir.Subgraph]:
-    """Identify which subgraph corresponds to g_a, h_a, h_s, g_s based on shapes."""
-    subgraphs = graph.get_root_subgraph().toposort_child_subgraph()
-    dpu_subgraphs = [
-        s for s in subgraphs if s.has_attr("device") and s.get_attr("device") == "DPU"
-    ]
-    cpu_subgraphs = [
-        s for s in subgraphs if s.has_attr("device") and s.get_attr("device") == "CPU"
-    ]
-    log(
-        f"Found {len(dpu_subgraphs)} DPU subgraphs and {len(cpu_subgraphs)} CPU subgraphs, for a total of {len(subgraphs)}."
-    )
-
+def identify_subgraphs(graph: xir.Graph, meta_path: Path) -> Dict[str, xir.Subgraph]:
+    """Uses meta.json to identify which subgraph corresponds to g_a, h_a, h_s, g_s."""
     mapping = {}
-    for sg in dpu_subgraphs:
-        inputs = sg.get_input_tensors()
-        if not inputs:
-            continue
-        # Shapes based on 256x256 input and are NHWC format
-        shape = tuple(list(inputs)[0].dims)
 
-        # g_a: In (1, 256, 256, 1) -> Out (1, 16, 16, 128)
-        if shape[1:3] == (IMAGE_SIZE, IMAGE_SIZE) and shape[3] == 1:
-            mapping["g_a"] = sg
+    # 1. Try to load meta.json for precise name mapping
+    meta_path = xmodel_path.parent / "meta.json"
+    if not meta_path.exists():
+        raise FileNotFoundError(
+            f"Meta file not found at {meta_path}. Cannot identify subgraphs without it."
+        )
+    with open(meta_path) as f:
+        meta = json.load(f)
 
-        # h_a: In (1, 16, 16, 256) -> Out (1, 2, 2, 256)  (Abs(y) is 256 channels)
-        elif shape[1:3] == (H_LATENT, W_LATENT) and shape[3] == C_HYPER:
-            mapping["h_a"] = sg
+    kernels = meta.get("kernel", [])
+    log(f"Loading subgraph mapping from meta.json: found {len(kernels)} kernels.")
 
-        # h_s: In (1, 2, 2, 256) -> Out (1, 16, 16, 256) (Scales)
-        elif shape[1:3] == (H_HYPER, W_HYPER) and shape[3] == C_HYPER:
-            mapping["h_s"] = sg
+    # Map based on substrings in the kernel name
+    name_to_role = {}
+    for k_name in kernels:
+        if "g_a" in k_name:
+            name_to_role[k_name] = "g_a"
+        elif "g_s" in k_name:
+            name_to_role[k_name] = "g_s"
+        elif "h_a" in k_name:
+            name_to_role[k_name] = "h_a"
+        elif "h_s" in k_name:
+            name_to_role[k_name] = "h_s"
+        else:
+            log(f"WARNING: Unrecognized kernel name in meta.json: {k_name}")
 
-        # g_s: In (1, 16, 16, 128) -> Out (1, 256, 256, 1) (One channel decode)
-        elif shape[1:3] == (H_LATENT, W_LATENT) and shape[3] == C_MAIN:
-            mapping["g_s"] = sg
-
-        log(f"Identified DPU subgraph: {sg.get_name()} with input shape {shape}")
+    # Find the actual subgraphs in the graph object
+    root = graph.get_root_subgraph()
+    for sg in root.toposort_child_subgraph():
+        if sg.get_name() in name_to_role:
+            role = name_to_role[sg.get_name()]
+            mapping[role] = sg
+            log(f"Mapped {role} -> {sg.get_name()} (via meta.json)")
 
     # Ensure validity of the graph mapping
-    required = ["g_a", "h_a", "h_s", "g_s"]
-    missing = [k for k in required if k not in mapping]
-    if missing:
-        raise ValueError(
-            f"Could not identify subgraphs for: {missing}. Found: {list(mapping.keys())}"
-        )
+    required_keys = ["g_a", "h_a", "h_s", "g_s"]
+    missing_keys = [k for k in required_keys if k not in mapping]
+    if missing_keys:
+        log(f"ERROR: Could not find subgraphs for: {missing_keys}")
+        log(f"Found mapped subgraphs: {list(mapping.keys())}")
+
+        log("\n--- Debug: All DPU Subgraphs ---")
+        root = graph.get_root_subgraph()
+        for sg in root.toposort_child_subgraph():
+            if sg.has_attr("device") and sg.get_attr("device") == "DPU":
+                inputs = list(sg.get_input_tensors())
+                outputs = list(sg.get_output_tensors())
+                in_shape = tuple(inputs[0].dims) if inputs else "None"
+                out_shape = tuple(outputs[0].dims) if outputs else "None"
+                log(f"Subgraph: {sg.get_name()}")
+                log(f"  Input:  {in_shape}")
+                log(f"  Output: {out_shape}")
+        log("--------------------------------\n")
+        raise ValueError("Could not identify all required subgraphs in the model.")
 
     return mapping
 
@@ -147,15 +232,15 @@ def load_npy_test_set(
 def process_single_tile(
     noisy: np.ndarray,  # [256, 256, 2] Raw Complex
     runners: Dict[str, DPUSubgraphRunner],
-    eb: EntropyBottleneckDPU,
-    gc: GaussianConditionalDPU,
+    eb: EntropyBottleneck,
+    gc: GaussianConditional,
     verbose: bool = False,
-) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+) -> Tuple[np.ndarray, int]:
     """Run full inference on a single 256x256 tile.
 
     Returns:
         recon_norm_logI (np.ndarray): [256, 256, 2] (Normalized Log Intensity)
-        likelihoods (Dict[str, np.ndarray]): Dict of likelihood arrays
+        num_bytes (int): Total bytes used to compress this tile
     """
     # --- Step 0. Prepare Input (CPU) ---
     # SARDDCModule performs normalization on input, so we need to do it manually when feeding the model directly.
@@ -183,21 +268,40 @@ def process_single_tile(
     z = runners["h_a"].run(y_abs)
     if verbose:
         print_tensor_stats("   - Latent z", z)
-    # --- Step 4: Entropy Bottleneck / Quantization (CPU) ---
-    z_hat, z_lik = eb.forward(z)
+
+    # --- Step 4: Entropy Bottleneck /  Compression (CPU) ---
+    # z is [1, 16, 16, 256] (NHWC)
+    z_strings = eb.compress(z)
+    z_bytes = sum(len(s) for s in z_strings)
+
+    # Decompress to get z_hat for hyper-decoder
+    # z_hat from decompress is float, suitable for DPU input if matched correctly
+    # Note: C++ decompress returns flattened list, wrapper handles it?
+    # Wrapper returns flat list? No, let's check wrapper.
+    # The wrapper's decompress takes 'shape' and returns ndarray. But shape needs to be (H, W).
+    z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
+
     if verbose:
         print_tensor_stats("   - Latent z_hat", z_hat)
-        print_tensor_stats("   - Latent z Likelihood", z_lik)
+        log(f"   - z_bytes: {z_bytes}")
 
     # --- Step 5: Hyper Decoder (DPU h_s) ---
     scales = runners["h_s"].run(z_hat)
     if verbose:
         print_tensor_stats("   - Scales", scales)
-    # --- Step 6: Gaussian Conditional / Quantization (CPU) ---
-    y_hat, y_lik = gc.forward(y, scales)
+
+    # --- Step 6: Gaussian Conditional /  Compression (CPU) ---
+    # y is [1, 16, 16, 128*2]
+    # We need 'means' dummy (usually 0)
+    means = np.zeros_like(y)
+    y_strings = gc.compress(y, scales, means)
+    y_bytes = sum(len(s) for s in y_strings)
+
+    y_hat = gc.decompress(y_strings, scales, means)
+
     if verbose:
         print_tensor_stats("   - Latent y_hat", y_hat)
-        print_tensor_stats("   - Latent y Likelihood", y_lik)
+        log(f"   - y_bytes: {y_bytes}")
 
     # Split y_hat back to real/imag for decoder
     y_hat_real = y_hat[..., :C_MAIN]
@@ -212,21 +316,23 @@ def process_single_tile(
     recon_real = recon_real[0, :, :, 0]
     recon_imag = recon_imag[0, :, :, 0]
     recon = np.stack((recon_real, recon_imag), axis=-1)  # -> [256, 256, 2]
-    likelihoods = {"y": y_lik, "z": z_lik}
+
+    total_bytes = z_bytes + y_bytes
     if verbose:
         print_tensor_stats("   - Reconstruction", recon)
+        log(f"   - Total Bytes: {total_bytes}")
 
-    return recon, likelihoods
+    return recon, total_bytes
     #################################################
 
 
 def run_hybrid_inference(
-    xmodel: Path, dataset_path: Path, subset: int = 100, verbose: bool = False
+    xmodel_path: Path, dataset_path: Path, subset: int = 100, verbose: bool = False
 ):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # ---- Paths and Logging ----
-    model_name_and_timestamp = xmodel.parent.name
+    model_name_and_timestamp = xmodel_path.parent.name
     output_dir = Path(f"results/FPGA_inference_{model_name_and_timestamp}")
     output_dir.mkdir(parents=True, exist_ok=True)
     global log_file
@@ -235,15 +341,29 @@ def run_hybrid_inference(
     log(f"Starting Hybrid Inference at {timestamp}.")
 
     # 1. Load Model
-    entropy_params_path = xmodel.parent / "entropy_params.npz"
-    log(f"Loading graph from {xmodel}...")
-    graph = xir.Graph.deserialize(str(xmodel))
-    subgraph_map = identify_subgraphs(graph)
-    log(f"Loading Entropy Models from {entropy_params_path}...")
-    eb, gc = load_entropy_models_dpu(entropy_params_path)
+    entropy_params_path = xmodel_path.parent / "entropy_params.npz"
+    log(f"Loading graph from {xmodel_path}...")
+    graph = xir.Graph.deserialize(str(xmodel_path))
+    subgraph_map = identify_subgraphs(graph, xmodel_path.parent / "meta.json")
+    log(f"Loading Entropy Models (Real/Interface) from {entropy_params_path}...")
+    data = np.load(entropy_params_path)
+    eb_channels = data["eb_cdf_length"].shape[0]
+    eb = EntropyBottleneck(
+        channels=eb_channels,
+        quantized_cdf=data["eb_quantized_cdf"],
+        cdf_length=data["eb_cdf_length"],
+        offset=data["eb_offset"],
+        medians=data["eb_medians"] if "eb_medians" in data else None,
+    )
+    gc = GaussianConditional(
+        scale_table=data["gc_scale_table"],
+        quantized_cdf=data["gc_quantized_cdf"],
+        cdf_length=data["gc_cdf_length"],
+        offset=data["gc_offset"],
+    )
 
     # Copy train_config.yaml if available
-    train_config_src = xmodel.parent / "train_config.yaml"
+    train_config_src = xmodel_path.parent / "train_config.yaml"
     if train_config_src.exists():
         import shutil
 
@@ -283,7 +403,7 @@ def run_hybrid_inference(
         if verbose:
             log(f"\n--- Sample {i} ---")
         # --- Hybrid Inference Call ---
-        recon_norm_logI, likelihoods = process_single_tile(
+        recon_norm_logI, num_bytes = process_single_tile(
             noisy[i], runners, eb, gc, verbose=verbose
         )
 
@@ -312,9 +432,9 @@ def run_hybrid_inference(
             print_tensor_stats(f"   Sample {i} - MERLIN Linear Amplitude", merlin_linA)
             print()
         # Update Trackers
-        tracker_noisy.update(recon_linA, likelihoods, noisy_linA)
-        tracker_adam.update(recon_linA, likelihoods, adam_linA)
-        tracker_merlin.update(recon_linA, likelihoods, merlin_linA)
+        tracker_noisy.update(recon_linA, noisy_linA, num_bytes)
+        tracker_adam.update(recon_linA, adam_linA, num_bytes)
+        tracker_merlin.update(recon_linA, merlin_linA, num_bytes)
 
         # Store for Viz, all visualization must be in log-Intensity format
         if i in vis_indices_test_set:
@@ -385,11 +505,11 @@ def run_hybrid_inference(
         tile_bpp = 0
 
         for i in range(len(noisy_patches)):
-            recon_norm_logI, likelihoods = process_single_tile(
+            recon_norm_logI, num_bytes = process_single_tile(
                 noisy_patches[i], runners, eb, gc, verbose=False
             )
             recon_patches.append(recon_norm_logI)
-            patch_bpp = MetricsTracker.estimate_bpp(noisy_patches[i][np.newaxis, ...], likelihoods)
+            patch_bpp = MetricsTracker.estimate_bpp(noisy_patches[i][np.newaxis, ...], num_bytes)
             tile_bpp += patch_bpp
         tile_bpp /= len(noisy_patches)
 
@@ -456,11 +576,11 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    xmodel_path = Path(args.xmodel)
+    xmodel_path = Path(args.xmodel).resolve()
     if not xmodel_path.exists():
         log(f"Error: XModel file {xmodel_path} does not exist.")
         sys.exit(1)
-    data_path = Path(args.data)
+    data_path = Path(args.data).resolve()
     if not data_path.exists():
         log(f"Error: Data file {data_path} does not exist.")
         sys.exit(1)

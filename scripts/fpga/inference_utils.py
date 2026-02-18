@@ -48,7 +48,7 @@ def clip(
 class MetricsTracker:
     """Accumulates and averages a set of metrics over multiple batches.
 
-    For BPP we use the normalized x_hat + likelihoods. For all other metrics we assume both inputs
+    For BPP we use the normalized x_hat + num_bytes. For all other metrics we assume both inputs
     are in linear amplitude [0, +inf].
     """
 
@@ -70,11 +70,20 @@ class MetricsTracker:
         return float(np.mean((a - b) ** 2))
 
     @staticmethod
-    def compute_psnr(a: np.ndarray, b: np.ndarray) -> float:
-        """Compute PSNR."""
-        mse = MetricsTracker.compute_mse(a, b)
-        peak = AMP_LIN_99
-        return 20 * np.log10(peak) - 10 * np.log10(mse)
+    def compute_psnr(a: np.ndarray, b: np.ndarray, mse_value: Optional[float] = None) -> float:
+        """Compute Peak Signal-to-Noise Ratio (PSNR) between predicted_linA and target_linA
+        tensors.
+
+        Both tensors must be in linear Amplitude scale as peak=AMP_LIN_99 is used for PSNR
+        computation.
+        """
+        # Clip target and predictions to 99% of distribution to avoid outliers dominating the PSNR computation.
+        a = np.clip(a, 0, AMP_LIN_99)
+        b = np.clip(b, 0, AMP_LIN_99)
+        # Compute MSE and PSNR on 99% of the value
+        mse_value = mse_value if mse_value is not None else MetricsTracker.compute_mse(a, b)
+        psnr_value = 20 * np.log10(AMP_LIN_99) - 10 * np.log10(mse_value)
+        return psnr_value
 
     @staticmethod
     def compute_ssim(a: np.ndarray, b: np.ndarray) -> float:
@@ -87,23 +96,22 @@ class MetricsTracker:
         return 0.0  # Placeholder
 
     @staticmethod
-    def estimate_bpp(x_shape_holder: np.ndarray, likelihoods: Dict[str, np.ndarray]) -> float:
-        """Compute BPP."""
+    def estimate_bpp(x_shape_holder: np.ndarray, num_bytes: int) -> float:
+        """Compute BPP.
+
+        Args:
+            x_shape_holder: Tensor with shape [B, H, W, C] to get dimensions.
+            num_bytes: Total number of bytes of the compressed representations.
+        """
         B, H, W, _ = x_shape_holder.shape
         num_pixels = B * H * W
-        bpp = sum((np.log(lh).sum() / (-np.log(2) * num_pixels)) for lh in likelihoods.values())
-        return float(bpp)
-
-    def reset(self):
-        """Reset all metrics."""
-        self._sums = {name: 0.0 for name in self._metric_names}
-        self._count = 0
+        return float((num_bytes * 8) / num_pixels)
 
     def update(
         self,
         recon_linA: np.ndarray,
-        likelihoods: Dict[str, np.ndarray],
         target_linA: np.ndarray,
+        num_bytes: Optional[int] = None,
     ) -> Dict[str, float]:
         """Update metrics with a new batch."""
         batch_metrics: Dict[str, float] = {}
@@ -113,7 +121,7 @@ class MetricsTracker:
                 continue
 
             if name == "bpp":
-                value = fn(recon_linA, likelihoods)
+                value = self.estimate_bpp(recon_linA, num_bytes)
             else:
                 value = fn(recon_linA, target_linA)
 
@@ -197,67 +205,6 @@ def visualize_patches(
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
-
-
-# -----------------------------------------------------------------------------
-# DPU UTILS
-# -----------------------------------------------------------------------------
-
-
-def float_to_DPU_int(data_float: np.ndarray, input_scale: float) -> np.ndarray:
-    """Convert float data to DPU fixed-point INT8 using the given scale."""
-    return (data_float * input_scale).astype(np.int8)
-
-
-def DPU_int_to_float(data_int: np.ndarray, scale: float) -> np.ndarray:
-    """Convert DPU fixed-point INT8 data back to float using the given scale."""
-    return data_int.astype(np.float32) * scale
-
-
-class DPUSubgraphRunner:
-    """Helper to wrap a single DPU subgraph runner."""
-
-    def __init__(self, runner: Any, subgraph: Any, name: str):
-        self.runner = runner
-        self.name = name
-
-        # ----- IO Shapes -----
-        self.input_tensors = runner.get_input_tensors()
-        self.output_tensors = runner.get_output_tensors()
-        # We assume 1 input and 1 output for simplicity based on our wrapper
-        self.input_shape = tuple(self.input_tensors[0].dims)  # [N, H, W, C]
-        self.output_shape = tuple(self.output_tensors[0].dims)  # [N, H, W, C]
-        # Get fixed-point scales for conversion
-        input_fixpos = self.input_tensors[0].get_attr("fix_point")
-        output_fixpos = self.output_tensors[0].get_attr("fix_point")
-        self.input_scale = 2.0**input_fixpos
-        self.output_scale = 2.0 ** (-output_fixpos)
-
-        print(
-            f"[{name}] In: {self.input_shape} (scale={self.input_scale}), Out: {self.output_shape} (scale={self.output_scale})"
-        )
-
-    def run(self, input_data: np.ndarray) -> np.ndarray:
-        """Run inference on a batch of data.
-
-        input_data: Float numpy array matching input shape (NCHW or NHWC).
-        """
-        # 1. Quantize Input (Float -> Int8)
-        input_int8 = float_to_DPU_int(input_data, self.input_scale)
-
-        # 2. Prepare Buffers
-        # VART needs input/output buffers with exact shape from DPU, order="C" ensures data is laid out in row-major order
-        input_buffer = np.ascontiguousarray(input_int8)
-        output_buffer = np.empty(self.output_shape, dtype=np.int8, order="C")
-
-        # 3. Execute (job_id is returned)
-        job_id = self.runner.execute_async([input_buffer], [output_buffer])
-        self.runner.wait(job_id)
-
-        # 4. Dequantize Output (Int8 -> Float)
-        output_float = DPU_int_to_float(output_buffer, self.output_scale)
-
-        return output_float
 
 
 # -----------------------------------------------------------------------------
