@@ -36,10 +36,11 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
     criterion = cfg.model.criterion
     lmbda = get(criterion, "lmbda", None)
 
-    return f"{model}-{activation}_s{seed}_ʎ{lmbda}"
+    return f"{model}-{activation}_s{seed}_L{lmbda}"
 
 
 def main():
+    """Main function."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--run_dir", type=str, required=True, help="Path to the original Hydra Run Directory"
