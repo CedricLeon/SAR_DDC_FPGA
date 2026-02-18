@@ -49,14 +49,42 @@ In a new bash open an SSH session to the FPGA and call the python script
 [TARGET] root@xilinx-zcu102-20222:~/SAR_DDC/# python3 scripts/inference.py --xmodel models/ResidualScaleHyperpriorDPUWrapper/ResidualScaleHyperpriorDPUWrapper_pt.xmodel --data data/test_1000.npy --subset 100
 ```
 
-#### 6. Transfer inference results back to Host
+### Compile the C++ rANS entropy encoder for the FPGA
+To be able to use the rANS entropy coder to generate real bitstreams on the FPGA we need to compile the CompressAI custom C++ implementation into a shared library (`ans.so`). As the PetaLinux image of the ZCU102 has `g++` we do the compilation directly on the target to avoid cross-compilation hassles.
+
+1. **Package the C++ environment (Host)**:
+   ```bash
+   ./scripts/fpga/setup_fpga_cpp.sh
+   ```
+   > Output: `fpga_cpp_pkg.tar.gz`
+2. **Transfer and Compile (Target)**:
+   ```bash
+   [HOST] scp fpga_cpp_pkg.tar.gz root@10.0.0.2:/home/root/SAR_DDC/
+   [TARGET] tar -xzf fpga_cpp_pkg.tar.gz
+   [TARGET] cd fpga_cpp_pkg && make
+   ```
+   > Output: `ans.cpython-39-aarch64-linux-gnu.so`
+3. **Install**:
+   In order to be able to import the newly compiled library:
+   ```bash
+   cp ans.cpython-39-aarch64-linux-gnu.so ..
+   ```
+   Then I added `export PYTHONPATH=$PYTHONPATH:/home/root/SAR_DDC/` to the `~/.bashrc` and refreshed it with `source ~/.bashrc`.
 ```bash
 [TARGET] root@xilinx-zcu102-20222:~# scp -r results/inference_ResidualScaleHyperpriorDPUWrapper_pt_2021-11-21_13-58-02/ leon_ce@10.0.0.1: ~/dev/Vitis-AI/DDC_FPGA/results/fpga/
 ```
 
 
 
-## Updating the model to be Vitis-AI-friendly
+## Creating a DPU-friendly inference pipeline / Updating the model to be Vitis-AI-friendly
+
+### Real Compression/Decompression in C++ (2026-02-17)
+Instead of simulating BPP with likelihoods we implemented actual compression/decompression of latents with the rANS encoder. This file comes from `CompressAI/compressai/cpp_exts/rans/rans_interface.cpp` and is used inside CompressAI Python code using PyBind11. So Copilot created a script that allows to export everything necessary onto the FPGA and compile the file there (as the PetaLinux image has `g++`) whiich produces a shared library `ans.so` that we can access during inference.
+
+### "Mocking" the behavior of the Entropy Models in `numpy` for the DPU (2026-02-09)
+I got Copilot to create a couple of files that allowed me to export the series of parameters necessary for the entropy encoders/decoders to be used on the FPGA  `export_entropy_params.py` (mainly scale tables and other), as well as a `entropy_models_dpu.py`.
+However, I realized later that was dummy because what we want to do on the FPGA is to perform real compression/decompression and generate Byte-strings not likelihoods.
+
 
 ### Dealing with the multiple DPU subgraphs (2026-01-16)
 Currently the models passes Vitis AI inspection, quantization, and compilation, but I struggle to execute it on the FPGA.
