@@ -4,8 +4,10 @@ I'll use this file as a journal, just to keep track of what I tried and when.
 Once I understand the toolchain and its processes better, I'll make a step-by-step instructions for deployment, like so:
 
 ## Full deployment and evaluation of the models (January 2026)
-##### 0. Train a model
-Or simply find the directory of logs in W&B.
+#### Requirements
+- If needed, perform [Onetime setups](#fpga-preparations-one-time-setups).
+- Have a trained checkpoint (and its configuration)
+
 #### 1. Initialize Vitis-AI docker container
 If the current `vai_container` is dead (see NVMH error where CUDA is not available), `exit` it and restart it with:
 ```bash
@@ -54,13 +56,13 @@ To be able to use the rANS entropy coder to generate real bitstreams on the FPGA
 
 1. **Package the C++ environment (Host)**:
    ```bash
-   ./scripts/fpga/setup_fpga_cpp.sh
+   cd scripts/fpga/deploy_cpp_entropy/
+   ./setup_fpga_cpp.sh
    ```
-   > Output: `fpga_cpp_pkg.tar.gz`
+   > Output: `fpga_cpp_pkg/`
 2. **Transfer and Compile (Target)**:
    ```bash
-   [HOST] scp fpga_cpp_pkg.tar.gz root@10.0.0.2:/home/root/SAR_DDC/
-   [TARGET] tar -xzf fpga_cpp_pkg.tar.gz
+   [HOST] scp fpga_cpp_pkg root@10.0.0.2:/home/root/SAR_DDC/
    [TARGET] cd fpga_cpp_pkg && make
    ```
    > Output: `ans.cpython-39-aarch64-linux-gnu.so`

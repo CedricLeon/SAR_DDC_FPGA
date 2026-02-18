@@ -11,7 +11,7 @@ It is useful for:
 
 Usage (On FPGA):
     # Ensure 'ans.so' is compiled and available
-    python3 benchmark_inference.py --tables <path_to_entropy_params.npz> --width 512 --height 512 --check
+    python3 verify_ans_on_target.py --tables <path_to_entropy_params.npz> --width 512 --height 512 --check
 """
 
 import argparse

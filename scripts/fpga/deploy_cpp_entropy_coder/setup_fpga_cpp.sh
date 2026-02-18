@@ -21,7 +21,10 @@ cp CompressAI/compressai/cpp_exts/rans/rans_interface.hpp $PACKAGE_DIR/
 cp CompressAI/third_party/ryg_rans/rans64.h $PACKAGE_DIR/
 
 # 2. Copy Build Files
-cp scripts/fpga/Makefile_ans $PACKAGE_DIR/Makefile
+cp scripts/fpga/deploy_cpp_entropy_coder/Makefile_ans $PACKAGE_DIR/Makefile
+
+#2.5 Copy verification script
+cp scripts/fpga/deploy_cpp_entropy_coder/verify_ans_on_target.py $PACKAGE_DIR/
 
 # 3. Try to bundle PyBind11 headers (Robustness for Target)
 echo "Attempting to bundle PyBind11 headers..."
@@ -40,14 +43,11 @@ else
 fi
 
 # 4. Create Tarball
-TAR_NAME="fpga_cpp_pkg.tar.gz"
-tar -czf $TAR_NAME $PACKAGE_DIR
-echo "Package created: $TAR_NAME"
+echo "Package created: $PACKAGE_DIR"
 echo ""
 echo "Setup Instructions (Run Once on FPGA):"
-echo "1. Copy '$TAR_NAME' to the FPGA."
-echo "2. On FPGA: tar -xzf $TAR_NAME"
-echo "3. On FPGA: cd $PACKAGE_DIR && make"
-echo "4. On FPGA: Move 'ans*.so' to a shared library folder (e.g. ~/SAR_DDC/libs/)"
+echo "1. Copy '$PACKAGE_DIR' to the FPGA (e.g., scp -r $PACKAGE_DIR root@10.0.0.1:~/SAR_DDC/)."
+echo "2. On FPGA: cd $PACKAGE_DIR && make"
+echo "3. On FPGA: Move 'ans*.so' to a shared library folder (e.g. ~/SAR_DDC/)"
 echo "   OR ensure your inference script adds this folder to sys.path."
 echo ""
