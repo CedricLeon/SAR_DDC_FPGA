@@ -17,7 +17,7 @@ while [[ "$#" -gt 0 ]]; do
     esac
     shift
 done
-# print the value of EVALUATE and IMAGE_GRAPH
+
 echo "EVALUATE: $EVALUATE"
 echo "IMAGE_GRAPH: $IMAGE_GRAPH"
 echo "FAST_FINETUNE: $FAST_FINETUNE"
@@ -65,15 +65,20 @@ echo "-------------------- COMPILATION ---------------------"
 echo "Compiling the quantized model for the DPU. See " "quantize_result/${MODEL_NAME}_int.xmodel" " for the output xmodel file..."
 vai_c_xir -x quantize_result/${MODEL_NAME}_int.xmodel -a /opt/vitis_ai/compiler/arch/DPUCZDX8G/ZCU102/arch.json -o ${MODEL_NAME}_pt -n ${MODEL_NAME}_pt
 
-echo "Exporting entropy parameters to Numpy..."
-# Fix: Ensure output goes into the compiled directory
-python DDC_FPGA/scripts/fpga/export_entropy_params.py --ckpt ${RUN_DIR}/checkpoints/last.ckpt --output ${MODEL_NAME}_pt/entropy_params.npz
-
 if [ "$IMAGE_GRAPH" = true ]; then
     echo "-------------------- GENERATE IMAGE GRAPH ---------------------"
     echo "Generating the image graph for the compiled model. See " "quantize_result/${MODEL_NAME}_graph.svg" " for the output image file..."
     xdputil xmodel quantize_result/${MODEL_NAME}_int.xmodel -s quantize_result/${MODEL_NAME}_graph.svg
 fi
+
+echo "-------------------- EXPORT ENTROPY PARAMETERS ---------------------"
+python DDC_FPGA/scripts/fpga/export_entropy_params.py --ckpt ${RUN_DIR}/checkpoints/last.ckpt --output ${MODEL_NAME}_pt/entropy_params.npz
+
+echo "-------------------- BUNDLE SCRIPTS ---------------------"
+# Copy all inference components to the model folder for a self-contained deployment
+cp DDC_FPGA/scripts/fpga/inference_hybrid.py ${MODEL_NAME}_pt/
+cp DDC_FPGA/scripts/fpga/inference_utils.py ${MODEL_NAME}_pt/
+cp DDC_FPGA/scripts/fpga/entropy_models_inference.py ${MODEL_NAME}_pt/
 
 echo "-------------------- ORGANIZE OUTPUT ---------------------"
 # Copy Config and Rename Directory
