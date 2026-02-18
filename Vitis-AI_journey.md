@@ -72,6 +72,21 @@ To be able to use the rANS entropy coder to generate real bitstreams on the FPGA
    cp ans.cpython-39-aarch64-linux-gnu.so ..
    ```
    Then I added `export PYTHONPATH=$PYTHONPATH:/home/root/SAR_DDC/` to the `~/.bashrc` and refreshed it with `source ~/.bashrc`.
+
+#### Implementation verification
+To verify that this implementation works I created `debug_entropy_dpu_equivalence.py` that runs on Host to compare reconstructions of the same checkpoint ran in "Training" mode, with likelihoods, and in "Inference" mode, i.e., the call of the C++ Entropy coder.
+
+1. **Compile and make available the C++ ANS package:
+   ```bash
+   [Host] cd scripts/compare_FPGA_to_GPU/
+   [Host] python setup.py build_ext --inplace
+   ```
+2. **Run the debug script**:
+   ```bash
+   [Host] cd ../..
+   [Host] python scripts/debug_entropy_dpu_equivalence.py
+   ```
+
 ```bash
 [TARGET] root@xilinx-zcu102-20222:~# scp -r results/inference_ResidualScaleHyperpriorDPUWrapper_pt_2021-11-21_13-58-02/ leon_ce@10.0.0.1: ~/dev/Vitis-AI/DDC_FPGA/results/fpga/
 ```

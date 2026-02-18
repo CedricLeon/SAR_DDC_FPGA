@@ -1,5 +1,3 @@
-import argparse
-import os
 import sys
 import time
 import warnings
@@ -15,7 +13,7 @@ sys.path.append(str(Path(__file__).parent.resolve()))
 
 # Try importing the compiled C++ extension
 try:
-    import ans
+    import ans  # type: ignore
 
     print(
         f"Successfully imported 'ans' module. Available functions: {', '.join(f for f in dir(ans) if not f.startswith('_'))}."
