@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -13,6 +15,39 @@ AMP_LIN_99 = 545.2018433569272
 # -----------------------------------------------------------------------------
 # LOGGING UTILS
 # -----------------------------------------------------------------------------
+
+
+def display_manifest(script_path: Path) -> None:
+    """Check for and display manifest.json contents."""
+    script_dir = script_path.parent.resolve()
+    manifest_path = script_dir / "manifest.json"
+
+    if manifest_path.exists():
+        print("\n" + "=" * 60)
+        print("Build Manifest Found:")
+        try:
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+
+            # Essential Keys
+            model_name = manifest.get("model_name", "Unknown")
+            compiled_at = manifest.get("compiled_at", "Unknown")
+            print(f"  • Model: {model_name}")
+            print(f"  • Compiled At: {compiled_at}")
+
+            # Dynamic Keys (Print everything else)
+            img = ["model_name", "compiled_at"]
+            for k, v in manifest.items():
+                if k not in img:
+                    # Clean up key name for display
+                    readable_key = k.replace("_", " ").title()
+                    print(f"  • {readable_key}: {v}")
+
+        except Exception as e:
+            print(f"  [Error reading manifest: {e}]")
+        print("=" * 60 + "\n")
+    else:
+        print("[INFO] No manifest.json found in current directory.")
 
 
 def print_tensor_stats(name: str, tensor: np.ndarray):

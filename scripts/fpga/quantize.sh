@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -x # Uncomment to debug
+# set -x # Uncomment to debug
 set -e # Exit on error
 start_time=$(date +%s)
 
@@ -74,13 +74,11 @@ fi
 echo "-------------------- EXPORT ENTROPY PARAMETERS ---------------------"
 python DDC_FPGA/scripts/fpga/export_entropy_params.py --ckpt ${RUN_DIR}/checkpoints/last.ckpt --output ${MODEL_NAME}_pt/entropy_params.npz
 
-echo "-------------------- BUNDLE SCRIPTS ---------------------"
+echo "-------------------- ORGANIZE OUTPUT ---------------------"
 # Copy all inference components to the model folder for a self-contained deployment
 cp DDC_FPGA/scripts/fpga/inference_hybrid.py ${MODEL_NAME}_pt/
 cp DDC_FPGA/scripts/fpga/inference_utils.py ${MODEL_NAME}_pt/
 cp DDC_FPGA/scripts/fpga/entropy_models_inference.py ${MODEL_NAME}_pt/
-
-echo "-------------------- ORGANIZE OUTPUT ---------------------"
 # Copy Config and Rename Directory
 python DDC_FPGA/scripts/fpga/organize_output.py --run_dir ${RUN_DIR} --source_dir ${MODEL_NAME}_pt
 

@@ -11,6 +11,7 @@ Usage (/!\\ Only on FPGA /!\\):
 
 import argparse
 import json
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -37,6 +38,7 @@ from inference_utils import (
     AMP_MIN,
     EPS,
     MetricsTracker,
+    display_manifest,
     extract_patches,
     pad_to_multiple,
     print_tensor_stats,
@@ -331,13 +333,31 @@ def run_hybrid_inference(
 ):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-    # ---- Paths and Logging ----
-    model_name_and_timestamp = xmodel_path.parent.name
-    output_dir = Path(f"results/FPGA_inference_{model_name_and_timestamp}")
+    # ----- Paths and Logging -----
+    output_dir = xmodel_path.parent / "results"
+
+    # Remove previous results to avoid contamination
+    if output_dir.exists():
+        print(f"[INFO] Cleaning previous results directory: {output_dir}")
+        shutil.rmtree(output_dir)
+
+    # Create fresh output directory and log file
     output_dir.mkdir(parents=True, exist_ok=True)
     global log_file
     log_file = output_dir / "inference.log"
 
+    # Store inference metadata in a new manifest inside results
+    manifest_path = xmodel_path.parent / "manifest.json"
+    model_metadata = {"evaluated_at": timestamp}
+    if manifest_path.exists():
+        with open(manifest_path) as f:
+            build_manifest = json.load(f)
+            model_metadata["model_run_name"] = build_manifest.get("model_name", "Unknown")
+            model_metadata["model_compiled_at"] = build_manifest.get("compiled_at", "Unknown")
+    with open(output_dir / "inference_meta.json", "w") as f:
+        json.dump(model_metadata, f, indent=4)
+
+    # ----- Inference -----
     log(f"Starting Hybrid Inference at {timestamp}.")
 
     # 1. Load Model
@@ -362,14 +382,6 @@ def run_hybrid_inference(
         offset=data["gc_offset"],
     )
 
-    # Copy train_config.yaml if available
-    train_config_src = xmodel_path.parent / "train_config.yaml"
-    if train_config_src.exists():
-        import shutil
-
-        shutil.copy(train_config_src, output_dir / "train_config.yaml")
-        log(f"Copied train_config.yaml to {output_dir}")
-
     # 2. Create Runners
     log("Creating DPU Runners...")
     runners = {}
@@ -381,6 +393,7 @@ def run_hybrid_inference(
     noisy, ground_truths = load_npy_test_set(dataset_path, subset)
     n_samples = len(noisy)
     log(f"Loaded {n_samples} samples.")
+
     # Metrics
     metric_list = ["bpp", "mse", "psnr"]
     tracker_noisy = MetricsTracker(metric_list)
@@ -584,5 +597,7 @@ if __name__ == "__main__":
     if not data_path.exists():
         log(f"Error: Data file {data_path} does not exist.")
         sys.exit(1)
+
+    display_manifest(xmodel_path.parent)
 
     run_hybrid_inference(xmodel_path, data_path, args.subset, args.verbose)

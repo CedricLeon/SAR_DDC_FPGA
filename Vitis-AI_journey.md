@@ -5,7 +5,7 @@ Once I understand the toolchain and its processes better, I'll make a step-by-st
 
 ## Full deployment and evaluation of the models (January 2026)
 #### Requirements
-- If needed, perform [Onetime setups](#fpga-preparations-one-time-setups).
+- If needed, perform [onetime setups](#fpga-preparations-one-time-setups).
 - Have a trained checkpoint (and its configuration)
 
 #### 1. Initialize Vitis-AI docker container
@@ -24,31 +24,40 @@ I have created a script that does all of that for use:
 ```bash
 [HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ ./DDC_FPGA/scripts/fpga/quantize.sh
 ```
-@TODOs:
-- I probably don't need all these evaluations, neither the image graph generation. I should make these arguments of the scripts.
+> Output: a folder, e.g., `ResSHyp-relu_s2_L1000_pt` located in `results/fpga/compiled_models/`. The symlink `results/fpga/active_model` is updated to point to this folder
 
-#### 3. Copy the compiled model to the Target
+#### 3. Transfer to Target
 ```bash
-[HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ scp -r ResidualScaleHyperpriorDPUWrapper_pt/ root@10.0.0.2:/home/root/SAR_DDC/models/
+[HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ scp -r DDC_FPGA/results/fpga/active_model/ root@10.0.0.2:/home/root/SAR_DDC/current_model
 ```
 
-#### 4. (Optional) Also update the inference script and maybe the data and the Target
+#### 4. Run Inference on FPGA
+If needed open a connection to the Target:
 ```bash
-# Data
-[HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/data/processed_hdf5/TSX_spatial_splits_5_256x256/test_1000.npy root@10.0.0.2:/home/root/SAR_DDC/data/test_1000.npy
+[HOST] ssh root@10.0.0.2
+```
+Go into the deployed model directory and run inference
+```bash
+[TARGET] root@xilinx-zcu102-20222:~$ cd ~/SAR_DDC/current_model/
+[TARGET] root@xilinx-zcu102-20222:~/SAR_DDC/current_model/# python3 inference_hybrid.py --xmodel ./*.xmodel --data ../data/test_1000.npy --subset 100
+```
+
+#### 5. Retrieve Results to Host
+```bash
+[TARGET] root@xilinx-zcu102-20222:~/SAR_DDC/# scp -r results/ leon_ce@10.0.0.1:~/dev/Vitis-AI/DDC_FPGA/results/fpga/active_model/
+```
+
+## FPGA preparations (One-time setups)
+
+### Update source files on the FPGA
+Because I program on the Host I need to manually update the inference scripts on the FPGA every time I make a modification.
+Below is a list of the associated `scp` commands:
+```bash
 # Inference script
 [HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/scripts/fpga/inference_hybrid.py root@10.0.0.2:/home/root/SAR_DDC/scripts/
 # Utils
 [HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/src/models/components/compressai_dpu.py root@10.0.0.2:/home/root/SAR_DDC/scripts/
 [HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/scripts/fpga/inference_utils.py root@10.0.0.2:/home/root/SAR_DDC/scripts/
-```
-
-#### 5. Perform inference on the Target
-In a new bash open an SSH session to the FPGA and call the python script
-```bash
-[HOST] leon_ce@bart:~$ ssh root@10.0.0.2
-[TARGET] root@xilinx-zcu102-20222:~# cd SAR_DDC/
-[TARGET] root@xilinx-zcu102-20222:~/SAR_DDC/# python3 scripts/inference.py --xmodel models/ResidualScaleHyperpriorDPUWrapper/ResidualScaleHyperpriorDPUWrapper_pt.xmodel --data data/test_1000.npy --subset 100
 ```
 
 ### Compile the C++ rANS entropy encoder for the FPGA
@@ -87,10 +96,12 @@ To verify that this implementation works I created `debug_entropy_dpu_equivalenc
    [Host] python scripts/debug_entropy_dpu_equivalence.py
    ```
 
+### Dataset export to the FPGA
 ```bash
-[TARGET] root@xilinx-zcu102-20222:~# scp -r results/inference_ResidualScaleHyperpriorDPUWrapper_pt_2021-11-21_13-58-02/ leon_ce@10.0.0.1: ~/dev/Vitis-AI/DDC_FPGA/results/fpga/
+[HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA/$ python scripts/dataset/convert_h5_to_np.py --dataset_path data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test.h5 --subset 1000
+# Afterwards transfer the dataset to the Target (It also took 6:41 mins)
+[HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA/$ scp data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test_1000.npy root@10.0.0.2:/home/root/SAR_DDC/data/test_1000.npy
 ```
-
 
 
 ## Creating a DPU-friendly inference pipeline / Updating the model to be Vitis-AI-friendly
