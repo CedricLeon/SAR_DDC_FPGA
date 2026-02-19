@@ -16,7 +16,7 @@ from src.utils.sar_utils import symmetrize
 
 
 class CompareReconstructionToGT(Callback):
-    """Callback to compare model reconstructions to MERLIN ground truth on a large validation
+    """Callback to compare model reconstructions to MERLIN-DDS ground truth on a large validation
     patch."""
 
     def __init__(
@@ -29,7 +29,7 @@ class CompareReconstructionToGT(Callback):
         verbose: bool = False,
     ):
         super().__init__()
-        self.patch_dir = Path(patch_dir) / "visualization"
+        self.patch_dir = Path(patch_dir) / "visualization/Hamburg"
         self.log_every_n_epochs = log_every_n_epochs
         # --- Details for clipping ---
         self.clip_for_visualization = True  # Enable or disable clipping
@@ -60,26 +60,25 @@ class CompareReconstructionToGT(Callback):
         else:
             raise ValueError(f"Unsupported LightningModule class: {pl_module.__class__.__name__}")
         # ----- Load the noisy patch -----
-        # For the files in patch_dir find the one that starts with raw_ and ends with .npy
+        # For the files in patch_dir find the one that starts with sym_ and ends with .npy
         found_patch = False
-        for file in self.patch_dir.glob("raw_*.npy"):
+        for file in self.patch_dir.glob("sym_*.npy"):
             self.patch_path = file
             found_patch = True
             break
         if not found_patch:
             raise FileNotFoundError(
-                f"No validation patch found in {self.patch_dir}. "
-                "Please ensure the directory contains a file starting with 'val_' and ending with '.npy'."
+                f"No symmetrized patch found in {self.patch_dir}. "
+                "Please ensure the directory contains a file starting with 'sym_' and ending with '.npy'."
             )
 
         # --- load and symmetrize ---
         patch_data = np.load(self.patch_path)  # [H, W, 2]
         if self.verbose:
-            print(f"    Loaded RAW PATCH from {self.patch_path}.")
+            print(f"    Loaded Symmetrized PATCH from {self.patch_path}.")
             print(
-                f"        RAW PATCH (shape={patch_data.shape}) statistics: min={patch_data.min():.4f}, max={patch_data.max():.4f}, mean={patch_data.mean():.4f}, std={patch_data.std():.4f}. Is NaN={np.isnan(patch_data).any()}."
+                f"        Symmetrized PATCH (shape={patch_data.shape}) statistics: min={patch_data.min():.4f}, max={patch_data.max():.4f}, mean={patch_data.mean():.4f}, std={patch_data.std():.4f}. Is NaN={np.isnan(patch_data).any()}."
             )
-        patch_data = symmetrize(patch_data)
 
         # --- Prepare noisy patch data as numpy arrays for visualization ---
         noisy_linI = np.square(patch_data[:, :, 0]) + np.square(patch_data[:, :, 1])
@@ -101,26 +100,25 @@ class CompareReconstructionToGT(Callback):
         self.patch = patch_tensor.unsqueeze(0).permute(0, 3, 1, 2).contiguous()  # [1, 2, H, W]
         del patch_tensor, patch_data
 
-        # ----- Load MERLIN Ground Truth -----
+        # ----- Load MERLIN-DDS Ground Truth -----
         found_merlin = False
-        for file in self.patch_dir.glob("denoised_by_MERLIN_*.npy"):
+        for file in self.patch_dir.glob("linA_MERLIN-DDS_*.npy"):
             self.merlin_gt_path = file
-            merlin_patch_dict = np.load(self.merlin_gt_path, allow_pickle=True).item()
+            self.merlin_linA = np.load(self.merlin_gt_path)
 
-            # Denoised image from MERLIN comes in linear amplitude scale, see https://github.com/hi-paris/deepdespeckling
-            self.merlin_linA = merlin_patch_dict["denoised"]["full"]
+            # Denoised image from MERLIN-DDS comes in linear amplitude scale, see https://github.com/hi-paris/deepdespeckling
             self.merlin_logI = np.log(np.square(self.merlin_linA) + EPS)
 
             if self.verbose:
-                print(f"    Loaded MERLIN GT from {self.merlin_gt_path}.")
+                print(f"    Loaded MERLIN-DDS GT from {self.merlin_gt_path}.")
                 print(
-                    f"        MERLIN LIN-A (shape={self.merlin_linA.shape}) statistics: min={self.merlin_linA.min():.4f}, max={self.merlin_linA.max():.4f}, mean={self.merlin_linA.mean():.4f}, std={self.merlin_linA.std():.4f}. Is NaN={np.isnan(self.merlin_linA).any()}."
+                    f"        MERLIN-DDS LIN-A (shape={self.merlin_linA.shape}) statistics: min={self.merlin_linA.min():.4f}, max={self.merlin_linA.max():.4f}, mean={self.merlin_linA.mean():.4f}, std={self.merlin_linA.std():.4f}. Is NaN={np.isnan(self.merlin_linA).any()}."
                 )
 
-            # Quick print metrics between noisy and MERLIN GT
+            # Quick print metrics between noisy and MERLIN-DDS GT
             metrics = get_all_distortion_metrics(self.noisy_linA, self.merlin_linA)
             if self.verbose:
-                print("        Initial metrics between Noisy and MERLIN GT:", end="")
+                print("        Initial metrics between Noisy and MERLIN-DDS GT:", end="")
                 for key, value in metrics.items():
                     print(f" {key}={value:.4f}", end=",")
                 print()
@@ -129,13 +127,13 @@ class CompareReconstructionToGT(Callback):
 
         if not found_merlin:
             warnings.warn(
-                f"No MERLIN Ground Truth found in {self.patch_dir}. Skipping GT logging."
+                f"No MERLIN-DDS Ground Truth found in {self.patch_dir}. Skipping GT logging."
             )
             self.merlin_linA = None
             self.merlin_logI = None
         elif self.merlin_gt_path.name.split("_")[3] != self.patch_path.name.split("_")[1]:
             warnings.warn(
-                f"Patch and MERLIN GT filenames do not match: {self.patch_path.name} vs {self.merlin_gt_path.name}. "
+                f"Patch and MERLIN-DDS GT filenames do not match: {self.patch_path.name} vs {self.merlin_gt_path.name}. "
                 "This may lead to incorrect logging."
             )
 
@@ -191,7 +189,8 @@ class CompareReconstructionToGT(Callback):
             )
 
     def _compute_metrics_to_merlin(self, criterion: dict, recon_linA: np.ndarray) -> dict:
-        """Compute distortion metrics between reconstruction and MERLIN GT in LINEAR-AMPLITUDE."""
+        """Compute distortion metrics between reconstruction and MERLIN-DDS GT in LINEAR-
+        AMPLITUDE."""
         metrics_to_merlin = {"mse": -1.0, "psnr": -1.0, "bpp": -1.0, "ssim": -1.0, "ms_ssim": -1.0}
         metrics_to_merlin["loss"] = criterion["loss"].item()
         if self.merlin_linA is not None:
@@ -210,7 +209,7 @@ class CompareReconstructionToGT(Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        """Log reconstruction comparison with MERLIN GT."""
+        """Log reconstruction comparison with MERLIN-DDS GT."""
         # Only log on specified epochs and for the first batch
         if (trainer.current_epoch % self.log_every_n_epochs != 0) or batch_idx > 0:
             return
@@ -290,7 +289,7 @@ class CompareReconstructionToGT(Callback):
         criterion: dict,
         trainer: Trainer,
     ) -> tuple[Any, dict]:
-        """Visualize the reconstruction, noisy input, MERLIN GT (if available) and their
+        """Visualize the reconstruction, noisy input, MERLIN-DDS GT (if available) and their
         histograms."""
         metrics_to_merlin = self._compute_metrics_to_merlin(criterion, recon_linA)
 
@@ -321,17 +320,17 @@ class CompareReconstructionToGT(Callback):
         axes[0, 1].axis("off")
         fig.colorbar(im1, ax=axes[0, 1], shrink=0.8)
 
-        # MERLIN GT (if available)
+        # MERLIN-DDS GT (if available)
         if self.merlin_logI is not None:
             im3 = axes[0, 2].imshow(merlin_logI, cmap="gray")
-            axes[0, 2].set_title("MERLIN GT Log-I")
+            axes[0, 2].set_title("MERLIN-DDS GT Log-I")
             axes[0, 2].axis("off")
             fig.colorbar(im3, ax=axes[0, 2], shrink=0.8)
         else:
             axes[0, 2].text(
                 0.5,
                 0.5,
-                "MERLIN GT\nNot Available",
+                "MERLIN-DDS GT\nNot Available",
                 ha="center",
                 va="center",
                 transform=axes[0, 2].transAxes,
@@ -383,14 +382,14 @@ class CompareReconstructionToGT(Callback):
         # Reconstruction histogram
         plot_histogram(axes[1, 1], recon_logI, "Recon LOG-I Histogram")
 
-        # MERLIN GT histogram (if available)
+        # MERLIN-DDS GT histogram (if available)
         if self.merlin_logI is not None:
-            plot_histogram(axes[1, 2], merlin_logI, "MERLIN GT LOG-I Histogram")
+            plot_histogram(axes[1, 2], merlin_logI, "MERLIN-DDS GT LOG-I Histogram")
         else:
             axes[1, 2].text(
                 0.5,
                 0.5,
-                "MERLIN GT\nHistogram\nNot Available",
+                "MERLIN-DDS GT\nHistogram\nNot Available",
                 ha="center",
                 va="center",
                 transform=axes[1, 2].transAxes,
@@ -401,7 +400,7 @@ class CompareReconstructionToGT(Callback):
         fig.suptitle(
             f"Val Large patch ({'clipped and normalized' if self.clip_for_visualization else 'raw'}), epoch {trainer.current_epoch}: "
             f"Loss={metrics_to_merlin['loss']:.3f}, BPP={metrics_to_merlin['bpp']:.4f}."
-            f"\n metrics to MERLIN GT (LIN-A): MSE={metrics_to_merlin['mse']:.4f}, PSNR={metrics_to_merlin['psnr']:.2f}dB, SSIM={metrics_to_merlin['ssim']:.4f}, MS-SSIM={metrics_to_merlin['ms_ssim']:.4f}",
+            f"\n metrics to MERLIN-DDS GT (LIN-A): MSE={metrics_to_merlin['mse']:.4f}, PSNR={metrics_to_merlin['psnr']:.2f}dB, SSIM={metrics_to_merlin['ssim']:.4f}, MS-SSIM={metrics_to_merlin['ms_ssim']:.4f}",
             fontsize=14,
         )
 

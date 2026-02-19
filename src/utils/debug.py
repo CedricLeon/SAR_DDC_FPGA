@@ -23,11 +23,11 @@ def print_statistics(name: str, tensor: Any) -> None:
     """Print basic statistics of a tensor or numpy array for debugging."""
     if isinstance(tensor, torch.Tensor):
         print(
-            f"{name:<40}: min={torch.min(tensor):.6f}, max={torch.max(tensor):.6f}, mean={torch.mean(tensor):.6f}, std={torch.std(tensor):.6f}"
+            f"{name:<40}: min={torch.min(tensor):<12.4f}, max={torch.max(tensor):<12.4f}, mean={torch.mean(tensor):<12.4f}, std={torch.std(tensor):<12.4f}"
         )
     elif isinstance(tensor, np.ndarray):
         print(
-            f"{name:<40}: min={np.min(tensor):.6f}, max={np.max(tensor):.6f}, mean={np.mean(tensor):.6f}, std={np.std(tensor):.6f}"
+            f"{name:<40}: min={np.min(tensor):<12.4f}, max={np.max(tensor):<12.4f}, mean={np.mean(tensor):<12.4f}, std={np.std(tensor):<12.4f}"
         )
     else:
         print(f"{name:<40}: Unsupported type {type(tensor)} for statistics printing.")
