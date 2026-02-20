@@ -29,15 +29,12 @@ model:
 callbacks:
   compare_recon_to_gt:
     patch_dir: ${paths.data_dir}
-    split_large_patch: False
-    blend_method: "count"
-    stride: 256
     log_every_n_epochs: 2
     verbose: True
   monitor_val_recon:
     log_every_n_epochs: 2
     num_images: 4
-    verbose: False
+    verbose: True
 
 trainer:
   min_epochs: 1
