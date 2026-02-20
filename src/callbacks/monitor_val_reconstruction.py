@@ -6,6 +6,7 @@ import torch
 from lightning import Callback, LightningModule, Trainer
 
 from src.utils.constants import AMP_MAX, AMP_MIN, EPS
+from src.utils.debug import print_images_statistics
 from src.utils.processing_utils import clip
 
 
@@ -26,6 +27,11 @@ class MonitorValReconstruction(Callback):
         self.mean_std_norm = True  # True: use mean/std, False use percentiles
         self.clip_factor = 3  # Clip to mean +/- self.clip_factor * std
         self.clip_percentiles = (5, 95)  # Clip to these percentiles
+        self.clip_info = (
+            f" (clipped with {'mean/std' if self.mean_std_norm else f'percentiles {self.clip_percentiles}'})"
+            if self.clip_for_visualization
+            else " (no clipping)"
+        )
 
         self.verbose = verbose
 
@@ -89,59 +95,59 @@ class MonitorValReconstruction(Callback):
             torch.square(recon_lin[:, 0, :, :]) + torch.square(recon_lin[:, 1, :, :])
         )  # [B, H, W]
         recon_logI = torch.log(recon_linI + EPS)  # used for visualization
-        # recon_linA = torch.sqrt(recon_linI)         # used for metrics computation
 
         # Create the visualization
         fig, axes = plt.subplots(3, num_images_to_show, figsize=(4 * num_images_to_show, 12))
         if num_images_to_show == 1:
             axes = axes.reshape(-1, 1)
 
+        all_noisy_logI = []
+        all_recon_logI = []
         for i in range(num_images_to_show):
             # Get individual images and convert to numpy
             real_i = batch["real"][i, 0].cpu().numpy()  # Remove channel dim
             imag_i = batch["imag"][i, 0].cpu().numpy()  # Remove channel dim
-            noisy_logI = np.log(
-                np.square(real_i) + np.square(imag_i)
+            all_noisy_logI.append(
+                np.log(np.square(real_i) + np.square(imag_i))
             )  # Sum for input reflectivity
-            recon_logI_i = recon_logI[i].cpu().numpy()
+            all_recon_logI.append(recon_logI[i].cpu().numpy())
             if self.clip_for_visualization:
-                noisy_logI = clip(
-                    noisy_logI,
+                all_noisy_logI[i] = clip(
+                    all_noisy_logI[i],
                     self.mean_std_norm,
                     self.clip_factor,
                     self.clip_percentiles,
                 )
-                recon_logI_i = clip(
-                    recon_logI_i,
+                all_recon_logI[i] = clip(
+                    all_recon_logI[i],
                     self.mean_std_norm,
                     self.clip_factor,
                     self.clip_percentiles,
-                )
-                clip_info = f" (clipped with {'mean/std' if self.mean_std_norm else f'percentiles {self.clip_percentiles}'})"
-            else:
-                clip_info = " (no clipping)"
-
-            if self.verbose:
-                print(
-                    f"    RECON N°{i} Log-Intensity{clip_info}: min={recon_logI_i.min():.4f}, max={recon_logI_i.max():.4f}, mean={recon_logI_i.mean():.4f}, std={recon_logI_i.std():.4f}. Is NaN={np.isnan(recon_logI_i).any()}."
-                )
-                print(
-                    f"    NOISY N°{i} Log-Intensity{clip_info}: min={noisy_logI.min():.4f}, max={noisy_logI.max():.4f}, mean={noisy_logI.mean():.4f}, std={noisy_logI.std():.4f}, Is NaN={np.isnan(noisy_logI).any()}."
                 )
 
             # Row 0: Input reflectivity
-            im0 = axes[0, i].imshow(noisy_logI, cmap="gray")
+            im0 = axes[0, i].imshow(all_noisy_logI[i], cmap="gray")
             axes[0, i].axis("off")
             fig.colorbar(im0, ax=axes[0, i], shrink=0.6)
             # Row 1: Reconstruction
-            im1 = axes[1, i].imshow(recon_logI_i, cmap="gray")
+            im1 = axes[1, i].imshow(all_recon_logI[i], cmap="gray")
             axes[1, i].axis("off")
             fig.colorbar(im1, ax=axes[1, i], shrink=0.6)
             # Row 2: Residuals (difference)
-            residuals = np.abs(noisy_logI - recon_logI_i)
+            residuals = np.abs(all_noisy_logI[i] - all_recon_logI[i])
             im2 = axes[2, i].imshow(residuals, cmap="gray")
             axes[2, i].axis("off")
             fig.colorbar(im2, ax=axes[2, i], shrink=0.6)
+
+        if self.verbose:
+            print_images_statistics(
+                {f"Noisy LogI N°{i}": all_noisy_logI[i] for i in range(num_images_to_show)},
+                title=f"Epoch {trainer.current_epoch} - Noisy LogI Statistics{self.clip_info}",
+            )
+            print_images_statistics(
+                {f"Recon LogI N°{i}": all_recon_logI[i] for i in range(num_images_to_show)},
+                title=f"Epoch {trainer.current_epoch} - Reconstruction LogI Statistics{self.clip_info}",
+            )
 
         # Add Row titles on the left side
         row_titles = [

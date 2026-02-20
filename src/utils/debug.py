@@ -34,7 +34,7 @@ def print_statistics(name: str, tensor: Any) -> None:
 
 
 def print_images_statistics(
-    images: Dict[str, np.ndarray],
+    images: Dict[str, Union[np.ndarray, None]],
     metrics: List[Union[str, Any]] = ["min", "max", "mean", "std"],
     title: str = "Image Statistics",
 ) -> None:

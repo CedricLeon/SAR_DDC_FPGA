@@ -10,9 +10,9 @@ from lightning import Callback, LightningModule, Trainer
 from matplotlib.ticker import FuncFormatter
 
 from src.utils.constants import AMP_MAX, AMP_MIN, EPS
-from src.utils.metrics import get_all_distortion_metrics, ms_ssim, mse, psnr, ssim
+from src.utils.debug import print_images_statistics
+from src.utils.metrics import get_all_distortion_metrics
 from src.utils.processing_utils import clip, process_large_patch
-from src.utils.sar_utils import symmetrize
 
 
 class CompareReconstructionToGT(Callback):
@@ -36,6 +36,11 @@ class CompareReconstructionToGT(Callback):
         self.mean_std_norm = True  # True: use mean/std, False use percentiles
         self.clip_factor = 3  # Clip to mean +/- self.clip_factor * std
         self.clip_percentiles = (5, 95)  # Clip to these percentiles
+        self.clip_info = (
+            f" (clipped with {'mean/std' if self.mean_std_norm else f'percentiles {self.clip_percentiles}'})"
+            if self.clip_for_visualization
+            else " (no clipping)"
+        )
         # --- Processing large patch as small patches or not ---
         self.split_large_patch = split_large_patch
         self.blend_method = blend_method
@@ -76,52 +81,38 @@ class CompareReconstructionToGT(Callback):
         patch_data = np.load(self.patch_path)  # [H, W, 2]
         if self.verbose:
             print(f"    Loaded Symmetrized PATCH from {self.patch_path}.")
-            print(
-                f"        Symmetrized PATCH (shape={patch_data.shape}) statistics: min={patch_data.min():.4f}, max={patch_data.max():.4f}, mean={patch_data.mean():.4f}, std={patch_data.std():.4f}. Is NaN={np.isnan(patch_data).any()}."
-            )
 
         # --- Prepare noisy patch data as numpy arrays for visualization ---
         noisy_linI = np.square(patch_data[:, :, 0]) + np.square(patch_data[:, :, 1])
         self.noisy_linA = np.sqrt(noisy_linI)
         self.noisy_logI = np.log(noisy_linI + EPS)
         del noisy_linI
-        if self.verbose:
-            print(
-                f"        NOISY LIN-A (shape={self.noisy_linA.shape}) statistics: min={self.noisy_linA.min():.4f}, max={self.noisy_linA.max():.4f}, mean={self.noisy_linA.mean():.4f}, std={self.noisy_linA.std():.4f}. Is NaN={np.isnan(self.noisy_linA).any()}."
-            )
-            print(
-                f"        NOISY LOG-I (shape={self.noisy_logI.shape}) statistics: min={self.noisy_logI.min():.4f}, max={self.noisy_logI.max():.4f}, mean={self.noisy_logI.mean():.4f}, std={self.noisy_logI.std():.4f}. Is NaN={np.isnan(self.noisy_logI).any()}."
-            )
 
         # --- Store as torch tensors on device for forward passes ---
         patch_tensor = torch.from_numpy(patch_data).to(pl_module.device).float()
         # NO NORMALIZATION, IT'S DONE IN model.forward()
         # Add batch and channel dimensions
         self.patch = patch_tensor.unsqueeze(0).permute(0, 3, 1, 2).contiguous()  # [1, 2, H, W]
-        del patch_tensor, patch_data
 
         # ----- Load MERLIN_DDS Ground Truth -----
         found_merlin = False
         for file in self.patch_dir.glob("linA_MERLIN_DDS.npy"):
             self.merlin_gt_path = file
             self.merlin_linA = np.load(self.merlin_gt_path)
+            if self.verbose:
+                print(f"    Loaded MERLIN_DDS GT from {self.merlin_gt_path}.")
 
             # Denoised image from MERLIN_DDS comes in linear amplitude scale, see https://github.com/hi-paris/deepdespeckling
             self.merlin_logI = np.log(np.square(self.merlin_linA) + EPS)
 
             if self.verbose:
-                print(f"    Loaded MERLIN_DDS GT from {self.merlin_gt_path}.")
-                print(
-                    f"        MERLIN_DDS LIN-A (shape={self.merlin_linA.shape}) statistics: min={self.merlin_linA.min():.4f}, max={self.merlin_linA.max():.4f}, mean={self.merlin_linA.mean():.4f}, std={self.merlin_linA.std():.4f}. Is NaN={np.isnan(self.merlin_linA).any()}."
-                )
-
-            # Quick print metrics between noisy and MERLIN_DDS GT
-            metrics = get_all_distortion_metrics(self.noisy_linA, self.merlin_linA)
-            if self.verbose:
+                # Quick print metrics between noisy and MERLIN_DDS GT
+                metrics = get_all_distortion_metrics(self.noisy_linA, self.merlin_linA)
                 print("        Initial metrics between Noisy and MERLIN_DDS GT:", end="")
                 for key, value in metrics.items():
                     print(f" {key}={value:.4f}", end=",")
                 print()
+
             found_merlin = True
             break
 
@@ -131,6 +122,20 @@ class CompareReconstructionToGT(Callback):
             )
             self.merlin_linA = None
             self.merlin_logI = None
+
+        if self.verbose:
+            # Print all images statistics for debugging
+            print_images_statistics(
+                {
+                    "Noisy Symmetrized": patch_data,
+                    "Noisy LinA": self.noisy_linA,
+                    "MERLIN_DDS LinA": self.merlin_linA,
+                    "Noisy LogI": self.noisy_logI,
+                    "MERLIN_DDS LogI": self.merlin_logI,
+                },
+                title=f"Epoch {trainer.current_epoch} - Image Statistics{self.clip_info}",
+            )
+        del patch_tensor, patch_data
 
     def on_test_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         """Log the final reconstruction of the large patch at the end of testing."""
@@ -242,11 +247,12 @@ class CompareReconstructionToGT(Callback):
         recon_linA = torch.sqrt(recon_linI).squeeze().cpu().numpy()
         recon_logI = torch.log(recon_linI + EPS).squeeze().cpu().numpy()
         if self.verbose:
-            print(
-                f"    RECON LIN-A: min={recon_linA.min():.4f}, max={recon_linA.max():.4f}, mean={recon_linA.mean():.4f}, std={recon_linA.std():.4f}. Is NaN={np.isnan(recon_linA).any()}."
-            )
-            print(
-                f"    NOISY LIN-A: min={self.noisy_linA.min():.4f}, max={self.noisy_linA.max():.4f}, mean={self.noisy_linA.mean():.4f}, std={self.noisy_linA.std():.4f}."
+            print_images_statistics(
+                {
+                    "Reconstruction LinA": recon_linA,
+                    "Noisy LinA": self.noisy_linA,
+                },
+                title=f"Epoch {trainer.current_epoch} - Reconstruction Statistics{self.clip_info}",
             )
 
         fig_A, metrics_to_merlin = self._visualize_with_histograms(
