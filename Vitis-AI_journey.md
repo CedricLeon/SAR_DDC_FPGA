@@ -4,45 +4,59 @@ I'll use this file as a journal, just to keep track of what I tried and when.
 Once I understand the toolchain and its processes better, I'll make a step-by-step instructions for deployment, like so:
 
 ## Full deployment and evaluation of the models (January 2026)
-#### Requirements
+
+### Requirements
+
 - If needed, perform [onetime setups](#fpga-preparations-one-time-setups).
 - Have a trained checkpoint (and its configuration)
 
-#### 1. Initialize Vitis-AI docker container
+### 1. Initialize Vitis-AI docker container
+
 If the current `vai_container` is dead (see NVMH error where CUDA is not available), `exit` it and restart it with:
+
 ```bash
 [HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA$ ./scripts/vitis-ai-automation/setup_container.sh
 ```
-which is equivalent to what we did [here](#adapting-vitis-ai-docker-container-to-my-requirements).
+
+which is equivalent to what we did [in October 2025](#adapting-vitis-ai-docker-container-to-my-requirements-october-2025).
 
 > Note: using this script to prepare the docker container implies that we won't see the name of our conda environment `(vitis-ai-pytorch)` in our terminal.
 > However, it is already activated. This can be checked with `which python`.
 
-#### 2. Let Vitis-AI do its job
+### 2. Let Vitis-AI do its job
+
 Deploying a model using Vitis-AI requires to inspect it, quantize it, deploy it, compile it and evaluate it at various stages of the process.
 I have created a script that does all of that for use:
+
 ```bash
 [HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ ./DDC_FPGA/scripts/fpga/quantize.sh
 ```
+
 > Output: a folder, e.g., `ResSHyp-relu_s2_L1000_pt` located in `results/fpga/compiled_models/`. The symlink `results/fpga/active_model` is updated to point to this folder
 
-#### 3. Transfer to Target
+### 3. Transfer to Target
+
 ```bash
 [HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ scp -r DDC_FPGA/results/fpga/active_model/ root@10.0.0.2:/home/root/SAR_DDC/current_model
 ```
 
-#### 4. Run Inference on FPGA
+### 4. Run Inference on FPGA
+
 If needed open a connection to the Target:
+
 ```bash
 [HOST] ssh root@10.0.0.2
 ```
+
 Go into the deployed model directory and run inference
+
 ```bash
 [TARGET] root@xilinx-zcu102-20222:~$ cd ~/SAR_DDC/current_model/
 [TARGET] root@xilinx-zcu102-20222:~/SAR_DDC/current_model/# python3 inference_hybrid.py --xmodel ./*.xmodel --data ../data/test_1000.npy --subset 100
 ```
 
-#### 5. Retrieve Results to Host
+### 5. Retrieve Results to Host
+
 ```bash
 [TARGET] root@xilinx-zcu102-20222:~/SAR_DDC/# scp -r results/ leon_ce@10.0.0.1:~/dev/Vitis-AI/DDC_FPGA/results/fpga/active_model/
 ```
@@ -50,8 +64,10 @@ Go into the deployed model directory and run inference
 ## FPGA preparations (One-time setups)
 
 ### Update source files on the FPGA
+
 Because I program on the Host I need to manually update the inference scripts on the FPGA every time I make a modification.
 Below is a list of the associated `scp` commands:
+
 ```bash
 # Inference script
 [HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/scripts/fpga/inference_hybrid.py root@10.0.0.2:/home/root/SAR_DDC/scripts/
@@ -61,68 +77,83 @@ Below is a list of the associated `scp` commands:
 ```
 
 ### Compile the C++ rANS entropy encoder for the FPGA
+
 To be able to use the rANS entropy coder to generate real bitstreams on the FPGA we need to compile the CompressAI custom C++ implementation into a shared library (`ans.so`). As the PetaLinux image of the ZCU102 has `g++` we do the compilation directly on the target to avoid cross-compilation hassles.
 
 1. **Package the C++ environment (Host)**:
+
    ```bash
    cd scripts/fpga/deploy_cpp_entropy/
    ./setup_fpga_cpp.sh
    ```
+
    > Output: `fpga_cpp_pkg/`
 2. **Transfer and Compile (Target)**:
+
    ```bash
    [HOST] scp fpga_cpp_pkg root@10.0.0.2:/home/root/SAR_DDC/
    [TARGET] cd fpga_cpp_pkg && make
    ```
+
    > Output: `ans.cpython-39-aarch64-linux-gnu.so`
 3. **Install**:
    In order to be able to import the newly compiled library:
+
    ```bash
    cp ans.cpython-39-aarch64-linux-gnu.so ..
    ```
+
    Then I added `export PYTHONPATH=$PYTHONPATH:/home/root/SAR_DDC/` to the `~/.bashrc` and refreshed it with `source ~/.bashrc`.
 
 #### Implementation verification
+
 To verify that this implementation works I created `debug_entropy_dpu_equivalence.py` that runs on Host to compare reconstructions of the same checkpoint ran in "Training" mode, with likelihoods, and in "Inference" mode, i.e., the call of the C++ Entropy coder.
 
 1. **Compile and make available the C++ ANS package:
+
    ```bash
    [Host] cd scripts/compare_FPGA_to_GPU/
    [Host] python setup.py build_ext --inplace
    ```
+
 2. **Run the debug script**:
+
    ```bash
    [Host] cd ../..
    [Host] python scripts/debug_entropy_dpu_equivalence.py
    ```
 
 ### Dataset export to the FPGA
+
 ```bash
 [HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA/$ python scripts/dataset/convert_h5_to_np.py --dataset_path data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test.h5 --subset 1000
 # Afterwards transfer the dataset to the Target (It also took 6:41 mins)
 [HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA/$ scp data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test_1000.npy root@10.0.0.2:/home/root/SAR_DDC/data/test_1000.npy
 ```
 
-
 ## Creating a DPU-friendly inference pipeline / Updating the model to be Vitis-AI-friendly
 
 ### Real Compression/Decompression in C++ (2026-02-17)
+
 Instead of simulating BPP with likelihoods we implemented actual compression/decompression of latents with the rANS encoder. This file comes from `CompressAI/compressai/cpp_exts/rans/rans_interface.cpp` and is used inside CompressAI Python code using PyBind11. So Copilot created a script that allows to export everything necessary onto the FPGA and compile the file there (as the PetaLinux image has `g++`) whiich produces a shared library `ans.so` that we can access during inference.
 
 ### "Mocking" the behavior of the Entropy Models in `numpy` for the DPU (2026-02-09)
+
 I got Copilot to create a couple of files that allowed me to export the series of parameters necessary for the entropy encoders/decoders to be used on the FPGA  `export_entropy_params.py` (mainly scale tables and other), as well as a `entropy_models_dpu.py`.
 However, I realized later that was dummy because what we want to do on the FPGA is to perform real compression/decompression and generate Byte-strings not likelihoods.
 
-
 ### Dealing with the multiple DPU subgraphs (2026-01-16)
+
 Currently the models passes Vitis AI inspection, quantization, and compilation, but I struggle to execute it on the FPGA.
 That's because the full model is divided in **many** subgraphs, there are 19 DPU subgraphs and probably a lot more CPU ones.
 Then I have several options:
+
 1. Commit to the "Hybrid" execution: painfully rewrite my inference script to manually orchestrate the flow between CPU and DPU. This is very tedious and will lead to terrible performance.
 2. Simplify the model: avoid all unsupported ops to get 1 Subgraphs (or significantly less so that the Hybrid execution is possible).
 3. Register custom ops, most likely in C++.
 
-#### Simplifying the model.
+#### Simplifying the model
+
 There are several ops that are not supported, mostly coming from the `th` (PyTorch C++ backend) library or custom layers. Here is the breakdown:
 
 - `aten::pow`: **Power function ($x^y$)**. Used in `GDN` (computing $x^2$) and `NonNegativeParametrizer`. DPU does not support arbitrary power/exponents.
@@ -139,16 +170,21 @@ There are several ops that are not supported, mostly coming from the `th` (PyTor
 Conclusion: Almost all unsupported ops come from **GDN** (Normalization) and **Entropy Modeling** (Probability/Quantization). The Convolutional layers themselves are fine.
 
 ### Overwriting CompressAI custom `torch.autograd.Function` (December 2025)
+
 *Vitis-AI only supports a handful of operations. Obviously, custom backward operation are not supported, but they are also not needed during inference.*
+
 #### Redefining LowerBoundFunction
+
 *See [this issue](https://github.com/InterDigitalInc/CompressAI/issues/345) to better understand the role of the function in the first place.*
 The original error from Vitis-AI model Inspector is `[VAIQ_ERROR][QUANTIZER_TORCH_UNSUPPORTED_OPS]: Unsupported Ops: {'LowerBoundFunction'}.`. To avoid that, we implement a `LowerBoundFunctionPatched` that simply uses `torch.max()`.
+
 #### Re-writing all CompressAI componentsto use LowerBoundFunctionPatched
+
 Now we create `Patched` versions of `GDN`, `EntropyBottleneck`, and `GaussianConditional` to use `LowerBoundFunctionPatched`.
 During the process I copied some compressai code for all these components. However, I got some problems with "unexpected keys" when loading the checkpiont. That's because they renamed some parameters between 1.2.6 and 1.2.8. Therefore, I bumped compressai to 1.2.8.
 
-
 ### Adapting Vitis-AI Docker container to my requirements (October 2025)
+
 ```bash
 # If old container still running, but must restart because NVMH
 exit
@@ -163,8 +199,8 @@ pip install h5py omegaconf compressai torchmetrics  # hydra-core
 export LD_PRELOAD=$CONDA_PREFIX/lib/libstdc++.so.6:$LD_PRELOAD
 ```
 
-
 ### Convolution settings (tackled before LPS ~ 23/06/2025)
+
 *Vitis-AI has a problem with `output_padding`, I detailed below how I solved that.*
 Because my patches will always be square I wrote the formulas for only 1 dimension, i.e., height=width. This also holds for the stride, kernel_size, padding, and output_padding.
 
@@ -189,6 +225,7 @@ Alternative: `nn.ConvTranspose2d(N, N, kernel_size=4, stride=2, padding=1, outpu
 > I need to use the output_padding for this one.
 
 ## Running the model on the ZC102
+
 So I realized (a bit late) that, it's not enough to compile the model. In their tutorial, Vitis AI uses some additional scripts to run inference of the compiled model on specific task/images. Because these scripts are not suitable for my application I need to write my own.
 I found barely any documentation about the features these scripts should implement or functions from `xir` or `vart` they should call, so I will proceed brute-force: have an LLm (perplexity) hallucinate some procedure/script and iteratively debug that thing, just so I start from somewhere.
 
@@ -197,7 +234,9 @@ I found barely any documentation about the features these scripts should impleme
 ### 23.11.2025
 
 #### Setup and dependencies
+
 Below is the intended project structure on the Target:
+
 ```text
 /root/home/SAR_DDC/
 ├── model/
@@ -211,9 +250,11 @@ Below is the intended project structure on the Target:
 └── libs/
     └── (any custom modules needed)
 ```
+
 ==@TODO Didn't check that `.prototxt` file yet, see [this tuto](https://xilinx.github.io/Vitis-AI/3.0/html/docs/quickstart/mpsoc.html#compile-the-model) about it, I don't know how to adapt it for my application.==
 
 I couldn't find a smart way to install `h5py` on the Target, even using AMD package manager `dnf`. So I created a new script `convert_h5_to_np.py`:
+
 ```bash
 [HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA/$ python scripts/dataset/convert_h5_to_np.py --dataset_path data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test.h5 --subset 500
 # Afterwards transfer the dataset to the Target (It also took 6:41 mins)
@@ -223,22 +264,26 @@ I couldn't find a smart way to install `h5py` on the Target, even using AMD pack
 > Be careful, the Zynq US+ does not have infinite RAM, so choose the subset smartly. Or implement a better loading function in `inference.py`.
 
 #### Inference script
+
 Because I don't want to create a VSCode server on the FPGA directly and I don't know how to open a file from a "recursive" SSH session inside of the Remote Explorer extension, I will develop the script "locally" (on BART) and `scp` it every time. The script will be in `scripts/fpga/inference.py`.
 *Move the script to the Target*:
+
 ```bash
 [HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ scp scripts/fpga/inference.py root@10.0.0.2:/home/root/SAR_DDC/scripts/inference.py
 ```
 
 *Perform inference*:
+
 ```bash
 [HOST](DDC_FPGA) leon_ce@bart:~$ ssh root@10.0.0.2
 [TARGET]root@xilinx-zcu102-20222:~# cd SAR_DDC
 [TARGET]root@xilinx-zcu102-20222:~/SAR_DDC# python3 scripts/inference.py --xmodel model/ResAE_pt.xmodel --data data/test_500.npy --subset 100
 ```
 
-
 ## What I did for a first deployment (20/06/2025)
+
 *This list was accompanied by several changes. Find them at commit f1fc9b616a9f988493121b39967d8efc20b5e032 (branch `fpga_delpoyment`). I had to stash them when I cleaned the repo.*
+
 1. Created a similar `model_quantization.py` in DDC_FPGA, realized I need it in the Vitis-AI folder (because the docker image root is in Vitis-AI/), so I copied it there.
 2. Wanted to start docker, the GPU image seems to have disappeared, so I started the `cpu:latest`
 3. I ran into partition space problems so I started mounting 1 of the 2 1TB disks available and copying vitisAI and my repo there. I've used ChatGPT to do so and for the moment I'll use a symlink between the partition and my `~/dev/Vitis-AI/`.
@@ -246,22 +291,26 @@ Because I don't want to create a VSCode server on the FPGA directly and I don't 
 4-bis. I updated `/etc/fstab/` to automount the `/dev/sda1` 1TB partition by adding the line `UUID=ed3655cd-3524-421b-a268-3f89d05ffbee /mnt/vitisAI ext4 defaults 0 2` where **UUID** was obtained with `sudo blkid /dev/sda1`.
 5. I installed the missing packages directly in the docker image: `h5py`, `compressai` (with pip)
 6. Then I encountered the classic `compressai` problem:
-```
-ImportError: /usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.29' not found (required by <conda_path>/envs/rs_dc/lib/python3.11/site-packages/compressai/_CXX.cpython-311-x86_64-linux-gnu.so)
-```
-6. The solution is to install gcc and g++ and make sure they have the same version number. I traditionally do that via conda, but xilinx docker image was set to use anaconda as a default channel, which DLR does not allow. so I had to remove the default and local (`file:///scratch/conda-channel`) channels from the config with `conda config --remove channels <name>` and set a strict channel priority with `conda config --set channel_priority strict` then after 30 damn min of "Solving environment" I ... gave up.
+
+   ```bash
+   ImportError: /usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.29' not found (required by <conda_path>/envs/rs_dc/lib/python3.11/site-packages/compressai/_CXX.cpython-311-x86_64-linux-gnu.so)
+   ```
+
+   The solution is to install gcc and g++ and make sure they have the same version number. I traditionally do that via conda, but xilinx docker image was set to use anaconda as a default channel, which DLR does not allow. so I had to remove the default and local (`file:///scratch/conda-channel`) channels from the config with `conda config --remove channels <name>` and set a strict channel priority with `conda config --set channel_priority strict` then after 30 damn min of "Solving environment" I ... gave up.
 7. Because I was in a deadend with `conda` I tried installing gcc and g++ with `apt-get`. However, the xilinx docker image uses Ubuntu 20.04 and the latest available version of `libstdcxx-ng` was `GLIBCXX_3.4.28`... so another deadend. Ultimately, I solved this problem by downgrading compressai to 1.2.3 with `pip` because it uses `GLIBCXX_3.4.28`.
 8. After a little bit more of playing around and redefining my loss in the `model_quant.py` to **not** use `torchmetrics` (because it imports matplotlib which also needs `GLIBCXX_3.4.29`, and my downgrading trick did not seem to work). I finally got the script to run in "float" mode 😍
 9. So I could evaluate my model in float mode, but as expected the "Inspection" fails because Vitis-AI spots function not supported by the DPU, e.g., `LowerBoundFunction`. This is a custom autograd function used by compressai for their `LowerBound` operator used for example in some EntropyModels, e.g., `GaussianConditional`. I fixed it (temporarily, I have a feeling it will come back to me next training) by registering a new custom_op like in the [doc](https://docs.amd.com/r/en-US/ug1414-vitis-ai/Register-Custom-Operation) or this [blog](https://adaptivesupport.amd.com/s/article/Custom-OP-complete-example-design-for-Pytorch?language=en_US) and doing MonkeyPatching.
 10. I lost a day trying to fix a mismatching Tensor shape happening after the first layers of the decoder `g_s`. There was an off-by-one error in the first elementwise operation (a multiplication in GDN `out = x * norm`) happening after a ConvTranspose2d. It appears AMD `pytorch_nndct` does not really like "un-friendly" padding settings. My ConvTranspose2d all used `output_padding=1` and I'm pretty sure this was the problem. I "fixed" it my using safe convolutions, i.e.:
-```python
-# I transformed:
-nn.ConvTranspose2d(c_in, c_out, kernel_size=5, stride=2, padding=2, output_padding=1)
-# Into:
-nn.ConvTranspose2d(c_in, c_out, kernel_size=4, stride=2, padding=1, output_padding=0)
-```
-11. Moving onto the next step: the model compilation using `vai_c_xir`, it crashes with a simple message "[UNILOG][FATAL][XCOM_UTIL_INVALID_VALUE][A invalid value is given for specific function.] Division by 0 or minus in div_ceil, 3 / 0" with no indication whatsoever where it could happen. I figured out it had to be in the EntropyBottleneck and tried to add shape, NaN, Inf, and even 0 values check everywhere, but found nothing.
-Solution: either replace by an easier Entropy model, even one without parameters. Or copy compressai code over and laboriously work your way in what could be the problem.
 
+   ```python
+   # I transformed:
+   nn.ConvTranspose2d(c_in, c_out, kernel_size=5, stride=2, padding=2, output_padding=1)
+   # Into:
+   nn.ConvTranspose2d(c_in, c_out, kernel_size=4, stride=2, padding=1, output_padding=0)
+   ```
+
+   This worked.
+11. Moving onto the next step: the model compilation using `vai_c_xir`, it crashes with a simple message `[UNILOG][FATAL][XCOM_UTIL_INVALID_VALUE][A invalid value is given for specific function.] Division by 0 or minus in div_ceil, 3 / 0` with no indication whatsoever where it could happen. I figured out it had to be in the EntropyBottleneck and tried to add shape, NaN, Inf, and even 0 values check everywhere, but found nothing.
+Solution: either replace by an easier Entropy model, even one without parameters. Or copy compressai code over and laboriously work your way in what could be the problem.
 
 @TODO: I could not have a look into the explicit definition of `pytorch_nndct.nn.Module.ConvTranspose2d` but it probably can be find around [this path](/opt/vitis-ai/src/vai_quantizer/vai_q_pytorch/pytorch_binding/pytorch_nndct/nn/modules/conv_transpose.py) in the docker image.
