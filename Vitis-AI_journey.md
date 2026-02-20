@@ -37,7 +37,7 @@ I have created a script that does all of that for use:
 ### 3. Transfer to Target
 
 ```bash
-[HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ scp -r DDC_FPGA/results/fpga/active_model/ root@10.0.0.2:/home/root/SAR_DDC/current_model
+[HOST](vitis-ai-pytorch) vitis-ai-user@bart:/workspace$ scp -r DDC_FPGA/results/fpga/active_model/ root@10.0.0.2:/home/root/SAR_DDC/
 ```
 
 ### 4. Run Inference on FPGA

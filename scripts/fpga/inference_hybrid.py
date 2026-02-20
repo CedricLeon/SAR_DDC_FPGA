@@ -416,9 +416,7 @@ def run_hybrid_inference(
         if verbose:
             log(f"\n--- Sample {i} ---")
         # --- Hybrid Inference Call ---
-        recon_norm_logI, num_bytes = process_single_tile(
-            noisy[i], runners, eb, gc, verbose=verbose
-        )
+        recon_norm_logI, num_bytes = process_single_tile(noisy[i], runners, eb, gc, verbose=False)
 
         dt = time.time() - t0_sample
         if i % 10 == 0:
@@ -500,14 +498,14 @@ def run_hybrid_inference(
         if not tile_path.is_dir():
             continue
         # Check for required files
-        noisy_tile_path = tile_path / "raw_input_symmetrized.npy"
-        if not noisy_tile_path.exists():
-            log(f"Skipping {tile_path}, no raw_input_symmetrized.npy found.")
+        noisy_file_path = tile_path / "sym_Noisy.npy"
+        if not noisy_file_path.exists():
+            log(f"Skipping {tile_path}, no sym_Noisy.npy found.")
             continue
         log(f"\n--- Running Large Tile Inference on {tile_path.name} ---")
         start_tile = time.time()
         # Load Data
-        noisy_tile = np.load(noisy_tile_path)  # [H, W, 2]
+        noisy_tile = np.load(noisy_file_path)  # [H, W, 2]
         if verbose:
             print_tensor_stats(f" - Loaded Noisy Tile ({tile_path.name})", noisy_tile)
 
@@ -553,7 +551,11 @@ def run_hybrid_inference(
         tile_metrics["psnr_noisy"] = MetricsTracker.compute_psnr(recon_linA, noisy_linA)
 
         # Metrics vs GT
-        denoised_references = {"merlin": "GT_MERLIN_linA.npy", "adam": "GT_ADAM-NOC_linA.npy"}
+        denoised_references = {
+            "MERLIN": "linA_MERLIN.npy",
+            "ADAM-NOC": "linA_ADAM_NOC.npy",
+            "MERLIN_DDS": "linA_MERLIN_DDS.npy",
+        }
         for ref_name, ref_filename in denoised_references.items():
             ref_path = tile_path / ref_filename
             if not ref_path.exists():

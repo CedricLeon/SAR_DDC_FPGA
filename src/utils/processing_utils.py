@@ -24,9 +24,9 @@ def clip(
             img.mean() + clip_factor * img.std(),
         )
     else:
-        p5 = np.percentile(img, percentiles[0])
-        p95 = np.percentile(img, percentiles[1])
-        img = img.clip(p5, p95)
+        p_low = np.percentile(img, percentiles[0])
+        p_high = np.percentile(img, percentiles[1])
+        img = img.clip(p_low, p_high)
     return img
 
 
