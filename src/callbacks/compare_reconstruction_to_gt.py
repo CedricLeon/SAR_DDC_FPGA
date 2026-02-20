@@ -29,7 +29,7 @@ class CompareReconstructionToGT(Callback):
         verbose: bool = False,
     ):
         super().__init__()
-        self.patch_dir = Path(patch_dir) / "visualization/Hamburg"
+        self.patch_dir = Path(patch_dir) / "visualization/Hamburg_[11000:12024-8500:9524]/"
         self.log_every_n_epochs = log_every_n_epochs
         # --- Details for clipping ---
         self.clip_for_visualization = True  # Enable or disable clipping
@@ -62,7 +62,7 @@ class CompareReconstructionToGT(Callback):
         # ----- Load the noisy patch -----
         # For the files in patch_dir find the one that starts with sym_ and ends with .npy
         found_patch = False
-        for file in self.patch_dir.glob("sym_*.npy"):
+        for file in self.patch_dir.glob("sym_Noisy.npy"):
             self.patch_path = file
             found_patch = True
             break
@@ -102,7 +102,7 @@ class CompareReconstructionToGT(Callback):
 
         # ----- Load MERLIN-DDS Ground Truth -----
         found_merlin = False
-        for file in self.patch_dir.glob("linA_MERLIN-DDS_*.npy"):
+        for file in self.patch_dir.glob("linA_MERLIN-DDS.npy"):
             self.merlin_gt_path = file
             self.merlin_linA = np.load(self.merlin_gt_path)
 
@@ -131,11 +131,6 @@ class CompareReconstructionToGT(Callback):
             )
             self.merlin_linA = None
             self.merlin_logI = None
-        elif self.merlin_gt_path.name.split("_")[3] != self.patch_path.name.split("_")[1]:
-            warnings.warn(
-                f"Patch and MERLIN-DDS GT filenames do not match: {self.patch_path.name} vs {self.merlin_gt_path.name}. "
-                "This may lead to incorrect logging."
-            )
 
     def on_test_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         """Log the final reconstruction of the large patch at the end of testing."""
