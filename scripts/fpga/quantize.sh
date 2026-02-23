@@ -18,18 +18,22 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-echo "EVALUATE: $EVALUATE"
-echo "IMAGE_GRAPH: $IMAGE_GRAPH"
-echo "FAST_FINETUNE: $FAST_FINETUNE"
+
+# ARCH_JSON="DDC_FPGA/scripts/fpga/DPU_archs/ZCU102_DPUCZDX8G_ISA1_B4096_arch.json"
+ARCH_JSON="DDC_FPGA/scripts/fpga/DPU_archs/KP-Labs_Leopard_DPUCZDX8G_ISA1_B1024_arch.json"
+
+if [[ "$ARCH_JSON" == *"ZCU102"* ]]; then
+    TARGET="DPUCZDX8G_ISA1_B4096"
+elif [[ "$ARCH_JSON" == *"Leopard"* ]]; then
+    TARGET="DPUCZDX8G_ISA1_B1024"
+else
+    echo "Unknown architecture JSON. Please update the script to set the correct TARGET."
+    exit 1
+fi
 
 RUN_DIR="DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-02-08_12-04-57/9" # ADAM relu lambda = 1000, seed = 1
 # RUN_DIR="DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-02-06_14-57-22/0" # ADAM relu lambda = 1000, seed = 0
 # RUN_DIR="DDC_FPGA/logs/train/sar_ddc/hyperprior/runs/2026-01-16_13-34-45" # ADAM relu lambda = 10
-
-# RUN_DIR="DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-01-13_11-15-31/38" # ADAM gdn
-# "DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-01-13_11-15-31/4/" # random ADAM run after the restructuration of the code
-# "DDC_FPGA/logs/train/sar_ddc/hyperprior_dpu/runs/2025-12-15_10-34-01" # test_compressai_original_added_logs
-# "DDC_FPGA/logs/train/sar_ddc/hyperprior_dpu/runs/2025-12-01_15-58-26" # test_compressai_original_fixed_LowerBound_in_ResBlocks
 
 # I don't support any other kind of models for now
 MODEL_NAME="ResidualScaleHyperpriorDPUWrapper"
@@ -39,9 +43,13 @@ if [ "$FAST_FINETUNE" = true ]; then
     FAST_FINETUNE_FLAG="--fast_finetune"
 fi
 
+echo "EVALUATE: $EVALUATE"
+echo "IMAGE_GRAPH: $IMAGE_GRAPH"
+echo "FAST_FINETUNE: $FAST_FINETUNE"
+
 echo "--------------------- INSPECTION ----------------------"
 echo "Inspecting the model for DPU compatibility..."
-python DDC_FPGA/scripts/fpga/model_quant.py --run_dir ${RUN_DIR} --quant_mode float --inspect --target DPUCZDX8G_ISA1_B4096
+python DDC_FPGA/scripts/fpga/model_quant.py --run_dir ${RUN_DIR} --quant_mode float --inspect --target ${TARGET}
 
 echo "-------------------- QUANTIZATION ---------------------"
 if [ "$EVALUATE" = true ]; then
@@ -63,7 +71,9 @@ python DDC_FPGA/scripts/fpga/model_quant.py --run_dir ${RUN_DIR} --quant_mode te
 
 echo "-------------------- COMPILATION ---------------------"
 echo "Compiling the quantized model for the DPU. See " "quantize_result/${MODEL_NAME}_int.xmodel" " for the output xmodel file..."
-vai_c_xir -x quantize_result/${MODEL_NAME}_int.xmodel -a /opt/vitis_ai/compiler/arch/DPUCZDX8G/ZCU102/arch.json -o ${MODEL_NAME}_pt -n ${MODEL_NAME}_pt
+
+vai_c_xir -x quantize_result/${MODEL_NAME}_int.xmodel -a ${ARCH_JSON} -o ${MODEL_NAME}_pt -n ${MODEL_NAME}_pt
+
 
 if [ "$IMAGE_GRAPH" = true ]; then
     echo "-------------------- GENERATE IMAGE GRAPH ---------------------"
