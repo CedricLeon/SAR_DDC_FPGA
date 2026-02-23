@@ -41,10 +41,10 @@ def main():
                 patches = f["patches"][indices]
         else:
             patches = f["patches"][:]
-        print(f"Saving patches ({patches.shape=}) to NumPy format (.npy).")
 
     # Save as NumPy binary format (.npy)
-    out_path = dataset_path.parent / f"{dataset_path.stem}_{subset}.npy"
+    out_path = dataset_path.parent / f"{dataset_path.stem}_sub{subset}_seed{args.seed}.npy"
+    print(f"Saving patches ({patches.shape=}) to NumPy format (.npy) at {out_path}.")
     np.save(out_path, patches)
 
 
