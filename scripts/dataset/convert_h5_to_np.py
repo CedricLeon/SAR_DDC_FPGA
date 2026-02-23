@@ -12,6 +12,7 @@ parser.add_argument(
     default=None,
     help="Optional number of images to extract from the dataset",
 )
+parser.add_argument("--seed", type=int, default=42, help="Random seed for subset selection")
 
 
 def main():
@@ -33,7 +34,11 @@ def main():
                 )
                 patches = f["patches"][:]
             else:
-                patches = f["patches"][:subset]
+                print(f"Selecting {subset} random patches (seed={args.seed})...")
+                rng = np.random.default_rng(args.seed)
+                # h5py requires indices to be sorted for list selection
+                indices = np.sort(rng.choice(total, subset, replace=False))
+                patches = f["patches"][indices]
         else:
             patches = f["patches"][:]
         print(f"Saving patches ({patches.shape=}) to NumPy format (.npy).")
