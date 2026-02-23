@@ -12,9 +12,9 @@ This project operates across two distinct environments. You must distinguish bet
 - **Activation**: Assume `conda activate SAR_DDC` is available for these tasks.
 
 ### 2. FPGA Deployment (Quantization & Compilation)
-- **Environment**: Vitis-AI Docker Container (Strict Python 3.8).
-- **Tasks**: Quantization (`vai_q_pytorch`), Compilation, `xir` graph manipulation.
-- **Entry Point**: `scripts/vitis-ai-automation/setup_container.sh`.
+- **Key Script**: `scripts/fpga/quantize.sh` prepares the model for deployment. It calls `scripts/fpga/model_quant.py` and other scripts to structure the files to be ported to the FPGA.
+- **Environment**: Vitis-AI Docker Container (Strict Python 3.8) (start with `scripts/vitis-ai-automation/setup_container.sh`).
+- **Tasks**: Quantization, Compilation, `xir` graph manipulation, entropy models export, file organization.
 - **Constraint**: Code **MUST** remain Python 3.8 compatible to run here.
 
 ### 3. Physical Hardware (Xilinx Board)
@@ -27,12 +27,17 @@ This project operates across two distinct environments. You must distinguish bet
 - **PyTorch Lightning**: Modules in `src/models/` often use **manual optimization** (`self.automatic_optimization = False`), especially `SARDDCModule` which requires handling multiple optimizers (main model + entropy bottleneck).
 - **Hydra**: Configuration management. Defaults in `configs/train.yaml`, overrides in `configs/experiment/`.
 - **CompressAI**: Integrated for compression layers and entropy models.
+  - **GPU**: Uses likelihood estimation (entropy bottleneck) for training. No bitstream generation.
+  - **FPGA**: Uses real bitstream generation via C++ extension (`ans.so`) and rANS.
 
 ### Critical Constraints
 - **Python 3.8 Compatibility** (Hardware Requirement):
   - ✅ **USE**: `from typing import Union, Optional, List, Tuple`
   - ❌ **AVOID**: `type | None` or `list[int]` (PEP 604/585 are not supported).
-- **Vitis-AI Support**: Avoid operations not supported by the DPU (e.g., complex non-linearities, unusual interpolations). Models must be quantization-friendly.
+- **Vitis-AI Support**:
+  - **Ops**: No `GDN` (not adapted yet, use `ReLU`), without `LowerBoundFunction` (use `torch.max`).
+  - **Layers**: `ConvTranspose2d` must have `output_padding=0`.
+  - **Entropy**: DPU cannot handle entropy coding. Models are split into 4 subgraphs (Encoder, HyperEnc, HyperDec, Decoder) + CPU based entropy coding (C++ `ans.so`).
 
 ## 🛠 Developer Workflow
 
