@@ -20,6 +20,7 @@ from context.compressai_original import (  # from compressai.entropy_models
 from src.models.components.compressai_dpu import (
     EntropyBottleneckPatched,
     GaussianConditionalPatched,
+    get_scale_table,
 )
 from src.models.components.layers import ResidualBlock, make_activation
 from src.utils.debug import log_tensor_shape
@@ -322,6 +323,29 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
             "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
         }
 
+    # ---------------- Update Entropy ----------------
+    def update(self, force: bool = False) -> None:
+        """Update entropy models (e.g., populate tables).
+
+        We need to explicitly update components because we are using "Patched" components that are
+        skipped by CompressionModel.update() (Patched components are no instances of
+        compressai.entropy_models.EntropyModel).
+        """
+        print("  -> Updating EntropyBottleneck...")
+        self.entropy_bottleneck.update(force=force)
+        print("  -> Updating GaussianConditional...")
+        gc = self.gaussian_conditional
+
+        # Check if scale_table is populated (from checkpoint) or needs initialization
+        if gc.scale_table.numel() == 0:
+            print("     No scale table found, using default log-scale table.")
+            # Default Log-Scale table from CompressAI see https://interdigitalinc.github.io/CompressAI/models.html
+            scale_table = get_scale_table()
+            gc.update_scale_table(scale_table, force=force)
+        else:
+            print("     Using scale table from checkpoint.")
+            gc.update_scale_table(gc.scale_table, force=force)
+
     # ---------------- Compress ----------------
     def compress(self, x: Tensor) -> dict[str, list[bytes] | Size]:
         """Compress an input tensor into strings.
@@ -341,16 +365,14 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
         y: Tensor = torch.cat((y_real, y_imag), dim=1)
 
         # Apply hyperprior to get scales necessary for entropy coding of the main latent
-        z: Tensor = self.h_a(torch.abs(y))
-        z_strings, _ = self.entropy_bottleneck.compress(z)
+        z: Tensor = self.h_a(torch.abs(y))  # [N, 2*N, H'', W''], e.g., [12, 256, 2, 2]
+        z_strings = self.entropy_bottleneck.compress(z)
         z_hat: Tensor = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
         scales: Tensor = self.h_s(z_hat)
 
         # Apply entropy coding
         indexes = self.gaussian_conditional.build_indexes(scales)
         y_strings = self.gaussian_conditional.compress(y, indexes)
-
-        print(f"Warning: I DID NOT CHECK WHY SHAPE IS {z.shape[-2:]=}.")
 
         return {"strings": [y_strings, z_strings], "shape": z.shape[-2:]}
 

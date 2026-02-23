@@ -149,6 +149,10 @@ class SARDDCModule(lightning.LightningModule):
         # Log metrics
         self._log_metrics("train", criterion, aux_loss.item())
 
+    def on_test_epoch_start(self) -> None:
+        """Update the entropy bottleneck tables before testing."""
+        self.net.update(force=True)
+
     def validation_step(self, batch, batch_idx):
         """Validation step with optimized processing of both real and imaginary parts."""
         # input, target = self._random_switch_Re_Im(batch)

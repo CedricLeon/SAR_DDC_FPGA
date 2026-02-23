@@ -52,24 +52,7 @@ if __name__ == "__main__":
 
     # ----- 3. Force Update -----
     print("Force entropy models update (populate tables)...")
-
-    # Explicitly update components because CompressionModel.update() skips "Patched" components (Patched components are no instances of compressai.entropy_models.EntropyModel)
-
-    print("  -> Updating EntropyBottleneck...")
-    model.entropy_bottleneck.update(force=True)
-    print("  -> Updating GaussianConditional...")
-    gc = model.gaussian_conditional
-
-    # Check if scale_table is populated (from checkpoint) or needs initialization
-    if gc.scale_table.numel() == 0:
-        print("     No scale table found in checkpoint, using default log-scale table.")
-        scale_table = (
-            get_scale_table()
-        )  # Default Log-Scale table from CompressAI see https://interdigitalinc.github.io/CompressAI/models.html
-        gc.update_scale_table(scale_table, force=True)
-    else:
-        print("     Using scale table from checkpoint.")
-        gc.update_scale_table(gc.scale_table, force=True)
+    model.update(force=True)
 
     # ----- 4. Extract parameters -----
     # We only extract and export parameters necessary for inference
