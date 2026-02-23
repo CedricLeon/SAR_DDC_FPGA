@@ -146,7 +146,7 @@ class MetricsTracker:
         self,
         recon_linA: np.ndarray,
         target_linA: np.ndarray,
-        num_bytes: Optional[int] = None,
+        num_bytes: int,
     ) -> Dict[str, float]:
         """Update metrics with a new batch."""
         batch_metrics: Dict[str, float] = {}

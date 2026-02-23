@@ -11,7 +11,7 @@ from matplotlib.ticker import FuncFormatter
 
 from src.utils.constants import AMP_MAX, AMP_MIN, EPS
 from src.utils.debug import print_images_statistics
-from src.utils.metrics import get_all_distortion_metrics
+from src.utils.metrics import compute_bitstream_bpp, get_all_distortion_metrics
 from src.utils.processing_utils import clip, process_large_patch
 
 
@@ -139,10 +139,41 @@ class CompareReconstructionToGT(Callback):
 
     def on_test_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         """Log the final reconstruction of the large patch at the end of testing."""
+        # We only need to run this callback once, so we mute it if it's called on the "test_sub300.npy" set used for FPGA comparison
+        prefix = getattr(pl_module, "test_prefix", "test")
+        if "sub300" in prefix:
+            print(
+                f"\n[CompareReconstructionToGT] Skipping on {prefix} set to avoid redundant logging."
+            )
+            return
+
+        # Ensure patch is located on testing device
+        self.patch = self.patch.to(pl_module.device)
+
         if self.with_compression:
-            recon = pl_module.forward(self.patch)
-            criterion = pl_module.criterion(recon, self.patch)
-            recon = recon["x_hat"]
+            # 1. Forward pass (for likelihood bpp)
+            output = pl_module.forward(self.patch)
+            criterion = pl_module.criterion(output, target=self.patch)
+
+            # 2. Real compression (for bitstream bpp)
+            # Preprocess because compress expects normalized input
+            x = (torch.log(torch.square(self.patch) + EPS) - 2 * AMP_MIN) / (
+                2 * AMP_MAX - 2 * AMP_MIN
+            )
+            out_enc = pl_module.net.compress(x)
+            out_dec = pl_module.net.decompress(out_enc["strings"], out_enc["shape"])
+
+            # Use decompressed output for visual check
+            output["x_hat"] = out_dec
+
+            # Compute bitstream bpp
+            N, C, H, W = self.patch.shape
+
+            # Update criterion dict with bitstream bpp for logging
+            criterion["bpp_bitstream"] = compute_bitstream_bpp(out_enc["strings"], H, W, N)
+
+            recon = output["x_hat"]
+
         else:
             recon_real = pl_module.forward(self.patch[:, 0:1, :, :])
             recon_imag = pl_module.forward(self.patch[:, 1:2, :, :])
@@ -191,13 +222,30 @@ class CompareReconstructionToGT(Callback):
     def _compute_metrics_to_merlin(self, criterion: dict, recon_linA: np.ndarray) -> dict:
         """Compute distortion metrics between reconstruction and MERLIN_DDS GT in LINEAR-
         AMPLITUDE."""
-        metrics_to_merlin = {"mse": -1.0, "psnr": -1.0, "bpp": -1.0, "ssim": -1.0, "ms_ssim": -1.0}
-        metrics_to_merlin["loss"] = criterion["loss"].item()
+        metrics_to_merlin = {
+            "mse": -1.0,
+            "psnr": -1.0,
+            "bpp": -1.0,
+            "bpp_bitstream": -1.0,
+            "ssim": -1.0,
+            "ms_ssim": -1.0,
+        }
+        if "loss" in criterion:
+            metrics_to_merlin["loss"] = criterion["loss"].item()
+
         if self.merlin_linA is not None:
             for key, value in get_all_distortion_metrics(recon_linA, self.merlin_linA).items():
                 metrics_to_merlin[key] = value
-        if self.with_compression:
-            metrics_to_merlin["bpp"] = criterion["bpp"].item()
+
+        # Log BPP from criterion (likelihood)
+        if "bpp" in criterion:
+            val = criterion["bpp"]
+            metrics_to_merlin["bpp"] = val.item() if isinstance(val, torch.Tensor) else val
+
+        # Log BPP from bitstream if available
+        if "bpp_bitstream" in criterion:
+            metrics_to_merlin["bpp_bitstream"] = criterion["bpp_bitstream"]
+
         return metrics_to_merlin
 
     def on_validation_batch_end(

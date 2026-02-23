@@ -7,7 +7,7 @@ import torchmetrics.functional.image as F
 from torch import Tensor
 
 from src.utils.constants import AMP_MAX, AMP_MIN, EPS
-from src.utils.metrics import mse, psnr
+from src.utils.metrics import compute_bitstream_bpp, mse, psnr
 
 
 class SARDDCModule(lightning.LightningModule):
@@ -49,6 +49,9 @@ class SARDDCModule(lightning.LightningModule):
 
         # Activate manual optimization, because we have two optimizers.
         self.automatic_optimization = False
+
+        # Each run is possibly evaluated on different test sets. We use a dynamic prefix to distinguish metrics for different test sets. Default is "test".
+        self.test_prefix = "test"
 
     def _random_switch_Re_Im(self, batch: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         """Randomly switch between real and imaginary parts as input and target.
@@ -169,14 +172,33 @@ class SARDDCModule(lightning.LightningModule):
         - Additionally, when batch contains 'adam_ref' and 'merlin_ref', computes reconstruction
           from both real and imag inputs, converts to log-intensity, and logs PSNR/SSIM/MS-SSIM/MSE
           against each reference.
+        - Also computes actual bitstream BPP by running compress/decompress.
         """
         input = torch.cat((batch["real"], batch["imag"]), dim=1).contiguous()
-        output = self.forward(input)
+
+        # Preprocess for network input (log-scale normalization)
+        x = (torch.log(torch.square(input) + EPS) - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
+
+        # 1. Forward pass (for likelihood estimation metrics)
+        output = self.net(x)
+
+        # 2. Real compression (for actual bitstream BPP)
+        out_enc = self.net.compress(x)
+        out_dec = self.net.decompress(out_enc["strings"], out_enc["shape"])
+
+        # Use decompressed output for reconstruction metrics to be as close to FPGA as possible
+        output["x_hat"] = out_dec
 
         # Compute normal losses with Noise2Noise approach
         criterion = self.criterion(output, target=input)
-        all_metrics = {f"test/{key}": value for key, value in criterion.items()}
-        all_metrics["test/aux"] = self.net.aux_loss().item()
+        prefix = getattr(self, "test_prefix", "test")
+        all_metrics = {f"{prefix}/{key}": value for key, value in criterion.items()}
+        all_metrics[f"{prefix}/aux"] = self.net.aux_loss().item()
+
+        # Calculate and log real bitstream BPP
+        N, C, H, W = input.shape
+        bpp_bits = compute_bitstream_bpp(out_enc["strings"], H, W, N)
+        all_metrics[f"{prefix}/bpp_bitstream"] = bpp_bits
 
         # Convert to linear amplitude
         recon_denorm = output["x_hat"] * (AMP_MAX - AMP_MIN) + AMP_MIN
@@ -186,34 +208,42 @@ class SARDDCModule(lightning.LightningModule):
         clean_im = torch.sqrt(0.5 * (clean_im_real + clean_im_imag)).unsqueeze(1)
 
         # Load GTs references
-        adam_noc_ref = batch["adam_noc_ref"]
-        merlin_ref = batch["merlin_ref"]
-        peak = float(torch.max(clean_im))
+        if "adam_noc_ref" in batch and "merlin_ref" in batch:
+            adam_noc_ref = batch["adam_noc_ref"]
+            merlin_ref = batch["merlin_ref"]
+            peak = float(torch.max(clean_im))
 
-        # MSE
-        all_metrics["test/mse_adam_noc"] = mse(clean_im, adam_noc_ref)
-        all_metrics["test/mse_merlin"] = mse(clean_im, merlin_ref)
-        # PSNR
-        all_metrics["test/psnr_adam_noc"] = psnr(
-            clean_im, adam_noc_ref, mse_value=all_metrics["test/mse_adam_noc"]
-        )
-        all_metrics["test/psnr_merlin"] = psnr(
-            clean_im, merlin_ref, mse_value=all_metrics["test/mse_merlin"]
-        )
-        # SSIM
-        all_metrics["test/ssim_adam_noc"] = F.structural_similarity_index_measure(
-            clean_im, adam_noc_ref, data_range=peak
-        )
-        all_metrics["test/ssim_merlin"] = F.structural_similarity_index_measure(
-            clean_im, merlin_ref, data_range=peak
-        )
-        # MS-SSIM
-        all_metrics["test/ms_ssim_adam_noc"] = F.multiscale_structural_similarity_index_measure(
-            clean_im, adam_noc_ref, data_range=peak
-        )
-        all_metrics["test/ms_ssim_merlin"] = F.multiscale_structural_similarity_index_measure(
-            clean_im, merlin_ref, data_range=peak
-        )
+            # MSE
+            all_metrics[f"{prefix}/mse_adam_noc"] = mse(clean_im, adam_noc_ref)
+            all_metrics[f"{prefix}/mse_merlin"] = mse(clean_im, merlin_ref)
+            # PSNR
+            all_metrics[f"{prefix}/psnr_adam_noc"] = psnr(
+                clean_im, adam_noc_ref, mse_value=all_metrics[f"{prefix}/mse_adam_noc"]
+            )
+            all_metrics[f"{prefix}/psnr_merlin"] = psnr(
+                clean_im, merlin_ref, mse_value=all_metrics[f"{prefix}/mse_merlin"]
+            )
+            # SSIM
+            all_metrics[f"{prefix}/ssim_adam_noc"] = F.structural_similarity_index_measure(
+                clean_im, adam_noc_ref, data_range=peak
+            )
+            all_metrics[f"{prefix}/ssim_merlin"] = F.structural_similarity_index_measure(
+                clean_im, merlin_ref, data_range=peak
+            )
+            # MS-SSIM
+            all_metrics[f"{prefix}/ms_ssim_adam_noc"] = (
+                F.multiscale_structural_similarity_index_measure(
+                    clean_im, adam_noc_ref, data_range=peak
+                )
+            )
+            all_metrics[f"{prefix}/ms_ssim_merlin"] = (
+                F.multiscale_structural_similarity_index_measure(
+                    clean_im, merlin_ref, data_range=peak
+                )
+            )
+        else:
+            # Just skip metrics if references are not available (e.g. testing only on .npy patches)
+            pass
 
         # Log extra metrics
         self.log_dict(

@@ -109,6 +109,32 @@ def estimate_likelihoods_bpp(
     return bpp
 
 
+def compute_bitstream_bpp(strings: list, height: int, width: int, batch_size: int) -> float:
+    """Compute BPP based on the actual bitstream size.
+
+    Args:
+        strings (list): Nested list of byte strings from CompressAI (e.g. [[y_str, ...], [z_str, ...]])
+        height (int): Image height
+        width (int): Image width
+        batch_size (int): Image batch size
+
+    Returns:
+        float: Calculated bits per pixel
+    """
+    nb_pixels = height * width * batch_size
+    if nb_pixels == 0:
+        return 0.0
+
+    def _sum_bits(obj):
+        if isinstance(obj, bytes):
+            return len(obj) * 8
+        elif isinstance(obj, list):
+            return sum(_sum_bits(item) for item in obj)
+        return 0
+
+    return _sum_bits(strings) / nb_pixels
+
+
 @register_criterion("MerlinRDLoss")
 class MerlinRDLoss(nn.Module):
     """Custom rate distortion loss with a Lagrangian parameter.
