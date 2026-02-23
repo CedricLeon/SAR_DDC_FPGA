@@ -95,7 +95,7 @@ def ms_ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = Non
     ).item()
 
 
-def estimate_bpp(
+def estimate_likelihoods_bpp(
     pred: Dict[str, Tensor],
 ) -> Union[Tensor, Literal[0]]:
     """Compute BPP based on the estimated likelihoods (Average of the estimated number of bits
@@ -143,7 +143,7 @@ class MerlinRDLoss(nn.Module):
         """
         out = {}
         # Rate term (estimated bpp)
-        out["bpp"] = estimate_bpp(output)
+        out["bpp"] = estimate_likelihoods_bpp(output)
 
         # Denorm the reconstructions before computing losses
         log_hat_R = 2 * (output["x_hat"] * (AMP_MAX - AMP_MIN) + AMP_MIN)

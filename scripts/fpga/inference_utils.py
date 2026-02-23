@@ -90,7 +90,7 @@ class MetricsTracker:
     def __init__(self, metrics_to_track: Iterable[str]):
         self._metric_names = list(metrics_to_track)
         self._metric_fns: Dict[str, Callable[..., float]] = {
-            "bpp": self.estimate_bpp,
+            "bpp": self.estimate_likelihoods_bpp,
             "mse": self.compute_mse,
             "psnr": self.compute_psnr,
             "ssim": self.compute_ssim,
@@ -131,7 +131,7 @@ class MetricsTracker:
         return 0.0  # Placeholder
 
     @staticmethod
-    def estimate_bpp(x_shape_holder: np.ndarray, num_bytes: int) -> float:
+    def estimate_likelihoods_bpp(x_shape_holder: np.ndarray, num_bytes: int) -> float:
         """Compute BPP.
 
         Args:
@@ -156,7 +156,7 @@ class MetricsTracker:
                 continue
 
             if name == "bpp":
-                value = self.estimate_bpp(recon_linA, num_bytes)
+                value = self.estimate_likelihoods_bpp(recon_linA, num_bytes)
             else:
                 value = fn(recon_linA, target_linA)
 

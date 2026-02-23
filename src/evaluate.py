@@ -23,7 +23,7 @@ from src.models.merlin_module import MerlinModule  # noqa: E402
 from src.models.sar_ddc_module import SARDDCModule  # noqa: E402
 from src.utils.constants import AMP_MAX, AMP_MIN, EPS  # noqa: E402
 from src.utils.metrics import (  # noqa: E402
-    estimate_bpp,
+    estimate_likelihoods_bpp,
     get_all_distortion_metrics,
 )
 
@@ -312,7 +312,7 @@ def _evaluate_on_test(
             if isinstance(model, SARDDCModule):
                 noisy_lin: Tensor = torch.cat([real, imag], dim=1).contiguous()
                 recon: Dict[str, Tensor] = model(noisy_lin)
-                bpp_list.append(Tensor(estimate_bpp(recon)))
+                bpp_list.append(Tensor(estimate_likelihoods_bpp(recon)))
                 recon_real: Tensor = recon["x_hat"]
                 recon_imag: Tensor = recon["x_hat"]
             elif isinstance(model, MerlinModule):  # untested so far
@@ -412,7 +412,7 @@ def _evaluate_tile_and_visualize(
             recon: Dict[str, Tensor] = model(noisy_lin)
             recon_real: Tensor = recon["x_hat"]
             recon_imag: Tensor = recon["x_hat"]
-            bpp: Tensor = Tensor(estimate_bpp(recon))
+            bpp: Tensor = Tensor(estimate_likelihoods_bpp(recon))
         elif isinstance(model, MerlinModule):  # untested so far
             recon_real: Tensor = model(input_real)
             recon_imag: Tensor = model(input_imag)

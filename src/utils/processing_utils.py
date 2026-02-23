@@ -7,7 +7,7 @@ from lightning import LightningModule
 
 from src.models.merlin_module import MerlinModule
 from src.models.sar_ddc_module import SARDDCModule
-from src.utils.metrics import estimate_bpp
+from src.utils.metrics import estimate_likelihoods_bpp
 
 
 def clip(
@@ -112,9 +112,9 @@ def process_large_patch(
             else:
                 if isinstance(model, SARDDCModule):
                     if patch_count == 0:
-                        large_criterion["bpp"] = estimate_bpp(output)
+                        large_criterion["bpp"] = estimate_likelihoods_bpp(output)
                     else:
-                        large_criterion["bpp"] += estimate_bpp(output)
+                        large_criterion["bpp"] += estimate_likelihoods_bpp(output)
                 # Rest is unnecessary logic but better safe than sorry
                 elif isinstance(model, MerlinModule):
                     pass
