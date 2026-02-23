@@ -520,7 +520,7 @@ def run_hybrid_inference(
                 noisy_patches[i], runners, eb, gc, verbose=False
             )
             recon_patches.append(recon_norm_logI)
-            patch_bpp = MetricsTracker.estimate_likelihoods_bpp(
+            patch_bpp = MetricsTracker.compute_bitstream_bpp(
                 noisy_patches[i][np.newaxis, ...], num_bytes
             )
             tile_bpp += patch_bpp
