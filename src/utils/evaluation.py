@@ -16,20 +16,21 @@ class NumpyDataset(Dataset):
     def __init__(self, data_path: Path):
         super().__init__()
         self.data_path = data_path
-        self.data = np.load(str(data_path))  # [N, H, W, 2]
+        self.data = np.load(str(data_path))  # [N, H, W, 4]
         self.data = self.data.astype(np.float32)
 
     def __len__(self):
+        """Return the number of patches in the dataset."""
         return len(self.data)
 
     def __getitem__(self, idx):
-        patch = self.data[idx]  # [H, W, 2]
-        real = patch[..., 0]  # [H, W]
-        imag = patch[..., 1]  # [H, W]
-
+        """Get a patch from the dataset."""
+        patch = self.data[idx]  # [H, W, 4]
         return {
-            "real": torch.from_numpy(real).unsqueeze(0),  # [1, H, W]
-            "imag": torch.from_numpy(imag).unsqueeze(0),  # [1, H, W]
+            "real": torch.from_numpy(patch[..., 0]).unsqueeze(0),  # [1, H, W]
+            "imag": torch.from_numpy(patch[..., 1]).unsqueeze(0),  # [1, H, W]
+            "adam_noc_ref": torch.from_numpy(patch[..., 2]).unsqueeze(0),  # [1, H, W]
+            "merlin_ref": torch.from_numpy(patch[..., 3]).unsqueeze(0),  # [1, H, W]
         }
 
 
