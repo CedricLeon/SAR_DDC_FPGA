@@ -4,12 +4,14 @@
 set -e # Exit on error
 start_time=$(date +%s)
 
+INSPECT=false
 EVALUATE=false
 IMAGE_GRAPH=false
 FAST_FINETUNE=false
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
+        --inspect) INSPECT=true ;;
         --evaluate) EVALUATE=true ;;
         --image-graph) IMAGE_GRAPH=true ;;
         --fast-finetune) FAST_FINETUNE=true ;;
@@ -19,8 +21,8 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 
-# ARCH_JSON="DDC_FPGA/scripts/fpga/DPU_archs/ZCU102_DPUCZDX8G_ISA1_B4096_arch.json"
-ARCH_JSON="DDC_FPGA/scripts/fpga/DPU_archs/KP-Labs_Leopard_DPUCZDX8G_ISA1_B1024_arch.json"
+ARCH_JSON="DDC_FPGA/scripts/fpga/DPU_archs/ZCU102_DPUCZDX8G_ISA1_B4096_arch.json"
+# ARCH_JSON="DDC_FPGA/scripts/fpga/DPU_archs/KP-Labs_Leopard_DPUCZDX8G_ISA1_B1024_arch.json"
 
 if [[ "$ARCH_JSON" == *"ZCU102"* ]]; then
     TARGET="DPUCZDX8G_ISA1_B4096"
@@ -31,7 +33,8 @@ else
     exit 1
 fi
 
-RUN_DIR="DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-02-08_12-04-57/9" # ADAM relu lambda = 1000, seed = 1
+RUN_DIR="DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-02-11_15-50-39/6" # ADAM relu lambda = 200,  seed = 1
+# RUN_DIR="DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-02-08_12-04-57/9" # ADAM relu lambda = 1000, seed = 1
 # RUN_DIR="DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-02-06_14-57-22/0" # ADAM relu lambda = 1000, seed = 0
 # RUN_DIR="DDC_FPGA/logs/train/sar_ddc/hyperprior/runs/2026-01-16_13-34-45" # ADAM relu lambda = 10
 
@@ -43,13 +46,17 @@ if [ "$FAST_FINETUNE" = true ]; then
     FAST_FINETUNE_FLAG="--fast_finetune"
 fi
 
-echo "EVALUATE: $EVALUATE"
-echo "IMAGE_GRAPH: $IMAGE_GRAPH"
-echo "FAST_FINETUNE: $FAST_FINETUNE"
+echo""
+echo "BASH PARAMETERS: INSPECT: $INSPECT, EVALUATE: $EVALUATE, IMAGE_GRAPH: $IMAGE_GRAPH, FAST_FINETUNE: $FAST_FINETUNE"
+echo "MODEL: RUN_DIR: $RUN_DIR, MODEL_NAME: $MODEL_NAME"
+echo "DPU: ARCH_JSON: $ARCH_JSON, TARGET: $TARGET"
+echo ""
 
-echo "--------------------- INSPECTION ----------------------"
-echo "Inspecting the model for DPU compatibility..."
-python DDC_FPGA/scripts/fpga/model_quant.py --run_dir ${RUN_DIR} --quant_mode float --inspect --target ${TARGET}
+if [ "$EVALUATE" = true ]; then
+    echo "--------------------- INSPECTION ----------------------"
+    echo "Inspecting the model for DPU compatibility..."
+    python DDC_FPGA/scripts/fpga/model_quant.py --run_dir ${RUN_DIR} --quant_mode float --inspect --target ${TARGET}
+fi
 
 echo "-------------------- QUANTIZATION ---------------------"
 if [ "$EVALUATE" = true ]; then
