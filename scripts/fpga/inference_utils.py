@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Tuple
 
 import numpy as np
 import vart  # type: ignore
@@ -247,7 +247,7 @@ def visualize_patches(
 # -----------------------------------------------------------------------------
 
 
-def pad_to_multiple(image: np.ndarray, patch_size: int) -> tuple[np.ndarray, tuple[int, int]]:
+def pad_to_multiple(image: np.ndarray, patch_size: int) -> Tuple[np.ndarray, Tuple[int, int]]:
     """Pad image using reflection so its dimensions are multiples of patch_size.
 
     Args:
@@ -296,7 +296,7 @@ def extract_patches(image: np.ndarray, patch_size: int) -> np.ndarray:
 
 
 def reconstruct_from_patches(
-    patches: np.ndarray, image_shape: tuple[int, int], patch_size: int
+    patches: np.ndarray, image_shape: Tuple[int, int], patch_size: int
 ) -> np.ndarray:
     """Reconstruct image from non-overlapping patches.
 
@@ -320,3 +320,287 @@ def reconstruct_from_patches(
     # Reshape to (H, W, C)
     image = transposed.reshape(h, w, c)
     return image
+
+
+def patch_infer_fpga(
+    image: np.ndarray,
+    infer_fn: Callable[[np.ndarray], Tuple[np.ndarray, int]],
+    patch_size: int = 256,
+    overlap: int = 16,
+    eliminate_border_px: int = 0,
+    blend_profile: str = "sigmoid",
+    blend_alpha: float = 6.0,
+) -> Tuple[np.ndarray, int]:
+    """Run overlap-blended patch inference on a large image using the FPGA pipeline.
+
+    Inspired from simon-donike and opensr-utils (https://github.com/ESAOpenSR/opensr-utils/).
+
+    The DPU input buffer has a fixed spatial size (typically 256×256), so large images
+    must be split into patches, processed individually, and reassembled. A naive
+    non-overlapping split introduces visible seams at patch boundaries because the model
+    has no context outside each patch. This function solves that by using overlapping
+    windows and blending the results in the overlap zones with smooth feathering ramps.
+
+    **Tiling strategy.**  A sliding window of size ``patch_size × patch_size`` advances
+    with stride ``patch_size - overlap``. An extra snap-to-border window is appended when
+    the last regular window does not end exactly at the image edge, guaranteeing full
+    coverage for any image dimension ≥ ``patch_size`` without explicit zero-padding
+    or post-crop.
+
+    **Blending.**  In overlap zones each patch contributes according to a 1-D feathering
+    ramp (sigmoid, linear, or cosine) that rises from 0 at the leading edge to 1 toward
+    the interior. The 2-D weight map is the outer product of the horizontal and vertical
+    ramps. At the global image borders no ramp is applied, so the output has full weight
+    at the image edges (no fading-to-zero frame). The final pixel value is the weighted
+    average of all patches covering it: accumulated weighted sum ÷ accumulated weight.
+
+    **FPGA I/O convention.**  Patches and outputs are kept in HWC layout throughout,
+    matching the NHWC convention of VART and the DPU runners.
+
+    **Canvas allocation.**  The output canvas is allocated lazily on the first inference
+    result so that the output channel count (C_out) is inferred from the actual pipeline
+    output, avoiding a redundant dummy DPU call just to probe the output shape.
+
+    **Byte accounting.**  ``infer_fn`` returns both the reconstructed patch and the number
+    of compressed bytes for that patch. The byte counts are summed across all patches and
+    returned as ``total_bytes`` alongside the blended image. With overlap, some image
+    regions are independently encoded more than once, so ``total_bytes`` exceeds what a
+    non-overlapping tiling would produce — treat it as an upper-bound BPP estimate.
+
+    Parameters
+    ----------
+    image : np.ndarray, shape [H, W, C_in]
+        Input image in HWC layout (raw complex float, unnormalized). Normalization is
+        handled inside infer_fn / process_single_tile.
+    infer_fn : Callable
+        FPGA inference function with signature::
+
+            (patch_hwc: np.ndarray[patch_size, patch_size, C_in])
+            -> (output_hwc: np.ndarray[patch_size, patch_size, C_out], num_bytes: int)
+
+        Typically a lambda that closes over the DPU runners and entropy models, e.g.::
+
+            lambda patch: process_single_tile(patch, runners, eb, gc)
+
+    patch_size : int, default=256
+        Square patch size in pixels. Must match the fixed DPU input buffer size.
+    overlap : int, default=16
+        Number of pixels of overlap between adjacent patches. Must be a positive even
+        integer, strictly less than patch_size. Larger values give smoother transitions
+        but increase compute and total_bytes.
+    eliminate_border_px : int, default=0
+        Outermost pixels at each patch edge forced to zero weight before the feathering
+        ramp begins (hard-discards the strongest edge artefacts, replacing them entirely
+        with data from the neighbouring patch). Must be a non-negative even integer,
+        strictly less than overlap. Set to 0 to rely on feathering only.
+    blend_profile : str, default="sigmoid"
+        Shape of the 1-D feathering ramp in overlap zones:
+          - "sigmoid" : S-curve, concentrates the transition in the middle of the
+                        overlap zone. Recommended for most natural blends.
+          - "linear"  : straight ramp from 0 to 1.
+          - "cosine"  : half-cosine ease-in/ease-out, smooth at both ends.
+    blend_alpha : float, default=6.0
+        Steepness of the sigmoid curve. Only used when blend_profile="sigmoid".
+
+    Returns
+    -------
+    output : np.ndarray, shape [H, W, C_out]
+        Blended reconstruction in HWC layout (normalized log-intensity, matching the
+        output convention of process_single_tile). Same spatial dimensions as the input.
+    total_bytes : int
+        Sum of compressed bytes across all processed patches (including overlapping ones).
+
+    Raises
+    ------
+    ValueError
+        If overlap / eliminate_border_px constraints are violated, or if the image is
+        smaller than patch_size in either dimension.
+    """
+    image_np = image.astype(np.float32, copy=False)
+    H, W = image_np.shape[:2]
+
+    # ------------------------------------------------------------------
+    # 1. Validate parameters
+    # ------------------------------------------------------------------
+    if overlap <= 0 or overlap % 2 != 0:
+        raise ValueError(f"`overlap` must be a positive even integer, got {overlap}.")
+    if overlap >= patch_size:
+        raise ValueError(
+            f"`overlap` ({overlap}) must be strictly less than `patch_size` ({patch_size})."
+        )
+    if eliminate_border_px < 0 or eliminate_border_px % 2 != 0:
+        raise ValueError(
+            f"`eliminate_border_px` must be a non-negative even integer, got {eliminate_border_px}."
+        )
+    if eliminate_border_px >= overlap:
+        raise ValueError(
+            f"`eliminate_border_px` ({eliminate_border_px}) must be strictly less than `overlap` ({overlap})."
+        )
+    if H < patch_size:
+        raise ValueError(f"Image height ({H}) is smaller than `patch_size` ({patch_size}).")
+    if W < patch_size:
+        raise ValueError(f"Image width ({W}) is smaller than `patch_size` ({patch_size}).")
+
+    # ------------------------------------------------------------------
+    # 2. Build the list of overlapping patch windows
+    #    Each window is (row_off, col_off) in image pixel coordinates.
+    #    Strategy: sliding window with stride = patch_size - overlap,
+    #    plus extra snap-to-border windows to guarantee full coverage.
+    # ------------------------------------------------------------------
+    stride = patch_size - overlap
+
+    def _make_offsets(dim_size: int) -> List[int]:
+        """Return starting offsets for one spatial dimension."""
+        offsets = list(range(0, dim_size - patch_size + 1, stride))
+        # Snap-to-border: ensure the last window ends exactly at the image edge
+        last = dim_size - patch_size
+        if not offsets or offsets[-1] != last:
+            offsets.append(last)
+        return offsets
+
+    row_offsets = _make_offsets(H)
+    col_offsets = _make_offsets(W)
+    n_patches = len(row_offsets) * len(col_offsets)
+    print(
+        f"[patch_infer_fpga] {H}x{W} image => {n_patches} patches "
+        f"({len(row_offsets)} rows x {len(col_offsets)} cols), "
+        f"patch_size={patch_size}, overlap={overlap}, stride={stride}."
+    )
+
+    # ------------------------------------------------------------------
+    # 3. Allocate accumulators.
+    #    The output canvas is allocated lazily on the first inference call
+    #    so that C_out is inferred from the actual output without a
+    #    separate dummy DPU probe pass (which would waste a full round-trip
+    #    through the encoder, entropy coder, and decoder).
+    # ------------------------------------------------------------------
+    canvas: Optional[np.ndarray] = None
+    weight_canvas = np.zeros((H, W), dtype=np.float32)
+    total_bytes: int = 0
+
+    # ------------------------------------------------------------------
+    # 4. Helper: build a 1-D feathering ramp of length n, going 0 → 1
+    # ------------------------------------------------------------------
+    def _make_ramp(n: int) -> np.ndarray:
+        if n <= 0:
+            return np.zeros(0, dtype=np.float32)
+        t = np.linspace(0.0, 1.0, n, dtype=np.float32)
+        if blend_profile == "linear":
+            return t
+        elif blend_profile == "sigmoid":
+            a = float(blend_alpha)
+            r = 1.0 / (1.0 + np.exp(-a * (t - 0.5)))
+            r = (r - r[0]) / (r[-1] - r[0] + 1e-12)  # renormalize to [0, 1]
+            return r.astype(np.float32)
+        elif blend_profile == "cosine":
+            return (0.5 * (1.0 - np.cos(np.pi * t))).astype(np.float32)
+        else:
+            raise ValueError(
+                f"Unknown blend_profile '{blend_profile}'. Choose 'sigmoid', 'linear', or 'cosine'."
+            )
+
+    # ------------------------------------------------------------------
+    # 5. Helper: build the 2-D weight map for one patch
+    #    Takes care of:
+    #      - eliminate_border_px  (hard zero at outermost pixels)
+    #      - feathering ramp      (smooth 0→1 across overlap zone)
+    #      - global border guard  (no ramp at the image edge)
+    # ------------------------------------------------------------------
+    def _patch_weight_map(row_off: int, col_off: int) -> np.ndarray:
+        """Return a [patch_size, patch_size] float32 weight map for this patch."""
+        touch_top = row_off == 0
+        touch_bottom = row_off + patch_size == H
+        touch_left = col_off == 0
+        touch_right = col_off + patch_size == W
+
+        ramp_len = overlap - eliminate_border_px  # length of the actual ramp
+
+        u = np.ones(patch_size, dtype=np.float32)  # horizontal (W) weights
+        v = np.ones(patch_size, dtype=np.float32)  # vertical   (H) weights
+
+        ramp = _make_ramp(ramp_len)  # goes 0 → 1
+
+        for vec, touch_start, touch_end in [
+            (u, touch_left, touch_right),
+            (v, touch_top, touch_bottom),
+        ]:
+            if not touch_start:
+                # Hard-zero the outermost eliminate_border_px pixels
+                if eliminate_border_px > 0:
+                    vec[:eliminate_border_px] = 0.0
+                # Then apply the ramp (0 → 1) over the next ramp_len pixels
+                if ramp_len > 0:
+                    vec[eliminate_border_px : eliminate_border_px + ramp_len] = ramp
+
+            if not touch_end:
+                # Mirror of the above on the trailing edge (1 → 0)
+                if eliminate_border_px > 0:
+                    vec[-eliminate_border_px:] = 0.0
+                if ramp_len > 0:
+                    vec[
+                        -(eliminate_border_px + ramp_len) : (
+                            None if eliminate_border_px == 0 else -eliminate_border_px
+                        )
+                    ] = ramp[::-1]
+
+        # Outer product: 2-D weight is the product of horizontal and vertical weights
+        return (v[:, None] * u[None, :]).astype(np.float32)  # [patch_size, patch_size]
+
+    # ------------------------------------------------------------------
+    # 6. Main loop: extract patch → run FPGA pipeline → accumulate into canvas.
+    #
+    #    Each patch is extracted in HWC layout, the native convention for VART
+    #    and DPU runners (NHWC). infer_fn executes the full pipeline — DPU
+    #    encoder (g_a), hyper-encoder (h_a), entropy coder, entropy decoder,
+    #    hyper-decoder (h_s), DPU decoder (g_s) — and returns the reconstructed
+    #    HWC patch together with its compressed byte count.
+    #
+    #    The patch is multiplied by its 2-D weight map and added to the canvas.
+    #    The weight map is simultaneously accumulated in weight_canvas. Dividing
+    #    canvas by weight_canvas in step 7 yields the final weighted average,
+    #    which smoothly blends contributions from all overlapping patches.
+    # ------------------------------------------------------------------
+    for row_off in row_offsets:
+        for col_off in col_offsets:
+            # Extract HWC patch — no transposition needed
+            patch_hwc = image_np[
+                row_off : row_off + patch_size,
+                col_off : col_off + patch_size,
+                :,
+            ]  # [patch_size, patch_size, C_in]
+
+            # Run the full FPGA pipeline (DPU encoder/decoder + entropy coding)
+            out_hwc, patch_bytes = infer_fn(patch_hwc)  # [patch_size, patch_size, C_out], int
+
+            # Lazy canvas allocation on the first result — avoids a dummy DPU probe
+            if canvas is None:
+                C_out = out_hwc.shape[-1]
+                canvas = np.zeros((H, W, C_out), dtype=np.float32)
+            total_bytes += patch_bytes
+
+            # Accumulate weighted patch into canvas
+            w2d = _patch_weight_map(row_off, col_off)  # [patch_size, patch_size]
+            canvas[
+                row_off : row_off + patch_size,
+                col_off : col_off + patch_size,
+                :,
+            ] += (
+                out_hwc * w2d[:, :, None]
+            )
+            weight_canvas[
+                row_off : row_off + patch_size,
+                col_off : col_off + patch_size,
+            ] += w2d
+
+    if canvas is None:
+        raise ValueError("No patches were processed. Verify image dimensions and patch_size.")
+
+    # ------------------------------------------------------------------
+    # 7. Normalise: divide accumulated weighted sum by accumulated weights.
+    #    Every pixel is covered by at least one patch, so weight_canvas
+    #    should be > 0 everywhere. Guard against /0 with a small epsilon.
+    # ------------------------------------------------------------------
+    weight_canvas = np.maximum(weight_canvas, 1e-8)
+    output = canvas / weight_canvas[:, :, None]  # [H, W, C_out]
+
+    return output, total_bytes

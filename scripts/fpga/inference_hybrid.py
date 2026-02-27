@@ -39,10 +39,8 @@ from inference_utils import (
     EPS,
     MetricsTracker,
     display_manifest,
-    extract_patches,
-    pad_to_multiple,
+    patch_infer_fpga,
     print_tensor_stats,
-    reconstruct_from_patches,
 )
 
 log_file = ""
@@ -509,31 +507,20 @@ def run_hybrid_inference(
         if verbose:
             print_tensor_stats(f" - Loaded Noisy Tile ({tile_path.name})", noisy_tile)
 
-        # Pad & Patch
-        noisy_tile, (h_pad, w_pad) = pad_to_multiple(noisy_tile, IMAGE_SIZE)
-        noisy_patches = extract_patches(noisy_tile, IMAGE_SIZE)  # [N, 256, 256, 2]
-        recon_patches = []
-        tile_bpp = 0
+        # Overlap-blended patch inference.
+        # Replaces the previous pad_to_multiple → extract_patches → loop → reconstruct_from_patches
+        # pipeline. patch_infer_fpga uses a sliding window with snap-to-border coverage,
+        # so no explicit padding or post-crop is needed for non-multiple image sizes.
+        def _infer_fn(patch_hwc: np.ndarray) -> Tuple[np.ndarray, int]:
+            return process_single_tile(patch_hwc, runners, eb, gc, verbose=False)
 
-        for i in range(len(noisy_patches)):
-            recon_norm_logI, num_bytes = process_single_tile(
-                noisy_patches[i], runners, eb, gc, verbose=False
-            )
-            recon_patches.append(recon_norm_logI)
-            patch_bpp = MetricsTracker.compute_bitstream_bpp(
-                noisy_patches[i][np.newaxis, ...], num_bytes
-            )
-            tile_bpp += patch_bpp
-        tile_bpp /= len(noisy_patches)
-
-        # Stitch (Normalized LogI Domain)
-        recon_norm_logI = reconstruct_from_patches(
-            np.array(recon_patches), (noisy_tile.shape[0], noisy_tile.shape[1]), IMAGE_SIZE
+        recon_norm_logI, total_bytes = patch_infer_fpga(
+            noisy_tile,
+            _infer_fn,
+            patch_size=IMAGE_SIZE,
+            overlap=16,
         )
-        if h_pad > 0 or w_pad > 0:
-            recon_norm_logI = recon_norm_logI[
-                : noisy_tile.shape[0] - h_pad, : noisy_tile.shape[1] - w_pad
-            ]
+        tile_bpp = MetricsTracker.compute_bitstream_bpp(noisy_tile[np.newaxis, ...], total_bytes)
 
         # ----- Metrics -----
         # Recon to LinA
