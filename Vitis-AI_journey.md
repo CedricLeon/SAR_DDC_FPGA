@@ -51,8 +51,8 @@ If needed open a connection to the Target:
 Go into the deployed model directory and run inference
 
 ```bash
-[TARGET] root@xilinx-zcu102-20222:~$ cd ~/SAR_DDC/current_model/
-[TARGET] root@xilinx-zcu102-20222:~/SAR_DDC/current_model/# python3 inference_hybrid.py --xmodel ./*.xmodel --data ../data/test_1000.npy --subset 100
+[TARGET] root@xilinx-zcu102-20222:~$ cd ~/SAR_DDC/active_model/
+[TARGET] root@xilinx-zcu102-20222:~/SAR_DDC/active_model/# python3 inference_hybrid.py --xmodel ./*.xmodel --data ../data/test_1000.npy --subset 100
 ```
 
 ### 5. Retrieve Results to Host
@@ -126,9 +126,9 @@ To verify that this implementation works I created `debug_entropy_dpu_equivalenc
 ### Dataset export to the FPGA
 
 ```bash
-[HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA/$ python scripts/dataset/convert_h5_to_np.py --dataset_path data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test.h5 --subset 1000
+[HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA/$ python scripts/dataset/convert_h5_to_np.py --dataset_path data/processed_hdf5/TSX_spatial_splits_5_256x256/test.h5 --subset 500 --seed 42
 # Afterwards transfer the dataset to the Target (It also took 6:41 mins)
-[HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA/$ scp data/processed_hdf5/test_with_GT/TSX_preprocessed_spatial_splits_5_256x256/test_1000.npy root@10.0.0.2:/home/root/SAR_DDC/data/test_1000.npy
+[HOST](DDC_FPGA) leon_ce@bart:~/dev/Vitis-AI/DDC_FPGA/$ scp DDC_FPGA/data/processed_hdf5/TSX_spatial_splits_5_256x256/test_sub500_seed42.npy root@10.0.0.2:/home/root/SAR_DDC/data/test_sub500_seed42.npy
 ```
 
 ## Creating a DPU-friendly inference pipeline / Updating the model to be Vitis-AI-friendly
