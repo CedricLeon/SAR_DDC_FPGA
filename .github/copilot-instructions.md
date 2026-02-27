@@ -66,5 +66,4 @@ python src/train.py experiment=<example> debug=fdr
 
 1.  **Tool Usage**: Preface any automated tool call (e.g., tests, or container start) with a one-line preamble describing what you will do and why.
 2.  **Planning**: Use the `manage_todo_list` tool to create a plan for multi-step tasks and update it as you progress.
-3.  **Testing**: When changing code that affects model export/quantization, run minimal local checks (shape checks, no-NaN asserts).
-4.  **Editing**: Keep changes minimal and focused. Do not reformat unrelated files.
+3.  **Editing**: Keep changes minimal and focused. Do not reformat unrelated files. Skip any changes solely linked to code formatting, ruff automatically handles that.
