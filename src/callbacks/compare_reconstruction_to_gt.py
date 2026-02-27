@@ -1,6 +1,6 @@
 import warnings
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Dict, Literal, Mapping, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,7 +12,7 @@ from matplotlib.ticker import FuncFormatter
 from src.utils.constants import AMP_MAX, AMP_MIN, EPS
 from src.utils.debug import print_images_statistics
 from src.utils.metrics import compute_bitstream_bpp, get_all_distortion_metrics
-from src.utils.processing_utils import clip, process_large_patch
+from src.utils.processing_utils import clip, patch_infer
 
 
 class CompareReconstructionToGT(Callback):
@@ -23,9 +23,8 @@ class CompareReconstructionToGT(Callback):
         self,
         patch_dir: str,
         log_every_n_epochs: int,
-        split_large_patch: bool = False,
-        blend_method: str = "linear",
-        stride: int = -1,
+        blend_profile: Literal["sigmoid", "linear", "cosine"] = "sigmoid",
+        overlap: int = 16,
         verbose: bool = False,
     ):
         super().__init__()
@@ -41,10 +40,9 @@ class CompareReconstructionToGT(Callback):
             if self.clip_for_visualization
             else " (no clipping)"
         )
-        # --- Processing large patch as small patches or not ---
-        self.split_large_patch = split_large_patch
-        self.blend_method = blend_method
-        self.stride = stride
+        # --- Parameters to process large tile as patches during testing---
+        self.overlap: int = overlap
+        self.blend_profile: Literal["sigmoid", "linear", "cosine"] = blend_profile
 
         self.with_compression = None
         self.verbose = verbose
@@ -53,7 +51,7 @@ class CompareReconstructionToGT(Callback):
         """Find the large patch and convert it to a torch tensor."""
         if self.verbose:
             print(
-                f"\n[CompareReconstructionToGT] Setting up Callback. {self.clip_for_visualization=}, {self.clip_factor=}, {self.split_large_patch=} ({self.blend_method=}, {self.stride=})"
+                f"\n[CompareReconstructionToGT] Setting up Callback. {self.clip_for_visualization=}, {self.clip_factor=},({self.blend_profile=}, {self.overlap=})"
             )
             print(
                 f"    Called with {pl_module.__class__.__name__}: net = {pl_module.net.__class__.__name__}, criterion = {pl_module.criterion.__class__.__name__}."
@@ -108,7 +106,7 @@ class CompareReconstructionToGT(Callback):
             if self.verbose:
                 # Quick print metrics between noisy and MERLIN_DDS GT
                 metrics = get_all_distortion_metrics(self.noisy_linA, self.merlin_linA)
-                print("        Initial metrics between Noisy and MERLIN_DDS GT:", end="")
+                print("    Initial metrics between Noisy and MERLIN_DDS GT:", end="")
                 for key, value in metrics.items():
                     print(f" {key}={value:.4f}", end=",")
                 print()
@@ -139,46 +137,44 @@ class CompareReconstructionToGT(Callback):
 
     def on_test_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         """Log the final reconstruction of the large patch at the end of testing."""
-        # We only need to run this callback once, so we mute it if it's called on the "test_sub300.npy" set used for FPGA comparison
+        # We only need to run this callback once, so we mute it if it's called on the "test_sub500.npy" set used for FPGA comparison
         prefix = getattr(pl_module, "test_prefix", "test")
-        if "sub300" in prefix:
+        if "sub500" in prefix:
             print(
                 f"\n[CompareReconstructionToGT] Skipping on {prefix} set to avoid redundant logging."
             )
             return
 
-        # Ensure patch is located on testing device
-        self.patch = self.patch.to(pl_module.device)
+        # Move everything to CPU for final visualization and logging to avoid GPU memory issues, especially with large patches and compression outputs.
+        pl_module.net.cpu()
+        self.patch = self.patch.cpu()
 
-        if self.with_compression:
-            # 1. Forward pass (for likelihood bpp)
-            output = pl_module.forward(self.patch)
-            criterion = pl_module.criterion(output, target=self.patch)
+        # Always split large patch during test; Build infer_fn for patch_infer based on module type.
+        if self.with_compression:  # SARDDCModule
 
-            # 2. Real compression (for bitstream bpp)
-            # Preprocess because compress expects normalized input
-            x = (torch.log(torch.square(self.patch) + EPS) - 2 * AMP_MIN) / (
-                2 * AMP_MAX - 2 * AMP_MIN
-            )
-            out_enc = pl_module.net.compress(x)
-            out_dec = pl_module.net.decompress(out_enc["strings"], out_enc["shape"])
+            def _infer_fn(patch: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
+                out = pl_module.forward(patch)
+                crit = pl_module.criterion(out, patch)
+                patch_norm = (torch.log(torch.square(patch) + EPS) - 2 * AMP_MIN) / (
+                    2 * AMP_MAX - 2 * AMP_MIN
+                )
+                out_enc = pl_module.net.compress(patch_norm)
+                out_dec = pl_module.net.decompress(out_enc["strings"], out_enc["shape"])
+                _N, _, _H, _W = patch.shape
+                crit["bpp_bitstream"] = compute_bitstream_bpp(out_enc["strings"], _H, _W, _N)
+                return out_dec, crit
 
-            # Use decompressed output for visual check
-            output["x_hat"] = out_dec
+        else:  # MerlinModule: real and imaginary channels are processed independently.
 
-            # Compute bitstream bpp
-            N, C, H, W = self.patch.shape
+            def _infer_fn(patch: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
+                recon_real = pl_module.forward(patch[:, 0:1])
+                recon_imag = pl_module.forward(patch[:, 1:2])
+                recon_patch = torch.cat([recon_real, recon_imag], dim=1)
+                return recon_patch, pl_module.criterion(recon_patch, patch)
 
-            # Update criterion dict with bitstream bpp for logging
-            criterion["bpp_bitstream"] = compute_bitstream_bpp(out_enc["strings"], H, W, N)
-
-            recon = output["x_hat"]
-
-        else:
-            recon_real = pl_module.forward(self.patch[:, 0:1, :, :])
-            recon_imag = pl_module.forward(self.patch[:, 1:2, :, :])
-            recon = torch.cat([recon_real, recon_imag], dim=1)
-            criterion = pl_module.criterion(recon, self.patch)
+        recon, criterion = patch_infer(
+            self.patch, _infer_fn, overlap=self.overlap, blend_profile=self.blend_profile
+        )  # [1, 2, H, W], dict with keys like "loss", "bpp", "bpp_bitstream"
 
         # ----- Denorm the reconstructions  -----
         recon_denorm = recon * (AMP_MAX - AMP_MIN) + AMP_MIN
@@ -196,13 +192,28 @@ class CompareReconstructionToGT(Callback):
         # compute metrics
         metrics_to_merlin = self._compute_metrics_to_merlin(criterion, recon_linA)
 
-        # Save image locally
+        # Save reconstructions locally: PNG for log-I and NPY for lin-A
+        img_name = "recon_" + self.patch_dir.name
         log_dir = Path(trainer.log_dir) if trainer.log_dir else Path(trainer.default_root_dir)
-        save_path = log_dir / "reconstruction_test.png"
+        log_dir.mkdir(parents=True, exist_ok=True)
 
-        plt.imsave(save_path, recon_logI, cmap="gray")
+        png_path = log_dir / f"{img_name}_logI.png"
+        plt.imsave(png_path, recon_logI, cmap="gray")
+        npy_path = log_dir / f"{img_name}_linA.npy"
+        np.save(npy_path, recon_linA)
         if self.verbose:
-            print(f"[CompareReconstructionToGT] Saved test reconstruction to {save_path}")
+            print(f"[CompareReconstructionToGT] Saved test reconstruction to {png_path}")
+            print(f"[CompareReconstructionToGT] Saved test reconstruction (linA) to {npy_path}")
+
+        print_images_statistics(
+            {
+                "Noisy LinA": self.noisy_linA,
+                "recon_linA": recon_linA,
+                "MERLIN_DDS LinA": self.merlin_linA,
+                "recon_logI": recon_logI,
+            },
+            title=f"Stats [CompareReconstructionToGT] on_test_end() - PSNR to MERLIN_DDS = {metrics_to_merlin['psnr']:.2f}dB, bbp (criterion) = {metrics_to_merlin['bpp']:.4f}, bpp (bitstream) = {metrics_to_merlin['bpp_bitstream']:.4f}",
+        )
 
         # Log to WandB
         if (
@@ -216,7 +227,7 @@ class CompareReconstructionToGT(Callback):
             caption = ", ".join([f"{k}={v:.4f}" for k, v in valid_metrics.items()])
 
             pl_module.logger.experiment.log(
-                {"test/reconstruction_image": wandb.Image(str(save_path), caption=caption)}
+                {"test/reconstruction_image_logI": wandb.Image(str(png_path), caption=caption)}
             )
 
     def _compute_metrics_to_merlin(self, criterion: dict, recon_linA: np.ndarray) -> dict:
@@ -267,24 +278,15 @@ class CompareReconstructionToGT(Callback):
 
         # ----- Forward pass to get reconstruction and metrics -----
         with torch.no_grad():
-            if self.split_large_patch:
-                criterion, recon = process_large_patch(
-                    model=pl_module,
-                    input=self.patch,
-                    target=self.patch,
-                    stride=self.stride,
-                    blend_method=self.blend_method,
-                )
+            if self.with_compression:
+                recon = pl_module.forward(self.patch)
+                criterion = pl_module.criterion(recon, self.patch)
+                recon = recon["x_hat"]
             else:
-                if self.with_compression:
-                    recon = pl_module.forward(self.patch)
-                    criterion = pl_module.criterion(recon, self.patch)
-                    recon = recon["x_hat"]
-                else:
-                    recon_real = pl_module.forward(self.patch[:, 0:1, :, :])
-                    recon_imag = pl_module.forward(self.patch[:, 1:2, :, :])
-                    recon = torch.cat([recon_real, recon_imag], dim=1)
-                    criterion = pl_module.criterion(recon, self.patch)
+                recon_real = pl_module.forward(self.patch[:, 0:1, :, :])
+                recon_imag = pl_module.forward(self.patch[:, 1:2, :, :])
+                recon = torch.cat([recon_real, recon_imag], dim=1)
+                criterion = pl_module.criterion(recon, self.patch)
 
         # ----- Denorm the reconstructions  -----
         recon_denorm = recon * (AMP_MAX - AMP_MIN) + AMP_MIN

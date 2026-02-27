@@ -2,7 +2,6 @@ compare_recon_to_gt:
   _target_: src.callbacks.compare_reconstruction_to_gt.CompareReconstructionToGT
   patch_dir: null # Location of the patch, to be set after overwriting data.hdf5_dir (in experiment config)
   log_every_n_epochs: 5
-  split_large_patch: False
-  blend_method: "count"
-  stride: 256
+  blend_profile: "sigmoid"
+  overlap: 16
   verbose: False
