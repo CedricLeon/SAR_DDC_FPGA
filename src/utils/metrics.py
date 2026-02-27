@@ -83,7 +83,9 @@ def ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = None) 
     """Compute Structural Similarity Index Measure (SSIM)."""
     if data_range is None:
         data_range = float(torch.max(predicted))
-    return structural_similarity_index_measure(predicted, target, data_range=data_range).item()
+    return Tensor(
+        structural_similarity_index_measure(predicted, target, data_range=data_range)
+    ).item()
 
 
 def ms_ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = None) -> float:
