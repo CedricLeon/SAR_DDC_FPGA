@@ -26,8 +26,6 @@ from src.utils.metrics import (  # noqa: E402
     estimate_likelihoods_bpp,
     get_all_distortion_metrics,
 )
-
-# from src.utils.processing_utils import process_large_patch  # noqa: E402
 from src.utils.pylogger import RankedLogger  # noqa: E402
 from src.utils.sar_utils import load_cosar, symmetrize  # noqa: E402
 from src.utils.utils import extras  # noqa: E402

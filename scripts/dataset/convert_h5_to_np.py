@@ -1,3 +1,5 @@
+"""Usage example: python scripts/dataset/convert_h5_to_np.py --dataset_path data/processed_hdf5/TSX_preprocessed_spatial_splits_5_256x256/test.h5 --subset 500 --seed 42"""
+
 import argparse
 from pathlib import Path
 

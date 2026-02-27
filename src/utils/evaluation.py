@@ -46,8 +46,8 @@ def run_dual_evaluation(
 ) -> Dict[str, float]:
     """
     Runs evaluation on two sets:
-    1. Full Test Set (from datamodule/dataloaders) -> Prefix: "test_full"
-    2. Subset 300 (from .npy file in hdf5_dir) -> Prefix: "test_sub300"
+    1. Full Test Set (from datamodule/dataloaders) -> Prefix: "test"
+    2. Subset 300 (from .npy file in hdf5_dir) -> Prefix: "test_sub500"
 
     Returns combined metrics dictionary.
     """
@@ -57,7 +57,7 @@ def run_dual_evaluation(
     print("    Running test on FULL dataset...")
     # Temporarily set prefix on model (Requires model to support test_prefix attribute)
     original_prefix = getattr(model, "test_prefix", "test")
-    model.test_prefix = "test_full"
+    model.test_prefix = "test"
 
     if datamodule:
         results_full = trainer.test(
@@ -70,13 +70,13 @@ def run_dual_evaluation(
 
     if results_full:
         final_metrics.update(results_full[0])
-        print(f"    Full Test Metrics: {results_full[0]}")
+        # print(f"    Full Test Metrics: {results_full[0]}")
 
     # --- 2. Subset Test (from .npy) ---
     print("    Running test on SUBSET 300 dataset (from .npy)...")
 
     if hdf5_dir:
-        npy_files = list(Path(hdf5_dir).glob("test_sub300*.npy"))
+        npy_files = list(Path(hdf5_dir).glob("test_sub500*.npy"))
         if npy_files:
             npy_path = npy_files[0]
             print(f"    Found subset file: {npy_path}.\n    Running test on this subset...")
@@ -89,7 +89,7 @@ def run_dual_evaluation(
                 pin_memory=True,
             )
 
-            model.test_prefix = "test_sub300"
+            model.test_prefix = "test_sub500"
             # Important: Do not reload the checkpoint here (ckpt_path=None).
             # The model is already loaded and initialized (buffers resized via update()) from the first test run.
             # Reloading the original checkpoint (which has empty buffers) would cause a size mismatch error.
@@ -98,13 +98,13 @@ def run_dual_evaluation(
             )
             if results_sub:
                 final_metrics.update(results_sub[0])
-                print(f"    Subset Test Metrics: {results_sub[0]}")
+                # print(f"    Subset Test Metrics: {results_sub[0]}")
         else:
             print(
-                "    WARNING: Subset file matching 'test_sub300*.npy' not found. Skipping test_sub300."
+                "    WARNING: Subset file matching 'test_sub500*.npy' not found. Skipping test_sub500."
             )
     else:
-        print("    WARNING: hdf5_dir not provided. Skipping test_sub300.")
+        print("    WARNING: hdf5_dir not provided. Skipping test_sub500.")
 
     # Reset prefix
     # model.test_prefix = original_prefix
