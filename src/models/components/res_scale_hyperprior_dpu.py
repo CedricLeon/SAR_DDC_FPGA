@@ -331,19 +331,17 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
         skipped by CompressionModel.update() (Patched components are no instances of
         compressai.entropy_models.EntropyModel).
         """
-        print("  -> Updating EntropyBottleneck...")
+        print(
+            f"  -> Updating {type(self.entropy_bottleneck).__name__} and {type(self.gaussian_conditional).__name__}..."
+        )
         self.entropy_bottleneck.update(force=force)
-        print("  -> Updating GaussianConditional...")
         gc = self.gaussian_conditional
 
         # Check if scale_table is populated (from checkpoint) or needs initialization
         if gc.scale_table.numel() == 0:
-            print("     No scale table found, using default log-scale table.")
             # Default Log-Scale table from CompressAI see https://interdigitalinc.github.io/CompressAI/models.html
-            scale_table = get_scale_table()
-            gc.update_scale_table(scale_table, force=force)
+            gc.update_scale_table(get_scale_table(), force=force)
         else:
-            print("     Using scale table from checkpoint.")
             gc.update_scale_table(gc.scale_table, force=force)
 
     # ---------------- Compress ----------------
