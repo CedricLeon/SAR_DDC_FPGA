@@ -7,7 +7,7 @@ this script:
     3. Rebuilds the test dataloader using config["data"].
     4. Runs model.test() on the new dataset.
     5. Updates W&B summary:
-        - Moves existing test/* metrics to old_test/*
+        - Erases existing old_test/* and test/* metrics
         - Adds new test/* metrics from the new evaluation
         - Logs a timestamp in config["retested_on"]
 """
@@ -15,7 +15,7 @@ this script:
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Dict, Mapping, Optional
 
 import hydra
 import rootutils
@@ -25,7 +25,8 @@ from lightning import LightningModule, Trainer
 from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig, OmegaConf
 
-# rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+from src.utils.evaluation import run_dual_evaluation
 
 # from src.callbacks.compare_reconstruction_to_gt import CompareReconstructionToGT  # noqa: E402
 
@@ -46,9 +47,14 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 FILTERS_CONFIG = [
     ("model.criterion.lmbda", "in", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]),
-    ("seed", "!=", 42),  # Filter by inequality
-    ("model.net.activation", "!=", "gdn1"),  # Filter string inequality
-    ("retested_on", "is_none", None),
+    # ("seed", "==", 10),
+    ("seed", "in", [0, 1, 2, 3, 4, 5, 6]),
+    # ("model.net.activation", "==", "gdn"),
+    # ("model.net.no_output_padding", "==", True),
+    # ("retested_on", "is_none", None),
+    # ("retested_on", "is_none_or_older_than", datetime(2026, 2, 12, 23, 59, 0)),
+    # ("retested_on", "is_after", datetime(2026, 2, 11, 10, 0, 0)),
+    # ("retested_on", "is_before", datetime(2026, 2, 11, 10, 0, 0)),
 ]
 
 
@@ -64,6 +70,22 @@ def check_single_condition(value, op, test_value) -> bool:
         return value not in test_value
     elif op == "is_none":
         return value is None
+    elif op == "is_before":
+        if value is None:
+            return False
+        return datetime.fromisoformat(str(value)) < test_value
+    elif op == "is_after":
+        if value is None:
+            return False
+        return datetime.fromisoformat(str(value)) > test_value
+    elif op == "is_none_or_is_before":
+        if value is None:
+            return True
+        return datetime.fromisoformat(str(value)) < test_value
+    elif op == "is_none_or_is_after":
+        if value is None:
+            return True
+        return datetime.fromisoformat(str(value)) > test_value
     elif op == "exists":
         return value is not None
     elif op == ">":
@@ -84,9 +106,13 @@ def run_matches_config_filters(run_cfg: dict) -> bool:
     return True
 
 
-def instantiate_model_and_load_weights(hydra_cfg: DictConfig, ckpt_path: Path) -> LightningModule:
+def instantiate_model_and_load_weights(
+    hydra_cfg: DictConfig, ckpt_path: Path, force_patch_version: bool = False
+) -> LightningModule:
     """Instantiate the model from training config and load weights from checkpoint."""
     print(f"    Instantiating model <{hydra_cfg.model._target_}>")
+    if force_patch_version:
+        hydra_cfg.model.net.export_dpu = True
     model: LightningModule = hydra.utils.instantiate(hydra_cfg.model)
     checkpoint = torch.load(str(ckpt_path), map_location="cpu")
     msg = model.load_state_dict(checkpoint["state_dict"], strict=True)
@@ -147,16 +173,35 @@ class DictLogger(Logger):
         pass
 
 
-def evaluate_model_captured(model: LightningModule, test_loader, hydra_cfg: DictConfig):
+def evaluate_model_captured(
+    model: LightningModule,
+    full_loader,
+    hydra_cfg: DictConfig,
+    log_dir: Path,
+    run_id: str = "unknown",
+):
     """Run Lightning test loop and return metrics dict, capturing callback logs."""
 
     # Setup dummy logger to capture callback outputs
     dict_logger = DictLogger()
 
+    # Use the original run directory for logs so that reconstruction images are saved there
+    print(f"    Logs (images) for this run {run_id} will be saved in: {log_dir}")
+
     # Instantiate callbacks from config if available
     callbacks = []
     if "callbacks" in hydra_cfg and "compare_recon_to_gt" in hydra_cfg.callbacks:
-        gt_callback = hydra.utils.instantiate(hydra_cfg.callbacks.compare_recon_to_gt)
+        # Convert to a plain dict so we can freely add/remove keys without hitting OmegaConf struct-mode restrictions (Hydra configs are read-only by default).
+        cb_dict: Dict[str, Any] = OmegaConf.to_container(hydra_cfg.callbacks.compare_recon_to_gt, resolve=True)  # type: ignore[assignment]
+        cb_dict["verbose"] = True
+        # Migrate old API keys (blend_method/stride) to the new patch_infer API (blend_profile/overlap).
+        cb_dict.pop("split_large_patch", None)
+        cb_dict.pop("blend_method", None)
+        cb_dict.pop("stride", None)
+        cb_dict.setdefault("blend_profile", "sigmoid")
+        cb_dict.setdefault("overlap", 16)
+
+        gt_callback = hydra.utils.instantiate(cb_dict)
         callbacks.append(gt_callback)
 
     trainer = Trainer(
@@ -165,61 +210,131 @@ def evaluate_model_captured(model: LightningModule, test_loader, hydra_cfg: Dict
         logger=dict_logger,  # Pass our dummy logger
         callbacks=callbacks,
         enable_checkpointing=False,
+        default_root_dir=str(log_dir),
+        # limit_test_batches=1, # Quick debug: test on only 1 batch
     )
     gt_callback.on_fit_start(trainer, model)  # Manually call to setup any internal state
 
-    results = trainer.test(model, dataloaders=test_loader, verbose=False)
-
-    final_metrics = {}
-    if results:
-        final_metrics.update(results[0])
+    # Run evaluation on full_test and on subset300
+    final_metrics = run_dual_evaluation(
+        trainer=trainer,
+        model=model,
+        dataloaders=full_loader,
+        hdf5_dir=hydra_cfg.data.get("hdf5_dir", None),
+        batch_size=hydra_cfg.data.get("batch_size", 1),
+        num_workers=hydra_cfg.data.get("num_workers", 0),
+    )
 
     # Add metrics captured by the callback (e.g. from DictLogger)
+    media_artifacts = {}
     if dict_logger._metrics:
         print(f"    Captured {len(dict_logger._metrics)} additional metrics from callbacks.")
         for k, v in dict_logger._metrics.items():
-            if not isinstance(v, wandb.Image):
+            if isinstance(v, wandb.Image):
+                media_artifacts[k] = v
+            else:
                 final_metrics[k] = v
 
-    return final_metrics
+    return final_metrics, media_artifacts
 
 
 def clean_summary_dict(summary_dict: dict) -> dict:
-    """Remove 'old_test/*' keys and 'test/*' keys to start fresh."""
+    """Remove 'old_test/*' keys, 'test/*' keys, and new dual test set prefix keys to start
+    fresh."""
     cleaned = {}
     for k, v in summary_dict.items():
-        if k.startswith("old_test/"):
-            continue  # Remove clutter from previous runs
-        if k.startswith("test/"):
-            continue  # Remove current wrong metrics (will be replaced)
+        if k.startswith("old_test/") or k.startswith("test/") or k.startswith("test_sub500/"):
+            continue
         cleaned[k] = v
     return cleaned
 
 
-def update_wandb_run(run, new_metrics: dict):
-    """Update W&B summary and config for the run."""
-    print(f"    Updating W&B summary for run {run.id}")
+def update_wandb_run(
+    run_obj, cfg, new_metrics: dict, output_dir: Path, media_artifacts: Optional[dict] = None
+):
+    """Update W&B summary and config for the run using a resumed run context.
 
-    # Get current summary
-    summary = run.summary._json_dict
+    Args:
+        run_obj: The run object returned by wandb.Api().run(...) (used for initial config access)
+        cfg: The hydra config (used for project/entity info)
+        new_metrics: Dictionary of scalar metrics to update.
+        media_artifacts: Dictionary of rich media (images) to log.
+    """
+    print(f"    Updating W&B summary for run {run_obj.id}")
 
-    # Filter test keys for display
-    test_keys_before = {k: v for k, v in summary.items() if "test/" in k}
-    print(
-        f"    [Before] {len(test_keys_before)} test metrics found. test/psnr={test_keys_before.get('test/psnr', 'N/A')}dB, test/psnr_merlin={test_keys_before.get('test/psnr_merlin', 'N/A')}dB."
-    )
-    summary = clean_summary_dict(summary)
-    summary.update(new_metrics)
+    # We use the API object to clean the summary first (faster than doing it in the run context)
+    # This ensures old keys are actually removed, not just overwritten in history
+    current_summary = run_obj.summary._json_dict
+    cleaned_summary = clean_summary_dict(current_summary)
+    run_obj.summary._json_dict = cleaned_summary
+    run_obj.update()
 
-    # actually summary is dict, let's just look at new_metrics
-    print(
-        f"    [After] {len(new_metrics)} new test metrics to be saved. test/psnr={new_metrics.get('test/psnr', 'N/A')}dB, test/psnr_merlin={new_metrics.get('test/psnr_merlin', 'N/A')}dB."
-    )
+    # Log new metrics and artifacts using a resumed run
+    # Note: We use cfg.logger.entity/project because run.entity might differ if you have access to multiple orgs
 
-    # Update summary and mark the timestamp in config
-    run.summary._json_dict = summary
-    run.config["retested_on"] = datetime.now().isoformat()
-    run.update()
+    # Look for entity/project in run_obj if not in cfg (fallback)
+    entity = cfg.logger.get("entity", run_obj.entity)
+    project = cfg.logger.get("project", run_obj.project)
+
+    with wandb.init(
+        entity=entity, project=project, id=run_obj.id, dir=str(output_dir), resume="must"
+    ) as run:
+        # 1. Log media artifacts (Images, etc.)
+        if media_artifacts:
+            print(f"    Logging {len(media_artifacts)} media artifacts to W&B...")
+            run.log(media_artifacts)
+
+        # 2. Update scalar metrics
+        # We update the summary directly to ensure these are the "final" values displayed in the dash
+        # logging them normally would add a history step, which is also fine, but updating summary is explicit.
+        run.summary.update(new_metrics)
+
+        # 3. Mark the run as retested
+        run.config.update({"retested_on": datetime.now().isoformat()}, allow_val_change=True)
+
+    # Print verification
+    print(f"    [After] {len(new_metrics)} new test metrics saved.")
+
+    # Print a few key metrics dynamically if they exist
+    example_keys = [
+        "test/psnr",
+        "test/psnr_merlin",
+        "test/psnr_adam_noc",
+        "test/bpp_bitstream",
+        "test_sub500/psnr",
+        "test_sub500/psnr_merlin",
+        "test_sub500/psnr_adam_noc",
+        "test_sub500/bpp_bitstream",
+    ]
+    found_examples = [
+        f"{k}={v:.2f}dB" if "psnr" in k else f"{k}={v:.4f}"
+        for k, v in new_metrics.items()
+        if k in example_keys and isinstance(v, (int, float))
+    ]
+
+    if found_examples:
+        print(f"        {', '.join(found_examples)}")
+
+
+def filter_runs_by_creation_date(runs: list, limit_date: datetime) -> list:
+    """Filter runs created after a specific date, handling timezone offsets.
+
+    Args:
+        runs: List of W&B runs.
+        limit_date: The naive datetime threshold.
+    """
+    kept_runs = []
+    for r in runs:
+        # W&B created_at is usually timezone-aware (UTC)
+        r_dt = datetime.fromisoformat(str(r.created_at))
+
+        # If run date is aware and limit is naive, strip tz from run date to compare
+        if r_dt.tzinfo is not None and limit_date.tzinfo is None:
+            r_dt = r_dt.replace(tzinfo=None)
+
+        if r_dt > limit_date:
+            kept_runs.append(r)
+    return kept_runs
 
 
 def main():
@@ -231,7 +346,10 @@ def main():
     # Apply FILTERS_CONFIG
     matching_runs = [r for r in runs if run_matches_config_filters(r.config)]
     # Uncomment the following line to test on a single run (replace ID with a valid one)
-    # matching_runs = [r for r in matching_runs if r.id in ["ykihmv1p"]]
+    # matching_runs = [r for r in matching_runs if r.id in ["bx6zfbqn"]]
+
+    # Filter by creation date using the helper to avoid timezone errors
+    # matching_runs = filter_runs_by_creation_date(matching_runs, datetime(2026, 2, 11, 10, 0, 0))
     print(f"{len(matching_runs)} runs match the filters: {FILTERS_CONFIG}")
 
     for i, run in enumerate(matching_runs):
@@ -246,10 +364,14 @@ def main():
             hydra_cfg = cfg
 
         try:
-            model = instantiate_model_and_load_weights(hydra_cfg, ckpt_path)
+            model = instantiate_model_and_load_weights(
+                hydra_cfg, ckpt_path, force_patch_version=False
+            )
             test_loader = build_test_dataloader(hydra_cfg)
-            metrics = evaluate_model_captured(model, test_loader, hydra_cfg)
-            update_wandb_run(run, metrics)
+            metrics, media = evaluate_model_captured(
+                model, test_loader, hydra_cfg, output_dir, run.id
+            )
+            update_wandb_run(run, hydra_cfg, metrics, output_dir, media)
         except Exception as e:
             print(f"    ERROR processing run {run.id}: {e}")
             import traceback
