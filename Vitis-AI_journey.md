@@ -9,25 +9,48 @@ Once I understand the toolchain and its processes better, I'll make a step-by-st
 
 ### Quick start
 
-Edit `RUN_DIR` at the top of `deploy.py` to point to the target Hydra run directory, then:
+Set the target run via `--run-dir` (or by editing the `RUN_DIR` constant at the top of `deploy.py`), then:
 
 ```bash
 # Full pipeline (default: ZCU102 arch, 100 inference samples)
+python scripts/fpga/deploy.py --run-dir DDC_FPGA/logs/train/sar_ddc/hyperprior/<date>/<id>
+
+# RUN_DIR constant acts as default when --run-dir is omitted
 python scripts/fpga/deploy.py
 
 # Skip phases selectively (e.g. rerun inference without recompiling)
-python scripts/fpga/deploy.py --skip-compile [--skip-transfer] [--skip-infer] [--skip-fetch]
+python scripts/fpga/deploy.py --run-dir <...> --skip-compile [--skip-transfer] [--skip-infer] [--skip-fetch]
 
 # Optional compile sub-flags
-python scripts/fpga/deploy.py [--inspect] [--eval-float] [--eval-quant] \
+python scripts/fpga/deploy.py --run-dir <...> [--inspect] [--eval-float] [--eval-quant] \
                                [--fast-finetune] [--image-graph] \
                                [--arch ZCU102|Leopard]
 
 # FPGA inference subset size
-python scripts/fpga/deploy.py [--subset 100]
+python scripts/fpga/deploy.py --run-dir <...> [--subset 100]
 ```
 
-`RUN_DIR` is a module-level constant at the top of `deploy.py`. Changing the target run = edit that one line. No CLI argument for it. `--arch` is a short name (`ZCU102` or `Leopard`); `deploy.py` has a lookup dict to resolve the full JSON path.
+`RUN_DIR` is a module-level constant at the top of `deploy.py` and serves as the default for `--run-dir`. `--arch` is a short name (`ZCU102` or `Leopard`); `deploy.py` has a lookup dict to resolve the full JSON path.
+
+### Batch deployment
+
+To evaluate many W&B runs in sequence, use `batch_deploy.py`:
+
+```bash
+# Preview matched runs without deploying
+python scripts/fpga/batch_deploy.py --tag relu_seed0 --dry-run
+
+# Deploy all matching runs (skips already-compiled models by default)
+python scripts/fpga/batch_deploy.py --tag relu_seed0
+
+# Deploy specific run IDs directly (bypasses FILTERS_CONFIG, fast W&B fetch)
+python scripts/fpga/batch_deploy.py --tag relu_seed0 --run-ids abc123 def456
+
+# Force recompile even if model already exists
+python scripts/fpga/batch_deploy.py --tag relu_seed0 --force-recompile
+```
+
+Edit `FILTERS_CONFIG` at the top of `batch_deploy.py` (same `(key, op, value)` tuple format as `update_wandb_runs.py`). The default filters only select DPU-compatible runs (`relu` activation + `no_output_padding=True`). Batch coordination log: `results/fpga/batch_deploy/<tag>_<timestamp>.log`.
 
 ### Phases
 
@@ -56,6 +79,7 @@ Each phase after Phase 0 can be skipped with `--skip-compile`, `--skip-transfer`
 ```text
 scripts/fpga/
     deploy.py                    # Main orchestrator — all host-side logic lives here
+    batch_deploy.py              # Batch wrapper: fetch W&B runs, loop deploy.py per run
     model_quant.py               # Container-only quantization script (called via docker exec)
     inference_hybrid.py          # FPGA inference script (copied into compiled model dir at phase 1)
     inference_utils.py           # FPGA inference utilities (copied into compiled model dir at phase 1)

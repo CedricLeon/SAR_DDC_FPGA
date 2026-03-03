@@ -60,7 +60,7 @@ TARGET_LOOKUP = {
 FPGA_HOST = "ZCU102"
 FPGA_BASE_DIR = "/home/root/SAR_DDC"
 FPGA_DATA_PATH = "../data/test_sub500_seed42.npy"
-FPGA_INFER_SUBSET = 100
+FPGA_DATASET_SIZE = 500
 
 CALIB_SUBSET_LEN = 200
 EVAL_SUBSET_LEN = 200
@@ -333,7 +333,10 @@ def _organize_compiled_output(compiled_dir_abs: Path, run_dir_host: Path) -> Non
 
     destination = compiled_models_dir / final_name
     if destination.exists():
+        results_dir = destination / "results"
         print(f"Warning: {destination} exists. Overwriting.")
+        if results_dir.exists():
+            print("FPGA inference results existed and were overwritten.")
         shutil.rmtree(destination)
 
     print(f"Moving {compiled_dir_abs} -> {destination}")
@@ -455,6 +458,7 @@ def ensure_container_healthy() -> None:
 
 
 def phase_compile(
+    run_dir: str,
     arch: str,
     inspect: bool,
     eval_float: bool,
@@ -468,16 +472,16 @@ def phase_compile(
     ff = " --fast_finetune" if fast_finetune else ""
 
     # Paths relative to /workspace (used for container commands)
-    model_quant_cmd = f"python DDC_FPGA/scripts/fpga/model_quant.py --run_dir {RUN_DIR}"
+    model_quant_cmd = f"python DDC_FPGA/scripts/fpga/model_quant.py --run_dir {run_dir}"
     xmodel_int = f"quantize_result/{DPU_WRAPPER_NAME}_int.xmodel"
     compiled_dir_rel = f"{DPU_WRAPPER_NAME}_pt"
 
     # Absolute host paths (used for host-side commands)
     compiled_dir_abs = VITIS_AI_ROOT / compiled_dir_rel
-    run_dir_host = VITIS_AI_ROOT / RUN_DIR
+    run_dir_host = VITIS_AI_ROOT / run_dir
 
     print_header("Phase 1: Compile")
-    print(f"  RUN_DIR : {RUN_DIR}")
+    print(f"  RUN_DIR : {run_dir}")
     print(f"  Arch    : {arch}  ({arch_json})")
     print(f"  Target  : {target}")
 
@@ -566,6 +570,22 @@ def get_model_name() -> str:
     return json.loads(manifest_path.read_text())["model_name"]
 
 
+def _set_active_model_symlink(model_name: str) -> None:
+    """Point active_model symlink at an already-compiled model in compiled_models/.
+
+    Called when --skip-compile --model-name <name> is passed (e.g. by batch_deploy.py). Raises
+    SystemExit if the target directory does not exist.
+    """
+    compiled_dir = PROJECT_ROOT / "results" / "fpga" / "compiled_models" / model_name
+    if not compiled_dir.exists():
+        print(f"ERROR: Compiled model not found: {compiled_dir}")
+        sys.exit(1)
+    if ACTIVE_MODEL_LINK.exists() or ACTIVE_MODEL_LINK.is_symlink():
+        ACTIVE_MODEL_LINK.unlink()
+    os.symlink(Path("compiled_models") / model_name, ACTIVE_MODEL_LINK)
+    print(f"  active_model -> compiled_models/{model_name}")
+
+
 # ============================================================
 # PHASE 2: Transfer compiled model to FPGA
 # ============================================================
@@ -651,6 +671,28 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
+    # Target run
+    g_run = parser.add_argument_group("target run")
+    g_run.add_argument(
+        "--run-dir",
+        default=RUN_DIR,
+        metavar="RUN_DIR",
+        help=(
+            "Hydra run directory relative to VITIS_AI_ROOT "
+            "(default: module-level RUN_DIR constant)."
+        ),
+    )
+    g_run.add_argument(
+        "--model-name",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Compiled model name (e.g. ResSHyp-relu_s0_L100_pt). "
+            "When --skip-compile is set, updates active_model symlink before phases 2-4. "
+            "Typically set automatically by batch_deploy.py."
+        ),
+    )
+
     # Phase skip flags
     g_skip = parser.add_argument_group("phase skips")
     g_skip.add_argument(
@@ -701,14 +743,14 @@ def main() -> None:
     g_infer.add_argument(
         "--subset",
         type=int,
-        default=FPGA_INFER_SUBSET,
-        help=f"Number of test samples for inference (default: {FPGA_INFER_SUBSET}).",
+        default=FPGA_DATASET_SIZE,
+        help=f"Number of test samples for inference (default: {FPGA_DATASET_SIZE}).",
     )
 
     args = parser.parse_args()
 
     print(f"\n{'#' * 60}")
-    print(f"  deploy.py — RUN_DIR: {RUN_DIR}")
+    print(f"  deploy.py — RUN_DIR: {args.run_dir}")
     print(f"  Arch: {args.arch}  |  Subset: {args.subset}")
     skip_flags = [
         f"compile={'SKIP' if args.skip_compile else 'YES'}",
@@ -727,6 +769,7 @@ def main() -> None:
         with Tee(_compile_log_tmp, verbose=PHASE1_VERBOSE):
             ensure_container_healthy()
             phase_compile(
+                run_dir=args.run_dir,
                 arch=args.arch,
                 inspect=args.inspect,
                 eval_float=args.eval_float,
@@ -734,6 +777,10 @@ def main() -> None:
                 fast_finetune=args.fast_finetune,
                 image_graph=args.image_graph,
             )
+
+    # If skipping compile with a known model name (e.g. from batch_deploy.py), redirect symlink.
+    if args.skip_compile and args.model_name:
+        _set_active_model_symlink(args.model_name)
 
     model_name = get_model_name()
     print(f"\nActive model: {model_name}")
