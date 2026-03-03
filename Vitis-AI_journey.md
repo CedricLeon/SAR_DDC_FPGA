@@ -3,6 +3,136 @@
 I'll use this file as a journal, just to keep track of what I tried and when.
 Once I understand the toolchain and its processes better, I'll make a step-by-step instructions for deployment, like so:
 
+## Automating deployment and evaluation with one orchestrator script (2026-03-02)
+
+`deploy.py` is a Python orchestrator that manages the full compile → transfer → inference → fetch pipeline from the project root (`~/dev/Vitis-AI/DDC_FPGA/`) using the `SAR_DDC` conda environment. Requires [passwordless SSH access to ZCU102](#ssh-key-setup-passwordless-access-to-zcu102).
+
+### Quick start
+
+Edit `RUN_DIR` at the top of `deploy.py` to point to the target Hydra run directory, then:
+
+```bash
+# Full pipeline (default: ZCU102 arch, 100 inference samples)
+python scripts/fpga/deploy.py
+
+# Skip phases selectively (e.g. rerun inference without recompiling)
+python scripts/fpga/deploy.py --skip-compile [--skip-transfer] [--skip-infer] [--skip-fetch]
+
+# Optional compile sub-flags
+python scripts/fpga/deploy.py [--inspect] [--eval-float] [--eval-quant] \
+                               [--fast-finetune] [--image-graph] \
+                               [--arch ZCU102|Leopard]
+
+# FPGA inference subset size
+python scripts/fpga/deploy.py [--subset 100]
+```
+
+`RUN_DIR` is a module-level constant at the top of `deploy.py`. Changing the target run = edit that one line. No CLI argument for it. `--arch` is a short name (`ZCU102` or `Leopard`); `deploy.py` has a lookup dict to resolve the full JSON path.
+
+### Phases
+
+| Phase | Where | What |
+| --- | --- | --- |
+| 0. Container | Host | Ensure `vai_container` running + GPU-healthy |
+| 1.1. Inspect *(opt)* | Container | `model_quant.py --quant_mode float --inspect` |
+| 1.2. Eval float *(opt)* | Container | `model_quant.py --quant_mode float` |
+| 1.3. Calibrate | Container | `model_quant.py --quant_mode calib` |
+| 1.4. Eval quant *(opt)* | Container | `model_quant.py --quant_mode test` |
+| 1.5. Deploy xmodel | Container | `model_quant.py --quant_mode test --deploy --subset_len 1 --batch_size 1` |
+| 1.6. Compile | Container | `vai_c_xir -x ... -a <arch_json>` |
+| 1.7. SVG graph *(opt)* | Container | `xdputil xmodel ...` |
+| 1.8. Export entropy | Host | `_export_entropy_params()` — instantiates model, calls `.update()`, saves `.npz` |
+| 1.9. Organize output | Host | `_organize_compiled_output()` — manifest, move to `compiled_models/`, update `active_model` symlink |
+| 2. Transfer | Host→FPGA | Clean `active_model/` on FPGA, `scp -r` compiled model |
+| 3. Infer | FPGA | `python3 inference_hybrid.py` (output streamed to terminal) |
+| 4. Fetch | FPGA→Host | `scp -r` results back to `results/fpga/active_model/` |
+
+Each phase after Phase 0 can be skipped with `--skip-compile`, `--skip-transfer`, `--skip-infer`, `--skip-fetch`.
+
+### Design notes
+
+#### scripts/fpga/ structure
+
+```text
+scripts/fpga/
+    deploy.py                    # Main orchestrator — all host-side logic lives here
+    model_quant.py               # Container-only quantization script (called via docker exec)
+    inference_hybrid.py          # FPGA inference script (copied into compiled model dir at phase 1)
+    inference_utils.py           # FPGA inference utilities (copied into compiled model dir at phase 1)
+    entropy_models_inference.py  # FPGA entropy model (copied into compiled model dir at phase 1)
+scripts/vitis-ai-automation/
+    setup_container.sh           # Kept for interactive/manual debug use
+    start_container_bg.sh        # Starts vai_container in detached mode for deploy.py
+```
+
+`model_quant.py` remains a subprocess called via `docker exec` — the CLI boundary is intentional because `pytorch_nndct` is only available inside the container and cannot be imported on the host. Phases 1.8 and 1.9 run on the host and are inlined as private functions in `deploy.py`.
+
+#### Container setup and lifecycle
+
+`deploy.py` needs the Vitis-AI Docker container (`vai_container`) running in detached mode. Xilinx's `docker_run.sh` hardcodes `-it` (interactive TTY), which blocks until the user exits — unsuitable for automation. `start_container_bg.sh` replicates the essential mounts (same `/workspace` bind, `/opt/xilinx`, `--gpus all`, `--network host`) but uses `--detach` and `sleep infinity` as PID 1 so it returns immediately. `setup_container.sh` is kept for interactive/debug use.
+
+Lifecycle in `deploy.py`:
+
+1. Check if `vai_container` is running: `docker ps --filter name=vai_container`
+2. If running, check GPU health: `docker exec vai_container nvidia-smi`
+3. If GPU dead (NVML error): kill with `docker rm -f` and restart.
+4. If not running: call `start_container_bg.sh`, then run one-time `pip install` via `docker exec`.
+
+All container commands are executed via:
+
+```bash
+docker exec vai_container bash -c "
+  source /opt/vitis_ai/conda/etc/profile.d/conda.sh &&
+  conda activate vitis-ai-pytorch &&
+  export LD_PRELOAD=\$CONDA_PREFIX/lib/libstdc++.so.6:\$LD_PRELOAD &&
+  cd /workspace &&
+  <command>"
+```
+
+Path translation: host paths are converted to container paths via `host_path.relative_to(VITIS_AI_ROOT)` where `VITIS_AI_ROOT = PROJECT_ROOT.parent` (the `/workspace` mount point inside the container maps to `~/dev/Vitis-AI/` on the host).
+
+#### Host-side steps (phases 1.8 and 1.9)
+
+Both steps run in the SAR_DDC environment on the host, not in the container.
+
+- `_export_entropy_params()`: instantiates `ResidualScaleHyperpriorPatched`, calls `.update()` to populate CDF/quantile tables, and saves `entropy_params.npz` alongside the compiled model.
+- `_organize_compiled_output()`: loads the Hydra config, derives the model name (e.g. `ResSHyp-relu_s2_L200_pt`), saves `train_config.yaml` and `manifest.json`, moves the compiled directory to `results/fpga/compiled_models/<name>/`, and updates the `active_model` symlink. `deploy.py` then reads `manifest.json` via the symlink to get the model name for phases 2–4.
+
+#### FPGA transfer and result fetching
+
+`~/SAR_DDC/active_model/` on the FPGA is a plain directory — one model at a time to avoid OOM. Old files are wiped before each deployment to prevent stale artifacts. `scp -r` follows the `active_model` symlink on the host, so the actual compiled model directory is transferred.
+
+`inference_hybrid.py` writes results to `~/SAR_DDC/active_model/results/` on the FPGA. Fetched back to `results/fpga/active_model/results/` on the host — because `active_model` is a symlink pointing to `compiled_models/<model_name>/`, results land inside the correct model folder automatically.
+
+### Logging: the `Tee` class
+
+The `Tee` class in `deploy.py` is named after the Unix `tee(1)` command, which reads from stdin and writes simultaneously to stdout and one or more files — like a T-shaped pipe fitting in plumbing. The class intercepts `sys.stdout` so that every `print()` call and every line streamed from a subprocess lands in both the terminal and the log file at once.
+
+Two log files are produced per deployment run, both stored inside the compiled model folder:
+
+- **`compile.log`** — Phase 0 + Phase 1 (container checks, all quantization/compilation steps). Written to a temporary file at `$VITIS_AI_ROOT/.deploy_compile_tmp.log` while the compile runs, then moved to the model folder after Phase 1.9 (once the final model name is known).
+- **`deploy.log`** — Phases 2–4 (transfer, inference, fetch). Opened directly in the model folder.
+
+Terminal verbosity is controlled by two constants at the top of `deploy.py`:
+
+| Constant | Default | Controls |
+|---|---|---|
+| `PHASE1_VERBOSE` | `False` | Docker / Vitis-AI compile output (very noisy) |
+| `PHASE3_VERBOSE` | `True` | FPGA inference output |
+
+Setting either to `False` silences that phase on screen while still writing every line to the file.
+
+#### tqdm progress bar handling
+
+`tqdm` writes to `stderr` by default, but since `run_in_container()` uses `stderr=STDOUT` (merging both streams into the pipe), progress bars flow through `Tee.write()`. Because `Tee` has patched `sys.stdout` with a file-like object, `tqdm` no longer detects a real TTY and emits each update as a separate `\n`-terminated line instead of rewriting the same line with `\r`.
+
+The module-level regex `_TQDM_RE = re.compile(r"^\s*(\d+)%\|")` detects these lines. `Tee.write()` then applies split treatment:
+
+- **Terminal**: writes `\r` + the stripped line so the bar overwrites itself in place; emits `\n` only at 100%.
+- **Log file**: drops all intermediate updates (0 %, 25 %, …) and records only the final 100 % completion line, keeping logs human-readable without kilobytes of `\r`-polluted progress spam.
+
+---
+
 ## Full deployment and evaluation of the models (January 2026)
 
 ### Requirements
@@ -61,20 +191,33 @@ Go into the deployed model directory and run inference
 [TARGET] root@xilinx-zcu102-20222:~/SAR_DDC/# scp -r results/ leon_ce@10.0.0.1:~/dev/Vitis-AI/DDC_FPGA/results/fpga/active_model/
 ```
 
-## FPGA preparations (One-time setups)
+## FPGA Board Setup (one-time)
 
-### Update source files on the FPGA
+### SSH key setup (passwordless access to ZCU102)
 
-Because I program on the Host I need to manually update the inference scripts on the FPGA every time I make a modification.
-Below is a list of the associated `scp` commands:
+PetaLinux uses the **Dropbear** SSH daemon, which resolves `authorized_keys` relative to the `HOME`
+environment variable — set to `/home/root/` on this board. The standard `ssh-copy-id` fails
+silently because it writes to `/root/.ssh/` which Dropbear does not check.
 
 ```bash
-# Inference script
-[HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/scripts/fpga/inference_hybrid.py root@10.0.0.2:/home/root/SAR_DDC/scripts/
-# Utils
-[HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/src/models/components/compressai_dpu.py root@10.0.0.2:/home/root/SAR_DDC/scripts/
-[HOST] leon_ce@bart:/workspace$ scp DDC_FPGA/scripts/fpga/inference_utils.py root@10.0.0.2:/home/root/SAR_DDC/scripts/
+# 1. Generate a key pair on host (no passphrase)
+ssh-keygen -t ed25519 -f ~/.ssh/bart_to_zcu102 -C "bart-to-zcu102" -N ""
+
+# 2. Manually push the public key to the correct path (one-time, with password)
+ssh root@10.0.0.2 "mkdir -p /home/root/.ssh && chmod 700 /home/root/.ssh"
+cat ~/.ssh/bart_to_zcu102.pub | ssh root@10.0.0.2 "cat >> /home/root/.ssh/authorized_keys && chmod 600 /home/root/.ssh/authorized_keys"
 ```
+
+Then add to `~/.ssh/config` on the host:
+
+```ssh-config
+Host ZCU102
+    HostName 10.0.0.2
+    User root
+    IdentityFile ~/.ssh/bart_to_zcu102
+```
+
+After this, `ssh ZCU102` and `scp ... ZCU102:/path/` work without a password.
 
 ### Compile the C++ rANS entropy encoder for the FPGA
 
