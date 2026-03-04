@@ -419,6 +419,8 @@ def main() -> None:
                 ]
                 if skip_compile:
                     cmd += ["--skip-compile", "--model-name", model_name]
+                else:
+                    cmd += ["--wandb-run-id", run.id]
                 if args.skip_transfer:
                     cmd.append("--skip-transfer")
                 if args.skip_infer:

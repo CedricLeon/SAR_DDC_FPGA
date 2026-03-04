@@ -274,7 +274,35 @@ def _make_compiled_model_name(cfg: Any) -> str:
     return f"{model}-{activation}_s{seed}_L{lmbda}_pt"
 
 
-def _create_manifest(dest_dir: Path, cfg: Any, model_name: str, original_run_dir: str) -> None:
+def _get_wandb_run_id_from_run_dir(run_dir_host: Path) -> str:
+    """Infer the W&B run ID from a Hydra run directory.
+
+    W&B writes a ``wandb/latest-run`` symlink pointing to a directory named
+    ``run-{timestamp}-{run_id}``.  We read that symlink and extract the run ID
+    (the last ``-``-separated token in the target name).
+
+    Critique of the approach:
+    - Pro: deterministic, no network call needed, always present after a W&B run.
+    - Con: ``latest-run`` points to the *most recent* W&B run started from that
+      directory.  In practice each Hydra output dir has exactly one run, so this
+      is a non-issue.
+    - Fallback: returns ``""`` when the symlink is absent (logger=null runs) or
+      the target name is malformed.
+    """
+    latest_run_link = run_dir_host / "wandb" / "latest-run"
+    if not latest_run_link.is_symlink():
+        return ""
+    try:
+        target_name = Path(os.readlink(latest_run_link)).name  # e.g. run-20260211_213632-kel1uzlo
+        run_id = target_name.rsplit("-", 1)[-1]  # 'kel1uzlo'
+        return run_id if run_id else ""
+    except OSError:
+        return ""
+
+
+def _create_manifest(
+    dest_dir: Path, cfg: Any, model_name: str, original_run_dir: str, wandb_run_id: str = ""
+) -> None:
     """Write manifest.json and a MODEL_IS_*.txt marker into dest_dir."""
     # 1. Extract Training Timestamp from Run Directory path
     # Expected format: .../YYYY-MM-DD_HH-MM-SS/N or .../YYYY-MM-DD_HH-MM-SS/
@@ -295,6 +323,7 @@ def _create_manifest(dest_dir: Path, cfg: Any, model_name: str, original_run_dir
     # 2. Build Metadata Dictionary
     meta: dict = {
         "model_name": model_name,
+        "wandb_run_id": wandb_run_id,  # W&B run ID; empty string if deployed outside batch_deploy
         "compiled_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "trained_at": trained_at,
         "original_run_dir": original_run_dir,
@@ -315,7 +344,9 @@ def _create_manifest(dest_dir: Path, cfg: Any, model_name: str, original_run_dir
     (dest_dir / f"MODEL_IS_{model_name}.txt").touch()
 
 
-def _organize_compiled_output(compiled_dir_abs: Path, run_dir_host: Path) -> None:
+def _organize_compiled_output(
+    compiled_dir_abs: Path, run_dir_host: Path, wandb_run_id: str = ""
+) -> None:
     """Generate manifest, move compiled dir to compiled_models/, update active_model symlink."""
     output_root = PROJECT_ROOT / "results" / "fpga"
     compiled_models_dir = output_root / "compiled_models"
@@ -329,7 +360,7 @@ def _organize_compiled_output(compiled_dir_abs: Path, run_dir_host: Path) -> Non
     cfg = OmegaConf.load(config_path)
     final_name = _make_compiled_model_name(cfg)
     OmegaConf.save(cfg, compiled_dir_abs / "train_config.yaml")
-    _create_manifest(compiled_dir_abs, cfg, final_name, str(run_dir_host))
+    _create_manifest(compiled_dir_abs, cfg, final_name, str(run_dir_host), wandb_run_id)
 
     destination = compiled_models_dir / final_name
     if destination.exists():
@@ -465,6 +496,7 @@ def phase_compile(
     eval_quant: bool,
     fast_finetune: bool,
     image_graph: bool,
+    wandb_run_id: str = "",
 ) -> None:
     """Compile the model for FPGA deployment, running all sub-Phase 1 steps in sequence."""
     arch_json = ARCH_JSON_LOOKUP[arch]
@@ -552,7 +584,16 @@ def phase_compile(
 
     # 1.9. Organize output: generate manifest, move to compiled_models/, update symlink
     print("\n--- 1.9: Organize output (host) ---")
-    _organize_compiled_output(compiled_dir_abs, run_dir_host)
+    # Auto-detect W&B run ID when it was not passed explicitly (standalone deploy.py use).
+    if not wandb_run_id:
+        wandb_run_id = _get_wandb_run_id_from_run_dir(run_dir_host)
+        if wandb_run_id:
+            print(f"  Auto-detected W&B run ID from run dir: {wandb_run_id}")
+        else:
+            print(
+                "  Note: W&B run ID not found (no wandb/latest-run symlink). manifest will have empty wandb_run_id."
+            )
+    _organize_compiled_output(compiled_dir_abs, run_dir_host, wandb_run_id)
 
 
 # ============================================================
@@ -692,6 +733,12 @@ def main() -> None:
             "Typically set automatically by batch_deploy.py."
         ),
     )
+    g_run.add_argument(
+        "--wandb-run-id",
+        default="",
+        metavar="ID",
+        help="W&B run ID to record in manifest.json. Set automatically by batch_deploy.py.",
+    )
 
     # Phase skip flags
     g_skip = parser.add_argument_group("phase skips")
@@ -776,6 +823,7 @@ def main() -> None:
                 eval_quant=args.eval_quant,
                 fast_finetune=args.fast_finetune,
                 image_graph=args.image_graph,
+                wandb_run_id=args.wandb_run_id,
             )
 
     # If skipping compile with a known model name (e.g. from batch_deploy.py), redirect symlink.
