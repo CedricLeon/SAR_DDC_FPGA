@@ -393,7 +393,7 @@ def run_hybrid_inference(
     log(f"Loaded {n_samples} samples.")
 
     # Metrics
-    metric_list = ["bpp", "mse", "psnr"]
+    metric_list = ["bpp", "mse", "psnr", "ssim"]
     tracker_noisy = MetricsTracker(metric_list)
     tracker_adam = MetricsTracker(metric_list)
     tracker_merlin = MetricsTracker(metric_list)
@@ -557,6 +557,7 @@ def run_hybrid_inference(
 
             tile_metrics[f"psnr_{ref_name}"] = MetricsTracker.compute_psnr(recon_linA, ref_linA)
             tile_metrics[f"mse_{ref_name}"] = MetricsTracker.compute_mse(recon_linA, ref_linA)
+            tile_metrics[f"ssim_{ref_name}"] = MetricsTracker.compute_ssim(recon_linA, ref_linA)
 
         log(f"Metrics: {tile_metrics}")
         log(f"Time: {time.time() - start_tile:.2f}s")

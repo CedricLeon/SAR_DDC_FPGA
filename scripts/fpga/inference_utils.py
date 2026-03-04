@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Tuple
 
+import cv2  # type: ignore
 import numpy as np
 import vart  # type: ignore
 import xir  # type: ignore
@@ -122,13 +123,26 @@ class MetricsTracker:
 
     @staticmethod
     def compute_ssim(a: np.ndarray, b: np.ndarray) -> float:
-        """Compute SSIM."""
-        return 0.0  # Placeholder
+        """Compute SSIM using cv2.quality.QualitySSIM_compute.
+
+        Inputs are expected in linear amplitude [0, +inf], with arbitrary shape ([1, H, W, 1], [H,
+        W, 1], or [H, W]). Both arrays are squeezed to 2-D float32 before the call. The returned
+        value is the mean SSIM across channels (typically 1 channel).
+        """
+        a_2d = a.squeeze().astype(np.float32)
+        b_2d = b.squeeze().astype(np.float32)
+        # QualitySSIM_compute returns (scalar_per_channel, quality_map).
+        # scalar_per_channel is a 4-element tuple; the first element holds channel 0.
+        result, _ = cv2.quality.QualitySSIM_compute(a_2d, b_2d)  # type: ignore[attr-defined]
+        return float(result[0])
 
     @staticmethod
     def compute_ms_ssim(a: np.ndarray, b: np.ndarray) -> float:
-        """Compute MS-SSIM."""
-        return 0.0  # Placeholder
+        """Compute MS-SSIM.
+
+        Not available on this platform — returns 0.0.
+        """
+        return 0.0  # cv2 does not provide MS-SSIM
 
     @staticmethod
     def compute_bitstream_bpp(x_shape_holder: np.ndarray, num_bytes: int) -> float:
