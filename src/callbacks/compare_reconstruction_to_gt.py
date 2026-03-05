@@ -1,3 +1,4 @@
+import json
 import warnings
 from pathlib import Path
 from typing import Any, Dict, Literal, Mapping, Tuple
@@ -201,9 +202,16 @@ class CompareReconstructionToGT(Callback):
         plt.imsave(png_path, recon_logI, cmap="gray")
         npy_path = log_dir / f"{img_name}_linA.npy"
         np.save(npy_path, recon_linA)
+
+        # Save per-tile metrics to JSON so the comparison notebook can read bpp / bpp_bitstream without re-running inference.
+        metrics_json_path = log_dir / f"{img_name}_metrics.json"
+        with open(metrics_json_path, "w") as _f:
+            json.dump(metrics_to_merlin, _f, indent=4)
+
         if self.verbose:
             print(f"[CompareReconstructionToGT] Saved test reconstruction to {png_path}")
             print(f"[CompareReconstructionToGT] Saved test reconstruction (linA) to {npy_path}")
+            print(f"[CompareReconstructionToGT] Saved tile metrics to {metrics_json_path}")
 
         print_images_statistics(
             {

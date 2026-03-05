@@ -102,7 +102,11 @@ class MetricsTracker:
 
     @staticmethod
     def compute_mse(a: np.ndarray, b: np.ndarray) -> float:
-        """Compute MSE."""
+        """Compute MSE between 2 arrays expected in linear Amplitude scale as clipping between 0
+        and AMP_LIN_99 is done."""
+        # Clip target and predictions to 99% of distribution to avoid outliers dominating the PSNR computation.
+        a = np.clip(a, 0, AMP_LIN_99)
+        b = np.clip(b, 0, AMP_LIN_99)
         return float(np.mean((a - b) ** 2))
 
     @staticmethod
@@ -113,10 +117,6 @@ class MetricsTracker:
         Both tensors must be in linear Amplitude scale as peak=AMP_LIN_99 is used for PSNR
         computation.
         """
-        # Clip target and predictions to 99% of distribution to avoid outliers dominating the PSNR computation.
-        a = np.clip(a, 0, AMP_LIN_99)
-        b = np.clip(b, 0, AMP_LIN_99)
-        # Compute MSE and PSNR on 99% of the value
         mse_value = mse_value if mse_value is not None else MetricsTracker.compute_mse(a, b)
         psnr_value = 20 * np.log10(AMP_LIN_99) - 10 * np.log10(mse_value)
         return psnr_value

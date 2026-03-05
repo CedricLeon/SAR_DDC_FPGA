@@ -58,9 +58,16 @@ def get_all_distortion_metrics(
     }
 
 
-def mse(predicted: Tensor, target: Tensor) -> float:
-    """Compute Mean Squared Error (MSE) loss between predicted and target tensors."""
-    return torch.mean((predicted - target) ** 2).item()
+def mse(predicted_linA: Tensor, target_linA: Tensor) -> float:
+    """Compute Mean Squared Error (MSE) loss between predicted and target tensors in linear
+    Amplitude scale."""
+    # Clip target and predictions to 99% of distribution to avoid outliers dominating the PSNR computation.
+    # While this is "cheating" if comparing to other methods that do not use this clipping,
+    # these PSNR values are only use across experiments that always use this clipping.
+    predicted_linA = torch.clamp(predicted_linA, max=AMP_LIN_99)
+    target_linA = torch.clamp(target_linA, max=AMP_LIN_99)
+    # Compute MSE and PSNR on 99% of the value
+    return torch.mean((predicted_linA - target_linA) ** 2).item()
 
 
 def psnr(predicted_linA: Tensor, target_linA: Tensor, mse_value: Optional[float] = None) -> float:
@@ -68,12 +75,7 @@ def psnr(predicted_linA: Tensor, target_linA: Tensor, mse_value: Optional[float]
 
     Both tensors must be in linear Amplitude scale as peak=AMP_LIN_99 is used for PSNR computation.
     """
-    # Clip target and predictions to 99% of distribution to avoid outliers dominating the PSNR computation.
-    # While this is "cheating" if comparing to other methods that do not use this clipping,
-    # these PSNR values are only use across experiments that always use this clipping.
-    predicted_linA = torch.clamp(predicted_linA, max=AMP_LIN_99)
-    target_linA = torch.clamp(target_linA, max=AMP_LIN_99)
-    # Compute MSE and PSNR on 99% of the value
+    # MSE (and therefore PSNR) is computed on 99% of the value
     mse_value = mse_value if mse_value is not None else mse(predicted_linA, target_linA)
     psnr_value = 20 * math.log10(AMP_LIN_99) - 10 * math.log10(mse_value)
     return psnr_value
