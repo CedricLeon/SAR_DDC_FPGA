@@ -326,8 +326,40 @@ def process_single_tile(
     #################################################
 
 
+def _compute_patch_stats(patch_linA: np.ndarray) -> Dict[str, float]:
+    """Compute statistics of a single patch in linear amplitude (flattened)."""
+    flat = patch_linA.ravel()
+    return {
+        "min": float(np.min(flat)),
+        "max": float(np.max(flat)),
+        "mean": float(np.mean(flat)),
+        "std": float(np.std(flat)),
+        "p25": float(np.percentile(flat, 25)),
+        "p75": float(np.percentile(flat, 75)),
+    }
+
+
+def _save_patch_stats(
+    accum: Dict[str, Dict[str, List[float]]],
+    save_path: Path,
+) -> None:
+    """Convert accumulated per-patch stats dicts to numpy arrays and save as NPZ."""
+    arrays: Dict[str, np.ndarray] = {}
+    for src, stats_dict in accum.items():
+        for stat_name, values in stats_dict.items():
+            arrays[f"{src}_{stat_name}"] = np.array(values, dtype=np.float32)
+    n = len(next(iter(next(iter(accum.values())).values())))
+    arrays["n_patches"] = np.array(n)
+    np.savez(str(save_path), **arrays)
+    log(f"Patch stats saved ({n} patches) \u2192 {save_path}")
+
+
 def run_hybrid_inference(
-    xmodel_path: Path, dataset_path: Path, subset: int = 100, verbose: bool = False
+    xmodel_path: Path,
+    dataset_path: Path,
+    subset: int = 100,
+    verbose: bool = False,
+    save_patch_stats: bool = False,
 ):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
@@ -407,6 +439,14 @@ def run_hybrid_inference(
     vis_adam_test_set = []
     vis_merlin_test_set = []
 
+    # Per-patch linA stat accumulators (enabled via --save_patch_stats)
+    _stat_keys: List[str] = ["min", "max", "mean", "std", "p25", "p75"]
+    patch_stat_accum: Optional[Dict[str, Dict[str, List[float]]]] = None
+    if save_patch_stats:
+        patch_stat_accum = {
+            src: {k: [] for k in _stat_keys} for src in ["fpga_recon", "merlin", "noisy"]
+        }
+
     # 4. Inference Loop
     log("\nStarting Inference Loop...")
     for i in range(n_samples):
@@ -445,6 +485,17 @@ def run_hybrid_inference(
         tracker_adam.update(recon_linA, adam_linA, num_bytes)
         tracker_merlin.update(recon_linA, merlin_linA, num_bytes)
 
+        # Per-patch stat collection
+        if patch_stat_accum is not None:
+            for src, arr in [
+                ("fpga_recon", recon_linA.squeeze()),
+                ("merlin", merlin_linA.squeeze()),
+                ("noisy", noisy_linA.squeeze()),
+            ]:
+                s = _compute_patch_stats(arr)
+                for k, v in s.items():
+                    patch_stat_accum[src][k].append(v)
+
         # Store for Viz, all visualization must be in log-Intensity format
         if i in vis_indices_test_set:
             noisy_logI = np.log(noisy_sq[..., 0] + noisy_sq[..., 1] + EPS)
@@ -461,6 +512,10 @@ def run_hybrid_inference(
     log(
         f"Inference Loop Finished in {total_time:.2f}s ({total_time / n_samples * 1000:.1f}ms/sample)"
     )
+
+    # Save patch stats if requested
+    if patch_stat_accum is not None:
+        _save_patch_stats(patch_stat_accum, output_dir / "fpga_patch_stats.npz")
 
     # Save Metrics
     log("\n ----- Test set Results -----")
@@ -579,6 +634,11 @@ if __name__ == "__main__":
     parser.add_argument("--data", required=True)
     parser.add_argument("--subset", type=int, default=100)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--save_patch_stats",
+        action="store_true",
+        help="Save per-patch linA statistics (min/max/mean/std/p25/p75) to patch_stats.npz.",
+    )
     args = parser.parse_args()
 
     xmodel_path = Path(args.xmodel).resolve()
@@ -592,4 +652,4 @@ if __name__ == "__main__":
 
     display_manifest(xmodel_path.parent)
 
-    run_hybrid_inference(xmodel_path, data_path, args.subset, args.verbose)
+    run_hybrid_inference(xmodel_path, data_path, args.subset, args.verbose, args.save_patch_stats)

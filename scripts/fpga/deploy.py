@@ -36,7 +36,11 @@ from omegaconf import OmegaConf
 # - USER CONFIGURATION — edit RUN_DIR for each deployment
 # ============================================================
 
-RUN_DIR = "DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-02-11_15-50-39/6"
+# RUN_DIR = "DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-02-07_00-51-42/0" # ResSHyp-relu_s0_L1_pt
+# RUN_DIR = "DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-02-07_00-51-42/1" # ResSHyp-relu_s0_L5_pt
+# RUN_DIR = "DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-02-07_00-51-42/4" # ResSHyp-relu_s0_L100_pt
+RUN_DIR = "DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-02-06_14-57-22/0"  # ResSHyp-relu_s0_L1000_pt
+
 
 # ============================================================
 # CONSTANTS
@@ -855,8 +859,12 @@ def main() -> None:
 
         print_header("Done!")
         print(f"  Model      : {model_name}")
-        print(f"  Results    : {ACTIVE_MODEL_LINK / 'results'}")
         print(f"  Deploy log : {deploy_log_path}")
+        if not args.skip_infer:
+            if not args.skip_fetch:
+                print(f"  Results    : {ACTIVE_MODEL_LINK / 'results'}")
+            else:
+                print("  Results and deploy logs on Target.")
 
 
 if __name__ == "__main__":

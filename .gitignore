@@ -3,7 +3,7 @@
 compressai_original.py
 docker_run.sh
 # FPGA-specific files
-results/fpga/
+results/
 context/
 
 # ----- Lightning-Hydra-Template -----
