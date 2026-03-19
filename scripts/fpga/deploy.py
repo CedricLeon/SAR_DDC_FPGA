@@ -581,6 +581,7 @@ def phase_compile(
         "inference_hybrid.py",
         "inference_utils.py",
         "entropy_models_inference.py",
+        "benchmark_fpga.py",
     ]:
         src = PROJECT_ROOT / "scripts" / "fpga" / script
         shutil.copy2(src, compiled_dir_abs / script)

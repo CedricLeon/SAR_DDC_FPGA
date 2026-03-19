@@ -1,0 +1,979 @@
+#!/usr/bin/env python3
+"""Performance Benchmark for FPGA Hybrid Inference.
+
+Measures per-component latency, throughput, and (optionally) power consumption
+for the SAR DDC model running on the Vitis-AI DPU + ARM CPU.
+
+Scenarios
+---------
+  full        : Compress + Decompress (g_a -> h_a -> EB -> h_s -> GC -> g_s)
+  compress    : Encode only          (g_a -> h_a -> EB.compress -> GC.compress)
+  decompress  : Decode only          (EB.decompress -> h_s -> GC.decompress -> g_s)
+  dpu_only    : All four DPU subgraphs back-to-back, no entropy coding
+  entropy_only: Entropy coding round-trip only (EB + GC compress/decompress)
+
+Usage (on ZCU102):
+    python3 benchmark_fpga.py --xmodel model.xmodel --scenario full [options]
+
+The script outputs a standardised JSON file that can be merged with GPU/CPU
+benchmarks for publication-ready comparison tables.
+
+Requires Python >= 3.8 (Vitis-AI container / PetaLinux constraint).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import statistics
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+
+try:
+    import vart  # type: ignore
+    import xir  # type: ignore
+except ImportError:
+    print("ERROR: Vitis-AI libraries (vart, xir) not found.")
+    sys.exit(1)
+
+from entropy_models_inference import EntropyBottleneck, GaussianConditional
+from inference_utils import AMP_MAX, AMP_MIN, EPS, DPUSubgraphRunner, identify_subgraphs
+
+# ---------------------------------------------------------------------------
+# Constants (must match inference_hybrid.py)
+# ---------------------------------------------------------------------------
+IMAGE_SIZE = 256
+C_MAIN = 128
+C_HYPER = C_MAIN * 2
+
+SCENARIOS = ["full", "compress", "decompress", "dpu_only", "entropy_only"]
+
+
+# ---------------------------------------------------------------------------
+# Power sampler (INA226 via sysfs)
+# ---------------------------------------------------------------------------
+class INA226PowerSampler:
+    """Polls INA226 sensors via /sys/class/hwmon at configurable frequency.
+
+    Runs in a background thread.  Call ``start()`` before the workload and
+    ``stop()`` after.  ``results()`` returns average power (W) and total
+    energy (J) for each tracked rail.
+
+    Parameters
+    ----------
+    rail_map : dict
+        Mapping of human-readable rail name to hwmon path, e.g.
+        ``{"VCCINT": "/sys/class/hwmon/hwmon10/power1_input"}``.
+        The sysfs file returns micro-watts.
+    poll_interval_s : float
+        Seconds between consecutive reads (default 10 ms = 100 Hz).
+    """
+
+    def __init__(
+        self,
+        rail_map: dict[str, str],
+        poll_interval_s: float = 0.01,
+    ):
+        import threading
+
+        self._rail_map = rail_map
+        self._poll_interval = poll_interval_s
+        self._samples: dict[str, list[float]] = {r: [] for r in rail_map}
+        self._timestamps: list[float] = []
+        self._running = False
+        self._thread: threading.Thread | None = None
+
+    def _read_power_uw(self, path: str) -> float:
+        """Read instantaneous power in micro-watts from sysfs."""
+        try:
+            with open(path) as f:
+                return float(f.read().strip())
+        except (OSError, ValueError):
+            return 0.0
+
+    def _poll_loop(self) -> None:
+        while self._running:
+            t = time.perf_counter()
+            for rail, path in self._rail_map.items():
+                self._samples[rail].append(self._read_power_uw(path))
+            self._timestamps.append(t)
+            # Busy-wait for higher precision than time.sleep allows
+            while time.perf_counter() - t < self._poll_interval:
+                pass
+
+    def start(self) -> None:
+        import threading
+
+        self._running = True
+        self._samples = {r: [] for r in self._rail_map}
+        self._timestamps = []
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def results(self) -> dict[str, dict[str, float]]:
+        """Return per-rail statistics.
+
+        Returns
+        -------
+        dict
+            ``{rail_name: {"avg_power_w": ..., "energy_j": ..., "n_samples": ...}}``
+        """
+        out: dict[str, dict[str, float]] = {}
+        if len(self._timestamps) < 2:
+            for rail in self._rail_map:
+                out[rail] = {"avg_power_w": 0.0, "energy_j": 0.0, "n_samples": 0}
+            return out
+
+        duration = self._timestamps[-1] - self._timestamps[0]
+        for rail, samples in self._samples.items():
+            watts = [s / 1e6 for s in samples]  # uW -> W
+            avg_w = statistics.mean(watts) if watts else 0.0
+            energy_j = avg_w * duration
+            out[rail] = {
+                "avg_power_w": round(avg_w, 4),
+                "energy_j": round(energy_j, 6),
+                "n_samples": len(samples),
+                "duration_s": round(duration, 4),
+            }
+        return out
+
+
+# ---------------------------------------------------------------------------
+# Sensor auto-discovery
+# ---------------------------------------------------------------------------
+# ZCU102 INA226 chip reference designator → power rail mapping.
+#
+# Derived by cross-referencing two tables from UG1182 (v1.7):
+#   • Table 3-56 "ZCU102 Power Rails with INA226 Power Monitors"
+#     Lists each monitored power rail, its regulator, and INA226 I2C address
+#     (e.g. VCCINT → PL:0x40).
+#   • Table 3-22 "I2C0 U60 (Addr. 0x75) Mux Target Bus Connections"
+#     Lists each physical INA226 chip by its PCB reference designator and
+#     I2C address (e.g. U79 → PL_PMBUS:0x40).
+#
+# Matching on I2C bus + address gives the definitive link:
+#   sysfs "ina226_u79" → (Table 3-22) PL:0x40 → (Table 3-56) VCCINT.
+ZCU102_SENSOR_MAP: dict[str, str] = {
+    # ---- PL_PMBUS (I2C mux channel 2) ----
+    "u79": "VCCINT",  # PL core supply — dominant DPU power (0x40)
+    "u81": "VCCBRAM",  # PL Block RAM supply (0x41)
+    "u80": "VCCAUX",  # PL auxiliary supply (0x42)
+    "u84": "VCC1V2",  # PL 1.2 V supply (0x43)
+    "u16": "VCC3V3",  # PL 3.3 V general I/O (0x44)
+    "u65": "VADJ_FMC",  # FMC adjustable VCCO (0x45)
+    "u74": "MGTAVCC",  # PL MGT transceiver analog core (0x46)
+    "u75": "MGTAVTT",  # PL MGT transceiver termination (0x47)
+    # ---- PS_PMBUS (I2C mux channel 1) ----
+    "u76": "VCCPSINTFP",  # PS full-power domain (APU + interconnect) (0x40)
+    "u77": "VCCPSINTLP",  # PS low-power domain (RPU) (0x41)
+    "u78": "VCCPSAUX",  # PS auxiliary supply (0x42)
+    "u87": "VCCPSPLL",  # PS PLL supply (0x43)
+    "u85": "MGTRAVCC",  # PS MGT transceiver analog core (0x44)
+    "u86": "MGTRAVTT",  # PS MGT transceiver termination (0x45)
+    "u93": "VCCO_PSDDR_504",  # PS DDR I/O supply (bank 504) (0x46)
+    "u88": "VCCOPS",  # PS operational supply (0x47)
+    "u15": "VCCOPS3",  # PS operational supply 3 (0x4A)
+    "u92": "VCCPSDDRPLL",  # PS DDR PLL supply (0x4B)
+}
+
+# Semantic groupings for power analysis reporting.
+# DPU workload power is dominated by VCCINT + VCCBRAM (PL fabric + BRAM).
+POWER_GROUPS: dict[str, list[str]] = {
+    "PL_total": [
+        "VCCINT",
+        "VCCBRAM",
+        "VCCAUX",
+        "VCC1V2",
+        "VCC3V3",
+        "VADJ_FMC",
+        "MGTAVCC",
+        "MGTAVTT",
+    ],
+    "PS_total": [
+        "VCCPSINTFP",
+        "VCCPSINTLP",
+        "VCCPSAUX",
+        "VCCPSPLL",
+        "MGTRAVCC",
+        "MGTRAVTT",
+        "VCCO_PSDDR_504",
+        "VCCOPS",
+        "VCCOPS3",
+        "VCCPSDDRPLL",
+    ],
+    "DPU_fabric": ["VCCINT", "VCCBRAM"],  # Directly driven by DPU activity
+    "PS_compute": ["VCCPSINTFP", "VCCPSINTLP"],  # ARM A53 (entropy coding)
+}
+
+
+def discover_ina226_sensors() -> dict[str, str]:
+    """Scan /sys/class/hwmon for INA226 sensors matching ZCU102 known rails.
+
+    Returns a dict mapping rail names to sysfs ``power1_input`` paths.
+    """
+    found: dict[str, str] = {}
+    hwmon_root = Path("/sys/class/hwmon")
+    if not hwmon_root.exists():
+        return found
+
+    for hwmon_dir in sorted(hwmon_root.iterdir()):
+        name_file = hwmon_dir / "name"
+        power_file = hwmon_dir / "power1_input"
+        if not name_file.exists() or not power_file.exists():
+            continue
+        try:
+            sensor_name = name_file.read_text().strip()  # e.g. "ina226_u79"
+        except OSError:
+            continue
+        if not sensor_name.startswith("ina226_"):
+            continue
+
+        u_ref = sensor_name.split("_", 1)[1]  # e.g. "u79"
+        if u_ref in ZCU102_SENSOR_MAP:
+            rail = ZCU102_SENSOR_MAP[u_ref]
+            found[rail] = str(power_file)
+
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Timer utility
+# ---------------------------------------------------------------------------
+class StepTimer:
+    """Accumulates per-step wall-clock durations using time.perf_counter().
+
+    Usage::
+
+        timer = StepTimer()
+        # ... iteration loop ...
+        timer.mark("g_a")          # start
+        runner_g_a.run(data)
+        timer.mark("h_a")          # end of g_a, start of h_a
+        runner_h_a.run(data)
+        timer.mark("_end")         # end of h_a
+        timer.commit()             # save this iteration's splits
+    """
+
+    def __init__(self) -> None:
+        self._marks: list[tuple[str, float]] = []
+        self._history: dict[str, list[float]] = {}
+
+    def mark(self, label: str) -> None:
+        self._marks.append((label, time.perf_counter()))
+
+    def commit(self) -> None:
+        """Compute durations between consecutive marks and store them."""
+        for i in range(len(self._marks) - 1):
+            name = self._marks[i][0]
+            dt = self._marks[i + 1][1] - self._marks[i][1]
+            self._history.setdefault(name, []).append(dt)
+        self._marks.clear()
+
+    def summary(self) -> dict[str, dict[str, float]]:
+        """Return per-step statistics (seconds)."""
+        out: dict[str, dict[str, float]] = {}
+        for name, vals in self._history.items():
+            if name.startswith("_"):
+                continue
+            out[name] = {
+                "mean_s": statistics.mean(vals),
+                "std_s": statistics.stdev(vals) if len(vals) > 1 else 0.0,
+                "median_s": statistics.median(vals),
+                "min_s": min(vals),
+                "max_s": max(vals),
+                "p95_s": sorted(vals)[int(0.95 * len(vals))],
+                "n": len(vals),
+            }
+        return out
+
+    def total_mean(self) -> float:
+        """Sum of mean durations across all (non-internal) steps."""
+        return sum(v["mean_s"] for k, v in self.summary().items() if not k.startswith("_"))
+
+
+# ---------------------------------------------------------------------------
+# Data helpers
+# ---------------------------------------------------------------------------
+def make_dummy_patch() -> np.ndarray:
+    """Create a random 256x256x2 float32 patch mimicking raw SAR complex data."""
+    return np.random.randn(IMAGE_SIZE, IMAGE_SIZE, 2).astype(np.float32)
+
+
+def load_real_patch(dataset_path: Path, index: int = 0) -> np.ndarray:
+    """Load a single patch from the .npy test set."""
+    data = np.load(dataset_path)
+    return data[index, :, :, :2].astype(np.float32)
+
+
+def preprocess_patch(noisy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Normalise a raw [H,W,2] patch into two [1, H, W, 1] NHWC inputs for g_a."""
+    noisy_sq = np.square(noisy)
+    noisy_logI = np.log(noisy_sq + EPS)
+    noisy_norm = (noisy_logI - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
+    real = noisy_norm[:, :, 0][np.newaxis, :, :, np.newaxis]  # [1, H, W, 1]
+    imag = noisy_norm[:, :, 1][np.newaxis, :, :, np.newaxis]
+    return real.astype(np.float32), imag.astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Scenario runners
+# ---------------------------------------------------------------------------
+def run_scenario_full(
+    real: np.ndarray,
+    imag: np.ndarray,
+    runners: dict[str, DPUSubgraphRunner],
+    eb: EntropyBottleneck,
+    gc: GaussianConditional,
+    timer: StepTimer,
+) -> int:
+    """Full compress + decompress.
+
+    Returns total compressed bytes.
+    """
+    timer.mark("preprocess")
+
+    # ---- Encode ----
+    timer.mark("dpu_g_a")
+    y_real = runners["g_a"].run(real)
+    y_imag = runners["g_a"].run(imag)
+
+    timer.mark("cpu_concat_abs")
+    y = np.concatenate((y_real, y_imag), axis=-1)
+    y_abs = np.abs(y)
+
+    timer.mark("dpu_h_a")
+    z = runners["h_a"].run(y_abs)
+
+    timer.mark("cpu_eb_compress")
+    z_strings = eb.compress(z)
+    z_bytes = sum(len(s) for s in z_strings)
+
+    timer.mark("cpu_eb_decompress")
+    z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
+
+    timer.mark("dpu_h_s")
+    scales = runners["h_s"].run(z_hat)
+
+    timer.mark("cpu_gc_compress")
+    means = np.zeros_like(y)
+    y_strings = gc.compress(y, scales, means)
+    y_bytes = sum(len(s) for s in y_strings)
+
+    # ---- Decode ----
+    timer.mark("cpu_gc_decompress")
+    y_hat = gc.decompress(y_strings, scales, means)
+
+    timer.mark("cpu_split_y_hat")
+    y_hat_real = y_hat[..., :C_MAIN]
+    y_hat_imag = y_hat[..., C_MAIN:]
+
+    timer.mark("dpu_g_s")
+    _recon_real = runners["g_s"].run(y_hat_real)
+    _recon_imag = runners["g_s"].run(y_hat_imag)
+
+    timer.mark("postprocess")
+    # (postprocess placeholder — no denorm needed for timing)
+    timer.mark("_end")
+    timer.commit()
+
+    return z_bytes + y_bytes
+
+
+def run_scenario_compress(
+    real: np.ndarray,
+    imag: np.ndarray,
+    runners: dict[str, DPUSubgraphRunner],
+    eb: EntropyBottleneck,
+    gc: GaussianConditional,
+    timer: StepTimer,
+) -> int:
+    """Compress only (encode path).
+
+    Returns compressed bytes.
+    """
+    timer.mark("preprocess")
+
+    timer.mark("dpu_g_a")
+    y_real = runners["g_a"].run(real)
+    y_imag = runners["g_a"].run(imag)
+
+    timer.mark("cpu_concat_abs")
+    y = np.concatenate((y_real, y_imag), axis=-1)
+    y_abs = np.abs(y)
+
+    timer.mark("dpu_h_a")
+    z = runners["h_a"].run(y_abs)
+
+    timer.mark("cpu_eb_compress")
+    z_strings = eb.compress(z)
+    z_bytes = sum(len(s) for s in z_strings)
+
+    timer.mark("cpu_eb_decompress")
+    z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
+
+    timer.mark("dpu_h_s")
+    scales = runners["h_s"].run(z_hat)
+
+    timer.mark("cpu_gc_compress")
+    means = np.zeros_like(y)
+    y_strings = gc.compress(y, scales, means)
+    y_bytes = sum(len(s) for s in y_strings)
+
+    timer.mark("_end")
+    timer.commit()
+    return z_bytes + y_bytes
+
+
+def run_scenario_decompress(
+    _real: np.ndarray,
+    _imag: np.ndarray,
+    runners: dict[str, DPUSubgraphRunner],
+    eb: EntropyBottleneck,
+    gc: GaussianConditional,
+    timer: StepTimer,
+    *,
+    cached_strings: dict[str, Any] | None = None,
+) -> int:
+    """Decompress only (decode path).
+
+    Needs pre-compressed bitstreams; pass via ``cached_strings``.
+    """
+    if cached_strings is None:
+        raise ValueError("decompress scenario requires cached_strings from a prior compress.")
+
+    z_strings = cached_strings["z_strings"]
+    y_strings = cached_strings["y_strings"]
+    z_shape = cached_strings["z_shape"]
+    scales_shape = cached_strings["scales_shape"]
+    z_bytes = cached_strings["z_bytes"]
+    y_bytes = cached_strings["y_bytes"]
+
+    timer.mark("cpu_eb_decompress")
+    z_hat = eb.decompress(z_strings, z_shape)
+
+    timer.mark("dpu_h_s")
+    scales = runners["h_s"].run(z_hat)
+
+    timer.mark("cpu_gc_decompress")
+    means = np.zeros(scales_shape, dtype=np.float32)
+    y_hat = gc.decompress(y_strings, scales, means)
+
+    timer.mark("cpu_split_y_hat")
+    y_hat_real = y_hat[..., :C_MAIN]
+    y_hat_imag = y_hat[..., C_MAIN:]
+
+    timer.mark("dpu_g_s")
+    _recon_real = runners["g_s"].run(y_hat_real)
+    _recon_imag = runners["g_s"].run(y_hat_imag)
+
+    timer.mark("_end")
+    timer.commit()
+    return z_bytes + y_bytes
+
+
+def run_scenario_dpu_only(
+    real: np.ndarray,
+    imag: np.ndarray,
+    runners: dict[str, DPUSubgraphRunner],
+    eb: EntropyBottleneck,
+    gc: GaussianConditional,
+    timer: StepTimer,
+) -> int:
+    """DPU subgraphs only — no entropy coding, no CPU pre/postprocessing."""
+    timer.mark("dpu_g_a")
+    y_real = runners["g_a"].run(real)
+    y_imag = runners["g_a"].run(imag)
+
+    timer.mark("cpu_concat_abs")
+    y = np.concatenate((y_real, y_imag), axis=-1)
+    y_abs = np.abs(y)
+
+    timer.mark("dpu_h_a")
+    z = runners["h_a"].run(y_abs)
+
+    timer.mark("dpu_h_s")
+    # For dpu_only we bypass entropy and feed z directly to h_s
+    # (this is not physically meaningful but isolates DPU latency).
+    scales = runners["h_s"].run(z)
+
+    timer.mark("dpu_g_s")
+    # Feed y directly (skip quantise/dequantise through entropy)
+    y_hat_real = y[..., :C_MAIN]
+    y_hat_imag = y[..., C_MAIN:]
+    _recon_real = runners["g_s"].run(y_hat_real)
+    _recon_imag = runners["g_s"].run(y_hat_imag)
+
+    timer.mark("_end")
+    timer.commit()
+    return 0
+
+
+def run_scenario_entropy_only(
+    real: np.ndarray,
+    imag: np.ndarray,
+    runners: dict[str, DPUSubgraphRunner],
+    eb: EntropyBottleneck,
+    gc: GaussianConditional,
+    timer: StepTimer,
+) -> int:
+    """Entropy coding only — produce latents via DPU then time only the CPU coding."""
+    # We need real latents for meaningful entropy coding, so run encoders once (untimed)
+    y_real = runners["g_a"].run(real)
+    y_imag = runners["g_a"].run(imag)
+    y = np.concatenate((y_real, y_imag), axis=-1)
+    y_abs = np.abs(y)
+    z = runners["h_a"].run(y_abs)
+
+    # --- Timed section ---
+    timer.mark("cpu_eb_compress")
+    z_strings = eb.compress(z)
+    z_bytes = sum(len(s) for s in z_strings)
+
+    timer.mark("cpu_eb_decompress")
+    z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
+
+    # Need scales for GC
+    scales = runners["h_s"].run(z_hat)
+
+    timer.mark("cpu_gc_compress")
+    means = np.zeros_like(y)
+    y_strings = gc.compress(y, scales, means)
+    y_bytes = sum(len(s) for s in y_strings)
+
+    timer.mark("cpu_gc_decompress")
+    _y_hat = gc.decompress(y_strings, scales, means)
+
+    timer.mark("_end")
+    timer.commit()
+    return z_bytes + y_bytes
+
+
+# ---------------------------------------------------------------------------
+# Pre-compress helper for decompress scenario
+# ---------------------------------------------------------------------------
+def _precompress(
+    real: np.ndarray,
+    imag: np.ndarray,
+    runners: dict[str, DPUSubgraphRunner],
+    eb: EntropyBottleneck,
+    gc: GaussianConditional,
+) -> dict[str, Any]:
+    """Run a single encode pass and cache everything the decompress scenario needs."""
+    y_real = runners["g_a"].run(real)
+    y_imag = runners["g_a"].run(imag)
+    y = np.concatenate((y_real, y_imag), axis=-1)
+    y_abs = np.abs(y)
+    z = runners["h_a"].run(y_abs)
+
+    z_strings = eb.compress(z)
+    z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
+    scales = runners["h_s"].run(z_hat)
+    means = np.zeros_like(y)
+    y_strings = gc.compress(y, scales, means)
+
+    return {
+        "z_strings": z_strings,
+        "y_strings": y_strings,
+        "z_shape": (z.shape[1], z.shape[2]),
+        "scales_shape": scales.shape,
+        "z_bytes": sum(len(s) for s in z_strings),
+        "y_bytes": sum(len(s) for s in y_strings),
+    }
+
+
+# ---------------------------------------------------------------------------
+# xdputil metadata (parsed from xmodel -l output)
+# ---------------------------------------------------------------------------
+def get_xmodel_metadata(xmodel_path: Path) -> dict[str, Any]:
+    """Run 'xdputil xmodel -l' and parse the JSON output for workload/memory info."""
+    try:
+        result = subprocess.run(
+            ["xdputil", "xmodel", str(xmodel_path), "-l"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        data = json.loads(result.stdout)
+    except Exception as e:
+        print(f"Warning: could not parse xdputil xmodel -l output: {e}")
+        return {}
+
+    subgraphs = data.get("subgraphs", [])
+    meta: dict[str, Any] = {"subgraphs": {}}
+    for sg in subgraphs:
+        if sg.get("device") != "DPU":
+            continue
+        name = sg.get("name", "")
+        role = None
+        for r in ("g_a", "h_a", "h_s", "g_s"):
+            if r in name:
+                role = r
+                break
+        if role is None:
+            continue
+
+        regs = {ri["name"]: ri for ri in sg.get("reg info", [])}
+        meta["subgraphs"][role] = {
+            "workload_ops": sg.get("workload", 0),
+            "const_bytes": regs.get("REG_0", {}).get("size", 0),
+            "workspace_bytes": regs.get("REG_1", {}).get("size", 0),
+            "input_bytes": regs.get("REG_2", {}).get("size", 0),
+            "output_bytes": regs.get("REG_3", {}).get("size", 0),
+            "fixpos_in": sg.get("input_tensor", [{}])[0].get("fixpos", None),
+            "fixpos_out": sg.get("output_tensor", [{}])[0].get("fixpos", None),
+        }
+
+    # Total workload across all DPU subgraphs
+    meta["total_workload_ops"] = sum(s["workload_ops"] for s in meta["subgraphs"].values())
+    meta["total_const_bytes"] = sum(s["const_bytes"] for s in meta["subgraphs"].values())
+
+    return meta
+
+
+def get_dpu_query_info() -> dict[str, Any]:
+    """Run 'xdputil query' and extract DPU frequency, arch, core count."""
+    try:
+        result = subprocess.run(
+            ["xdputil", "query"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # Filter only the JSON part (skip stderr warnings)
+        lines = result.stdout.strip().split("\n")
+        json_start = next(i for i, l in enumerate(lines) if l.strip().startswith("{"))
+        json_str = "\n".join(lines[json_start:])
+        data = json.loads(json_str)
+    except Exception as e:
+        print(f"Warning: could not parse xdputil query output: {e}")
+        return {}
+
+    kernels = data.get("kernels", [])
+    dpu_cores = [k for k in kernels if k.get("IP Type") == "DPU"]
+    info: dict[str, Any] = {
+        "n_dpu_cores": len(dpu_cores),
+        "vai_version": data.get("VAI Version", {}),
+        "dpu_ip_spec": data.get("DPU IP Spec", {}),
+    }
+    if dpu_cores:
+        info["dpu_arch"] = dpu_cores[0].get("DPU Arch", "")
+        info["dpu_freq_mhz"] = dpu_cores[0].get("DPU Frequency (MHz)", 0)
+        info["fingerprint"] = dpu_cores[0].get("fingerprint", "")
+    return info
+
+
+# ---------------------------------------------------------------------------
+# Main benchmark
+# ---------------------------------------------------------------------------
+def run_benchmark(
+    xmodel_path: Path,
+    scenario: str,
+    n_warmup: int,
+    n_iters: int,
+    data_path: Path | None,
+    measure_power: bool,
+    power_poll_hz: float,
+    idle_baseline_s: float = 0.0,
+) -> dict[str, Any]:
+    """Run the benchmark and return a results dictionary."""
+    print(f"Scenario : {scenario}")
+    print(f"Warmup   : {n_warmup} iterations")
+    print(f"Measured : {n_iters} iterations")
+    print(f"Power    : {'ON' if measure_power else 'OFF'}")
+
+    # ---- Load model ----
+    entropy_path = xmodel_path.parent / "entropy_params.npz"
+    graph = xir.Graph.deserialize(str(xmodel_path))
+    sg_map = identify_subgraphs(graph, xmodel_path.parent / "meta.json")
+
+    data = np.load(entropy_path)
+    eb = EntropyBottleneck(
+        channels=data["eb_cdf_length"].shape[0],
+        quantized_cdf=data["eb_quantized_cdf"],
+        cdf_length=data["eb_cdf_length"],
+        offset=data["eb_offset"],
+        medians=data.get("eb_medians"),
+    )
+    gc = GaussianConditional(
+        scale_table=data["gc_scale_table"],
+        quantized_cdf=data["gc_quantized_cdf"],
+        cdf_length=data["gc_cdf_length"],
+        offset=data["gc_offset"],
+    )
+
+    runners: dict[str, DPUSubgraphRunner] = {}
+    for key, sg in sg_map.items():
+        runners[key] = DPUSubgraphRunner(
+            vart.Runner.create_runner(sg, "run"),
+            sg,
+            key,
+        )
+
+    # ---- Prepare input ----
+    if data_path is not None and data_path.exists():
+        noisy = load_real_patch(data_path, index=0)
+        print(f"Using real data from {data_path}")
+    else:
+        noisy = make_dummy_patch()
+        print("Using random dummy patch (no --data provided)")
+
+    real, imag = preprocess_patch(noisy)
+
+    # ---- Select scenario function ----
+    scenario_fn_map = {
+        "full": run_scenario_full,
+        "compress": run_scenario_compress,
+        "decompress": run_scenario_decompress,
+        "dpu_only": run_scenario_dpu_only,
+        "entropy_only": run_scenario_entropy_only,
+    }
+    scenario_fn = scenario_fn_map[scenario]
+
+    # For decompress, pre-compress once to get bitstreams
+    cached_strings: dict[str, Any] | None = None
+    if scenario == "decompress":
+        print("Pre-compressing to obtain bitstreams for decompress scenario...")
+        cached_strings = _precompress(real, imag, runners, eb, gc)
+
+    # ---- Power setup ----
+    power_sampler: INA226PowerSampler | None = None
+    if measure_power:
+        rails = discover_ina226_sensors()
+        if rails:
+            print(f"Discovered {len(rails)} power rails: {list(rails.keys())}")
+            power_sampler = INA226PowerSampler(rails, poll_interval_s=1.0 / power_poll_hz)
+        else:
+            print("Warning: No INA226 sensors found — power measurement disabled.")
+
+    # ---- Idle baseline (power only, no inference) ----
+    idle_baseline_results: dict[str, dict[str, float]] | None = None
+    if power_sampler is not None and idle_baseline_s > 0:
+        print(f"\nCapturing idle baseline ({idle_baseline_s:.0f}s, no inference)...")
+        idle_sampler = INA226PowerSampler(
+            {r: p for r, p in discover_ina226_sensors().items()},
+            poll_interval_s=1.0 / power_poll_hz,
+        )
+        idle_sampler.start()
+        time.sleep(idle_baseline_s)
+        idle_sampler.stop()
+        idle_baseline_results = idle_sampler.results()
+        print("Idle baseline captured.")
+
+    # ---- Warmup ----
+    print(f"\nWarmup ({n_warmup} iterations)...")
+    warmup_timer = StepTimer()
+    for _ in range(n_warmup):
+        kwargs = {}
+        if scenario == "decompress":
+            kwargs["cached_strings"] = cached_strings
+        scenario_fn(real, imag, runners, eb, gc, warmup_timer, **kwargs)  # type: ignore
+
+    # ---- Measured runs ----
+    print(f"Benchmarking ({n_iters} iterations)...")
+    timer = StepTimer()
+    total_bytes_list: list[int] = []
+
+    if power_sampler is not None:
+        power_sampler.start()
+
+    wall_start = time.perf_counter()
+    for _ in range(n_iters):
+        kwargs = {}
+        if scenario == "decompress":
+            kwargs["cached_strings"] = cached_strings
+        nbytes = scenario_fn(real, imag, runners, eb, gc, timer, **kwargs)  # type: ignore
+        total_bytes_list.append(nbytes)
+    wall_end = time.perf_counter()
+
+    if power_sampler is not None:
+        power_sampler.stop()
+
+    wall_total = wall_end - wall_start
+
+    # ---- Collect results ----
+    step_summary = timer.summary()
+
+    # Aggregate DPU-only and CPU-only times
+    dpu_steps = [k for k in step_summary if k.startswith("dpu_")]
+    cpu_steps = [k for k in step_summary if k.startswith("cpu_")]
+    dpu_total_mean = sum(step_summary[k]["mean_s"] for k in dpu_steps)
+    cpu_total_mean = sum(step_summary[k]["mean_s"] for k in cpu_steps)
+
+    # Per-iteration total from step sums
+    iter_mean = timer.total_mean()
+
+    results: dict[str, Any] = {
+        # Metadata
+        "platform": "FPGA_ZCU102",
+        "scenario": scenario,
+        "timestamp": datetime.now().isoformat(),
+        "n_warmup": n_warmup,
+        "n_iters": n_iters,
+        # Latency breakdown (seconds)
+        "latency_breakdown": step_summary,
+        "latency_total_mean_s": iter_mean,
+        "latency_total_mean_ms": iter_mean * 1000,
+        "latency_dpu_total_mean_ms": dpu_total_mean * 1000,
+        "latency_cpu_total_mean_ms": cpu_total_mean * 1000,
+        "latency_wall_total_s": wall_total,
+        # Throughput
+        "throughput_fps": n_iters / wall_total,
+        # Compression (only meaningful for full/compress/decompress)
+        "avg_compressed_bytes": (
+            statistics.mean(total_bytes_list)
+            if total_bytes_list and total_bytes_list[0] > 0
+            else None
+        ),
+    }
+
+    # Power
+    if power_sampler is not None:
+        per_rail = power_sampler.results()
+        power_data: dict[str, Any] = {"per_rail": per_rail}
+
+        # Aggregate by semantic group
+        groups_agg: dict[str, float] = {}
+        for group_name, group_rails in POWER_GROUPS.items():
+            total_w = sum(per_rail[r]["avg_power_w"] for r in group_rails if r in per_rail)
+            groups_agg[group_name] = round(total_w, 4)
+        power_data["groups_avg_w"] = groups_agg
+
+        # Board total
+        board_total_w = sum(v["avg_power_w"] for v in per_rail.values())
+        power_data["board_total_avg_w"] = round(board_total_w, 4)
+
+        # Idle baseline (if captured)
+        if idle_baseline_results is not None:
+            power_data["idle_baseline"] = idle_baseline_results
+            idle_total_w = sum(v["avg_power_w"] for v in idle_baseline_results.values())
+            power_data["idle_board_total_avg_w"] = round(idle_total_w, 4)
+
+        results["power"] = power_data
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--xmodel", required=True, help="Path to compiled .xmodel")
+    parser.add_argument(
+        "--scenario",
+        required=True,
+        choices=SCENARIOS,
+        help="Which pipeline stage(s) to benchmark.",
+    )
+    parser.add_argument("--data", default=None, help="Path to .npy test set (uses first patch)")
+    parser.add_argument("--warmup", type=int, default=20, help="Warmup iterations (default: 20)")
+    parser.add_argument(
+        "--iters", type=int, default=100, help="Measured iterations (default: 100)"
+    )
+    parser.add_argument(
+        "--power",
+        action="store_true",
+        help="Enable INA226 power sampling during benchmark.",
+    )
+    parser.add_argument(
+        "--power-hz",
+        type=float,
+        default=50.0,
+        help="Power sampling frequency in Hz (default: 50).",
+    )
+    parser.add_argument(
+        "--collect-hw-meta",
+        action="store_true",
+        help="Also run xdputil query / xmodel -l and include HW metadata in output.",
+    )
+    parser.add_argument(
+        "--idle-baseline",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="Capture idle power baseline for N seconds before benchmarking (requires --power).",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Output JSON path (default: results/benchmark_<scenario>.json)",
+    )
+    args = parser.parse_args()
+
+    xmodel_path = Path(args.xmodel).resolve()
+    if not xmodel_path.exists():
+        print(f"Error: {xmodel_path} not found.")
+        sys.exit(1)
+
+    data_path = Path(args.data).resolve() if args.data else None
+
+    # Run benchmark
+    results = run_benchmark(
+        xmodel_path=xmodel_path,
+        scenario=args.scenario,
+        n_warmup=args.warmup,
+        n_iters=args.iters,
+        data_path=data_path,
+        measure_power=args.power,
+        power_poll_hz=args.power_hz,
+        idle_baseline_s=args.idle_baseline,
+    )
+
+    # Optional HW metadata
+    if args.collect_hw_meta:
+        print("\nCollecting hardware metadata...")
+        results["hw_dpu_info"] = get_dpu_query_info()
+        results["hw_xmodel_meta"] = get_xmodel_metadata(xmodel_path)
+
+    # Save
+    output_dir = xmodel_path.parent / "results"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = Path(args.output) if args.output else output_dir / f"benchmark_{args.scenario}.json"
+    with open(out_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nResults saved to {out_path}")
+
+    # Print summary
+    print(f"\n{'=' * 60}")
+    print(f"  BENCHMARK SUMMARY — {args.scenario}")
+    print(f"{'=' * 60}")
+    print(f"  Total latency  : {results['latency_total_mean_ms']:.2f} ms / patch")
+    print(f"    DPU time     : {results['latency_dpu_total_mean_ms']:.2f} ms")
+    print(f"    CPU time     : {results['latency_cpu_total_mean_ms']:.2f} ms")
+    print(f"  Throughput     : {results['throughput_fps']:.2f} patches/s")
+    if results.get("avg_compressed_bytes"):
+        bpp = results["avg_compressed_bytes"] * 8 / (IMAGE_SIZE * IMAGE_SIZE)
+        print(f"  Avg BPP        : {bpp:.4f}")
+    if "power" in results:
+        pdata = results["power"]
+        print(f"  Board total    : {pdata.get('board_total_avg_w', 0):.3f} W")
+        for group, watts in pdata.get("groups_avg_w", {}).items():
+            print(f"    {group:14s} : {watts:.3f} W")
+        if "idle_board_total_avg_w" in pdata:
+            print(f"  Idle baseline  : {pdata['idle_board_total_avg_w']:.3f} W")
+            delta = pdata["board_total_avg_w"] - pdata["idle_board_total_avg_w"]
+            print(f"  Dynamic delta  : {delta:.3f} W")
+
+    print("\n  Per-step breakdown:")
+    for step, stats in results["latency_breakdown"].items():
+        print(f"    {step:25s} : {stats['mean_s']*1000:8.3f} ms  (std={stats['std_s']*1000:.3f})")
+    print(f"{'=' * 60}")
+
+
+if __name__ == "__main__":
+    main()
