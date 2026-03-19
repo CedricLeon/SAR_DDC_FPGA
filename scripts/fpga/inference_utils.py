@@ -96,6 +96,10 @@ class MetricsTracker:
             "psnr": self.compute_psnr,
             "ssim": self.compute_ssim,
             "ms_ssim": self.compute_ms_ssim,
+            "enl": self.compute_enl,
+            "ratio_mean": self.compute_ratio_mean,
+            "ratio_enl": self.compute_ratio_enl,
+            "epd": self.compute_epd,
         }
         self._sums: Dict[str, float] = {name: 0.0 for name in self._metric_names}
         self._count: int = 0
@@ -145,6 +149,60 @@ class MetricsTracker:
         return 0.0  # cv2 does not provide MS-SSIM
 
     @staticmethod
+    def compute_enl(a: np.ndarray, roi: Optional[Tuple[int, int, int, int]] = None) -> float:
+        """ENL on linear intensity.
+
+        roi=(r0, r1, c0, c1) optional crop for homogeneous regions.
+        """
+        arr = a.squeeze().astype(np.float32)
+        if roi is not None:
+            r0, r1, c0, c1 = roi
+            arr = arr[r0:r1, c0:c1]
+        lin_intensity = np.square(arr)
+        mu = float(np.mean(lin_intensity))
+        var = float(np.var(lin_intensity))
+        return mu**2 / var if var > 0.0 else float("nan")
+
+    @staticmethod
+    def compute_ratio_mean(recon: np.ndarray, noisy: np.ndarray) -> float:
+        """Mean of ratio image R = noisy_I / recon_I.
+
+        >1 = residual speckle, <1 = over-smooth.
+        """
+        recon_I = np.square(recon.squeeze().astype(np.float32))
+        noisy_I = np.square(noisy.squeeze().astype(np.float32))
+        return float(np.mean(noisy_I / (recon_I + 1e-10)))
+
+    @staticmethod
+    def compute_ratio_enl(recon: np.ndarray, noisy: np.ndarray) -> float:
+        """ENL of the ratio image R = noisy_I / recon_I."""
+        recon_I = np.square(recon.squeeze().astype(np.float32))
+        noisy_I = np.square(noisy.squeeze().astype(np.float32))
+        ratio = noisy_I / (recon_I + 1e-10)
+        mu = float(np.mean(ratio))
+        var = float(np.var(ratio))
+        return mu**2 / var if var > 0.0 else float("nan")
+
+    @staticmethod
+    def compute_epd(recon: np.ndarray, ref: np.ndarray) -> float:
+        """Edge Preservation Degree in linA domain.
+
+        EPD=1.0 means perfect edge preservation.
+        """
+
+        def _grad_mag(img: np.ndarray) -> np.ndarray:
+            gx = np.zeros_like(img)
+            gy = np.zeros_like(img)
+            gx[:, 1:-1] = img[:, 2:] - img[:, :-2]
+            gy[1:-1, :] = img[2:, :] - img[:-2, :]
+            return np.sqrt(gx**2 + gy**2)
+
+        g_r = _grad_mag(recon.squeeze().astype(np.float32))
+        g_f = _grad_mag(ref.squeeze().astype(np.float32))
+        denom = float(np.sum(g_f**2))
+        return float(np.sum(g_r * g_f) / denom) if denom > 0.0 else float("nan")
+
+    @staticmethod
     def compute_bitstream_bpp(x_shape_holder: np.ndarray, num_bytes: int) -> float:
         """Compute BPP.
 
@@ -171,6 +229,8 @@ class MetricsTracker:
 
             if name == "bpp":
                 value = self.compute_bitstream_bpp(recon_linA, num_bytes)
+            elif name == "enl":
+                value = self.compute_enl(recon_linA)
             else:
                 value = fn(recon_linA, target_linA)
 

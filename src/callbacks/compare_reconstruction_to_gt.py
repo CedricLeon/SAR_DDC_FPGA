@@ -12,8 +12,19 @@ from matplotlib.ticker import FuncFormatter
 
 from src.utils.constants import AMP_MAX, AMP_MIN, EPS
 from src.utils.debug import print_images_statistics
-from src.utils.metrics import compute_bitstream_bpp, get_all_distortion_metrics
+from src.utils.metrics import (
+    compute_bitstream_bpp,
+    enl,
+    epd,
+    get_all_distortion_metrics,
+    ratio_enl,
+    ratio_mean,
+)
 from src.utils.processing_utils import clip, patch_infer
+
+# Homogeneous water-body ROI in the 1024×1024 Hamburg large tile [rows 800:1000, cols 400:600].
+# Used to compute ENL on a texture-free area for reliable speckle statistics.
+HAMBURG_ENL_ROI: tuple = (400, 600, 800, 1000)
 
 
 class CompareReconstructionToGT(Callback):
@@ -140,7 +151,7 @@ class CompareReconstructionToGT(Callback):
         """Log the final reconstruction of the large patch at the end of testing."""
         # We only need to run this callback once, so we mute it if it's called on the "test_sub500.npy" set used for FPGA comparison
         prefix = getattr(pl_module, "test_prefix", "test")
-        if "sub500" in prefix:
+        if "sub500" not in prefix:
             print(
                 f"\n[CompareReconstructionToGT] Skipping on {prefix} set to avoid redundant logging."
             )
@@ -248,6 +259,12 @@ class CompareReconstructionToGT(Callback):
             "bpp_bitstream": -1.0,
             "ssim": -1.0,
             "ms_ssim": -1.0,
+            # SAR quality metrics
+            "enl_recon": -1.0,
+            "enl_roi": -1.0,
+            "ratio_mean": -1.0,
+            "ratio_enl": -1.0,
+            "epd": -1.0,
         }
         if "loss" in criterion:
             metrics_to_merlin["loss"] = criterion["loss"].item()
@@ -255,6 +272,13 @@ class CompareReconstructionToGT(Callback):
         if self.merlin_linA is not None:
             for key, value in get_all_distortion_metrics(recon_linA, self.merlin_linA).items():
                 metrics_to_merlin[key] = value
+            metrics_to_merlin["epd"] = epd(recon_linA, self.merlin_linA)
+
+        # SAR quality metrics (reference-free / noisy-paired)
+        metrics_to_merlin["enl_recon"] = enl(recon_linA)
+        metrics_to_merlin["enl_roi"] = enl(recon_linA, roi=HAMBURG_ENL_ROI)
+        metrics_to_merlin["ratio_mean"] = ratio_mean(recon_linA, self.noisy_linA)
+        metrics_to_merlin["ratio_enl"] = ratio_enl(recon_linA, self.noisy_linA)
 
         # Log BPP from criterion (likelihood)
         if "bpp" in criterion:

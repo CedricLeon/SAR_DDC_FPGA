@@ -66,6 +66,9 @@ W_HYPER = W_LATENT // S_HYPER  # width of latent representation z
 C_MAIN = 128  # Number channels main autoencoder (g_a, g_s)
 C_HYPER = C_MAIN * 2  # Number channels hyperprior (h_a, h_s)
 
+# ROI for ENL on Hamburg tile — water body (homogeneous region)
+HAMBURG_ENL_ROI: Tuple[int, int, int, int] = (400, 600, 800, 1000)
+
 
 # -----------------------------------------------------------------------------
 # DPU RUNNER HELPER
@@ -425,10 +428,12 @@ def run_hybrid_inference(
     log(f"Loaded {n_samples} samples.")
 
     # Metrics
-    metric_list = ["bpp", "mse", "psnr", "ssim"]
-    tracker_noisy = MetricsTracker(metric_list)
-    tracker_adam = MetricsTracker(metric_list)
-    tracker_merlin = MetricsTracker(metric_list)
+    metric_list_common = ["bpp", "mse", "psnr", "ssim"]
+    metric_list_noisy = metric_list_common + ["enl", "ratio_mean", "ratio_enl"]
+    metric_list_ref = metric_list_common + ["epd"]
+    tracker_noisy = MetricsTracker(metric_list_noisy)
+    tracker_adam = MetricsTracker(metric_list_ref)
+    tracker_merlin = MetricsTracker(metric_list_ref)
 
     start_time = time.time()
 
@@ -531,6 +536,17 @@ def run_hybrid_inference(
             log(f"    {k}: {v:.4f}")
         summary[name] = res
 
+    # Collect reference-free reconstruction metrics under a dedicated key
+    noisy_res = summary["Noisy"]
+    summary["recon"] = {
+        "enl": noisy_res.get("enl", float("nan")),
+        "ratio_mean": noisy_res.get("ratio_mean", float("nan")),
+        "ratio_enl": noisy_res.get("ratio_enl", float("nan")),
+    }
+    log("  Recon (reference-free):")
+    for k, v in summary["recon"].items():
+        log(f"    {k}: {v:.4f}")
+
     with open(output_dir / "metrics.json", "w") as f:
         json.dump(summary, f, indent=4)
 
@@ -613,6 +629,13 @@ def run_hybrid_inference(
             tile_metrics[f"psnr_{ref_name}"] = MetricsTracker.compute_psnr(recon_linA, ref_linA)
             tile_metrics[f"mse_{ref_name}"] = MetricsTracker.compute_mse(recon_linA, ref_linA)
             tile_metrics[f"ssim_{ref_name}"] = MetricsTracker.compute_ssim(recon_linA, ref_linA)
+            tile_metrics[f"epd_{ref_name}"] = MetricsTracker.compute_epd(recon_linA, ref_linA)
+
+        # Reference-free SAR metrics on the reconstruction
+        tile_metrics["enl_recon"] = MetricsTracker.compute_enl(recon_linA)
+        tile_metrics["enl_roi"] = MetricsTracker.compute_enl(recon_linA, roi=HAMBURG_ENL_ROI)
+        tile_metrics["ratio_mean"] = MetricsTracker.compute_ratio_mean(recon_linA, noisy_linA)
+        tile_metrics["ratio_enl"] = MetricsTracker.compute_ratio_enl(recon_linA, noisy_linA)
 
         log(f"Metrics: {tile_metrics}")
         log(f"Time: {time.time() - start_tile:.2f}s")

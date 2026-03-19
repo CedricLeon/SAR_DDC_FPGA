@@ -1,5 +1,5 @@
 import math
-from typing import Dict, Literal, Optional, Union
+from typing import Dict, Literal, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -17,7 +17,6 @@ from torchmetrics.image import (
 )
 
 from src.utils.constants import AMP_LIN_99, AMP_MAX, AMP_MIN, EPS
-from src.utils.debug import print_statistics
 
 
 def get_all_distortion_metrics(
@@ -97,6 +96,109 @@ def ms_ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = Non
     return multiscale_structural_similarity_index_measure(
         predicted, target, data_range=data_range
     ).item()
+
+
+def enl(
+    linA: Union[Tensor, np.ndarray],
+    roi: Optional[Tuple[int, int, int, int]] = None,
+) -> float:
+    """Equivalent Number of Looks computed on linear intensity I = linA².
+
+    ENL = E[I]² / Var[I].  Higher ENL → more speckle reduction.
+
+    Args:
+        linA: Reconstruction in linear amplitude.  Any shape — squeezed to 2-D before use.
+        roi:  Optional (r0, r1, c0, c1) crop applied before computing.  Use to restrict
+              the metric to a homogeneous region (avoids texture bias).
+    """
+    arr: np.ndarray = linA.detach().cpu().numpy() if isinstance(linA, Tensor) else np.asarray(linA)
+    arr = arr.squeeze().astype(np.float32)
+    if roi is not None:
+        r0, r1, c0, c1 = roi
+        arr = arr[r0:r1, c0:c1]
+    lin_intensity = np.square(arr)
+    mu = float(np.mean(lin_intensity))
+    var = float(np.var(lin_intensity))
+    return mu**2 / var if var > 0.0 else float("nan")
+
+
+def ratio_mean(
+    recon_linA: Union[Tensor, np.ndarray],
+    noisy_linA: Union[Tensor, np.ndarray],
+) -> float:
+    """Mean of the ratio image R = I_noisy / I_recon (linear intensity).
+
+    R ≈ 1.0 → ideal filter.  R > 1 → under-filtering (residual speckle). R < 1 → over-smoothing.
+    """
+
+    def _arr(x: Union[Tensor, np.ndarray]) -> np.ndarray:
+        return (
+            (x.detach().cpu().numpy() if isinstance(x, Tensor) else np.asarray(x))
+            .squeeze()
+            .astype(np.float32)
+        )
+
+    recon_I = np.square(_arr(recon_linA))
+    noisy_I = np.square(_arr(noisy_linA))
+    return float(np.mean(noisy_I / (recon_I + 1e-10)))
+
+
+def ratio_enl(
+    recon_linA: Union[Tensor, np.ndarray],
+    noisy_linA: Union[Tensor, np.ndarray],
+) -> float:
+    """ENL of the ratio image R = I_noisy / I_recon (linear intensity).
+
+    For a perfect speckle filter R ~ Gamma(L, 1/L), so ENL(R) = L (number of looks). Deviations
+    signal over-smoothing (ENL(R) < L) or residual speckle (ENL(R) > L).
+    """
+
+    def _arr(x: Union[Tensor, np.ndarray]) -> np.ndarray:
+        return (
+            (x.detach().cpu().numpy() if isinstance(x, Tensor) else np.asarray(x))
+            .squeeze()
+            .astype(np.float32)
+        )
+
+    recon_I = np.square(_arr(recon_linA))
+    noisy_I = np.square(_arr(noisy_linA))
+    ratio = noisy_I / (recon_I + 1e-10)
+    mu = float(np.mean(ratio))
+    var = float(np.var(ratio))
+    return mu**2 / var if var > 0.0 else float("nan")
+
+
+def epd(
+    recon_linA: Union[Tensor, np.ndarray],
+    ref_linA: Union[Tensor, np.ndarray],
+) -> float:
+    r"""Edge Preservation Degree in linear amplitude.
+
+    EPD = Σ(\|∇recon\| · \|∇ref\|) / Σ(\|∇ref\|²). EPD = 1.0 → perfect edge preservation.  EPD < 1
+    → edge attenuation.
+
+    Uses a central-difference gradient for NumPy-only / Python-3.8 compatibility (consistent with
+    the FPGA-side implementation in inference_utils.py).
+    """
+
+    def _arr(x: Union[Tensor, np.ndarray]) -> np.ndarray:
+        return (
+            (x.detach().cpu().numpy() if isinstance(x, Tensor) else np.asarray(x))
+            .squeeze()
+            .astype(np.float32)
+        )
+
+    def _grad_mag(img: np.ndarray) -> np.ndarray:
+        gx = np.zeros_like(img)
+        gy = np.zeros_like(img)
+        gx[:, 1:-1] = img[:, 2:] - img[:, :-2]
+        gy[1:-1, :] = img[2:, :] - img[:-2, :]
+        return np.sqrt(gx**2 + gy**2)
+
+    grad_recon = _grad_mag(_arr(recon_linA))
+    grad_ref = _grad_mag(_arr(ref_linA))
+    denom = float(np.sum(grad_ref**2))
+    return float(np.sum(grad_recon * grad_ref) / denom) if denom > 0.0 else float("nan")
 
 
 def estimate_likelihoods_bpp(

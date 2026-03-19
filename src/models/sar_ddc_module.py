@@ -7,7 +7,17 @@ import torchmetrics.functional.image as F
 from torch import Tensor
 
 from src.utils.constants import AMP_MAX, AMP_MIN, EPS
-from src.utils.metrics import compute_bitstream_bpp, mse, psnr
+from src.utils.metrics import (
+    compute_bitstream_bpp,
+    enl,
+    epd,
+    ms_ssim,
+    mse,
+    psnr,
+    ratio_enl,
+    ratio_mean,
+    ssim,
+)
 
 
 class SARDDCModule(lightning.LightningModule):
@@ -191,8 +201,12 @@ class SARDDCModule(lightning.LightningModule):
 
         # Compute normal losses with Noise2Noise approach
         criterion = self.criterion(output, target=input)
-        prefix = getattr(self, "test_prefix", "test")
-        all_metrics = {f"{prefix}/{key}": value for key, value in criterion.items()}
+        prefix = getattr(self, "test_prefix", "test_unknown")
+        all_metrics = {
+            f"{prefix}/{key}": value
+            for key, value in criterion.items()
+            if key in ["bpp", "merlin", "loss"]
+        }
         all_metrics[f"{prefix}/aux"] = self.net.aux_loss().item()
 
         # Calculate and log real bitstream BPP
@@ -206,6 +220,17 @@ class SARDDCModule(lightning.LightningModule):
         clean_im_real = torch.square(recon_lin[:, 0, :, :])
         clean_im_imag = torch.square(recon_lin[:, 1, :, :])
         clean_im = torch.sqrt(0.5 * (clean_im_real + clean_im_imag)).unsqueeze(1)
+
+        # ── SAR quality metrics (reference-free / noisy-paired) ─────────────────────
+        # noisy_linA: MERLIN convention — average Re²+Im² power, then sqrt
+        noisy_linA = torch.sqrt(0.5 * (torch.square(batch["real"]) + torch.square(batch["imag"])))
+        all_metrics[f"{prefix}/mse_noisy"] = mse(clean_im, noisy_linA)
+        all_metrics[f"{prefix}/psnr_noisy"] = psnr(clean_im, noisy_linA)
+        all_metrics[f"{prefix}/ssim_noisy"] = ssim(clean_im, noisy_linA)
+        all_metrics[f"{prefix}/ms_ssim_noisy"] = ms_ssim(clean_im, noisy_linA)
+        all_metrics[f"{prefix}/enl_recon"] = enl(clean_im)
+        all_metrics[f"{prefix}/ratio_mean"] = ratio_mean(clean_im, noisy_linA)
+        all_metrics[f"{prefix}/ratio_enl"] = ratio_enl(clean_im, noisy_linA)
 
         # Load GTs references
         if "adam_noc_ref" in batch and "merlin_ref" in batch:
@@ -241,6 +266,9 @@ class SARDDCModule(lightning.LightningModule):
                     clean_im, merlin_ref, data_range=peak
                 )
             )
+            # EPD (Edge Preservation Degree, linA)
+            all_metrics[f"{prefix}/epd_adam_noc"] = epd(clean_im, adam_noc_ref)
+            all_metrics[f"{prefix}/epd_merlin"] = epd(clean_im, merlin_ref)
         else:
             # Just skip metrics if references are not available (e.g. testing only on .npy patches)
             pass
