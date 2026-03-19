@@ -47,10 +47,12 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 FILTERS_CONFIG = [
     ("model.criterion.lmbda", "in", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]),
-    # ("seed", "==", 10),
-    ("seed", "in", [0, 1, 2, 3, 4, 5, 6]),
-    # ("model.net.activation", "==", "gdn"),
-    # ("model.net.no_output_padding", "==", True),
+    # ("seed", "==", 42),
+    ("seed", "in", [0, 1, 2, 3, 4, 5]),  # exclude seed=42 (manual test run)
+    # Restrict to DPU-deployable architecture to match FPGA comparison set.
+    # Comment these two lines out to re-evaluate all architectures.
+    ("model.net.activation", "==", "relu"),
+    ("model.net.no_output_padding", "==", True),
     # ("retested_on", "is_none", None),
     # ("retested_on", "is_none_or_older_than", datetime(2026, 2, 12, 23, 59, 0)),
     # ("retested_on", "is_after", datetime(2026, 2, 11, 10, 0, 0)),
@@ -213,7 +215,10 @@ def evaluate_model_captured(
         default_root_dir=str(log_dir),
         # limit_test_batches=1, # Quick debug: test on only 1 batch
     )
-    gt_callback.on_fit_start(trainer, model)  # Manually call to setup any internal state
+    # Manually call on_fit_start to set up callback internal state (e.g. load reference images).
+    # Guard: gt_callback is only defined when the callback config existed.
+    if callbacks:
+        gt_callback.on_fit_start(trainer, model)  # Manually call to setup any internal state
 
     # Run evaluation on full_test and on subset300
     final_metrics = run_dual_evaluation(
@@ -223,6 +228,7 @@ def evaluate_model_captured(
         hdf5_dir=hydra_cfg.data.get("hdf5_dir", None),
         batch_size=hydra_cfg.data.get("batch_size", 1),
         num_workers=hydra_cfg.data.get("num_workers", 0),
+        skip_full_test=True,
     )
 
     # Add metrics captured by the callback (e.g. from DictLogger)
@@ -243,10 +249,41 @@ def clean_summary_dict(summary_dict: dict) -> dict:
     fresh."""
     cleaned = {}
     for k, v in summary_dict.items():
-        if k.startswith("old_test/") or k.startswith("test/") or k.startswith("test_sub500/"):
+        if k.startswith("test_full/") or k.startswith("test/") or k.startswith("test_sub500/"):
             continue
         cleaned[k] = v
     return cleaned
+
+
+_SHOW_KEYS = [
+    # Noisy
+    "test_sub500/psnr_noisy",
+    "test_sub500/enl_recon",
+    "test_sub500/ratio_mean",
+    "test_sub500/ratio_enl",
+    # Despeckling quality vs references
+    "test_sub500/psnr_adam_noc",
+    "test_sub500/psnr_merlin",
+    "test_sub500/ssim_merlin",
+    "test_sub500/epd_merlin",
+    # Compression
+    "test_sub500/bpp",
+    "test_sub500/bpp_bitstream",
+]
+
+
+def _print_before_after(before: dict, after: dict) -> None:
+    """Print a compact Before / After table for the keys listed in _SHOW_KEYS."""
+    col_w = 12  # width for value column
+    print(f"    {'Metric':<35} {'Before':>{col_w}}  {'After':>{col_w}}")
+    print(f"    {'-'*35} {'-'*col_w}  {'-'*col_w}")
+    for key in _SHOW_KEYS:
+        b_val = before.get(key)
+        a_val = after.get(key)
+        b_str = f"{b_val:.4f}" if isinstance(b_val, (int, float)) else "—"
+        a_str = f"{a_val:.4f}" if isinstance(a_val, (int, float)) else "—"
+        changed = "  ✓" if b_str != a_str else ""
+        print(f"    {key:<35} {b_str:>{col_w}}  {a_str:>{col_w}}{changed}")
 
 
 def update_wandb_run(
@@ -262,9 +299,12 @@ def update_wandb_run(
     """
     print(f"    Updating W&B summary for run {run_obj.id}")
 
+    # Capture before-update values for the comparison print
+    current_summary = run_obj.summary._json_dict
+    before_metrics = {k: current_summary.get(k) for k in _SHOW_KEYS}
+
     # We use the API object to clean the summary first (faster than doing it in the run context)
     # This ensures old keys are actually removed, not just overwritten in history
-    current_summary = run_obj.summary._json_dict
     cleaned_summary = clean_summary_dict(current_summary)
     run_obj.summary._json_dict = cleaned_summary
     run_obj.update()
@@ -294,26 +334,8 @@ def update_wandb_run(
 
     # Print verification
     print(f"    [After] {len(new_metrics)} new test metrics saved.")
-
-    # Print a few key metrics dynamically if they exist
-    example_keys = [
-        "test/psnr",
-        "test/psnr_merlin",
-        "test/psnr_adam_noc",
-        "test/bpp_bitstream",
-        "test_sub500/psnr",
-        "test_sub500/psnr_merlin",
-        "test_sub500/psnr_adam_noc",
-        "test_sub500/bpp_bitstream",
-    ]
-    found_examples = [
-        f"{k}={v:.2f}dB" if "psnr" in k else f"{k}={v:.4f}"
-        for k, v in new_metrics.items()
-        if k in example_keys and isinstance(v, (int, float))
-    ]
-
-    if found_examples:
-        print(f"        {', '.join(found_examples)}")
+    after_metrics = {k: new_metrics.get(k) for k in _SHOW_KEYS}
+    _print_before_after(before_metrics, after_metrics)
 
 
 def filter_runs_by_creation_date(runs: list, limit_date: datetime) -> list:
@@ -346,7 +368,7 @@ def main():
     # Apply FILTERS_CONFIG
     matching_runs = [r for r in runs if run_matches_config_filters(r.config)]
     # Uncomment the following line to test on a single run (replace ID with a valid one)
-    # matching_runs = [r for r in matching_runs if r.id in ["bx6zfbqn"]]
+    # matching_runs = [r for r in matching_runs if r.id in ["wpfl8zys"]]
 
     # Filter by creation date using the helper to avoid timezone errors
     # matching_runs = filter_runs_by_creation_date(matching_runs, datetime(2026, 2, 11, 10, 0, 0))
