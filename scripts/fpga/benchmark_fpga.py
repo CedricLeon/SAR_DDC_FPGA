@@ -696,7 +696,7 @@ def run_benchmark(
     # ---- Load model ----
     entropy_path = xmodel_path.parent / "entropy_params.npz"
     graph = xir.Graph.deserialize(str(xmodel_path))
-    sg_map = identify_subgraphs(graph, xmodel_path.parent / "meta.json")
+    sg_map = identify_subgraphs(graph, xmodel_path.parent / "meta.json", verbose=False)
 
     data = np.load(entropy_path)
     eb = EntropyBottleneck(

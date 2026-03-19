@@ -85,7 +85,9 @@ class DPUSubgraphRunner:
 # -----------------------------------------------------------------------------
 
 
-def identify_subgraphs(graph: xir.Graph, meta_path: Path) -> Dict[str, xir.Subgraph]:
+def identify_subgraphs(
+    graph: xir.Graph, meta_path: Path, verbose: bool = True
+) -> Dict[str, xir.Subgraph]:
     """Identify which xir.Subgraph corresponds to g_a, h_a, h_s, g_s using meta.json.
 
     Parameters
@@ -108,7 +110,8 @@ def identify_subgraphs(graph: xir.Graph, meta_path: Path) -> Dict[str, xir.Subgr
         meta = json.load(f)
 
     kernels = meta.get("kernel", [])
-    print(f"[identify_subgraphs] meta.json lists {len(kernels)} kernels.")
+    if verbose:
+        print(f"[identify_subgraphs] meta.json lists {len(kernels)} kernels.")
 
     # Map kernel names to roles based on substrings
     name_to_role: Dict[str, str] = {}
@@ -127,7 +130,8 @@ def identify_subgraphs(graph: xir.Graph, meta_path: Path) -> Dict[str, xir.Subgr
         if sg.get_name() in name_to_role:
             role = name_to_role[sg.get_name()]
             mapping[role] = sg
-            print(f"[identify_subgraphs] Mapped {role} -> {sg.get_name()}")
+            if verbose:
+                print(f"[identify_subgraphs] Mapped {role} -> {sg.get_name()}")
 
     # Validate
     required_keys = ["g_a", "h_a", "h_s", "g_s"]
