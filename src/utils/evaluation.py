@@ -43,37 +43,39 @@ def run_dual_evaluation(
     hdf5_dir: Optional[str] = None,
     batch_size: int = 1,
     num_workers: int = 0,
+    skip_full_test: bool = False,
 ) -> Dict[str, float]:
     """
     Runs evaluation on two sets:
     1. Full Test Set (from datamodule/dataloaders) -> Prefix: "test"
-    2. Subset 300 (from .npy file in hdf5_dir) -> Prefix: "test_sub500"
+    2. Subset (from .npy file in hdf5_dir) -> Prefix: "test_sub500"
 
     Returns combined metrics dictionary.
     """
     final_metrics = {}
-
-    # --- 1. Standard Test (Full Dataset) ---
-    print("    Running test on FULL dataset...")
     # Temporarily set prefix on model (Requires model to support test_prefix attribute)
     original_prefix = getattr(model, "test_prefix", "test")
-    model.test_prefix = "test"
 
-    if datamodule:
-        results_full = trainer.test(
-            model=model, datamodule=datamodule, ckpt_path=ckpt_path, verbose=False
-        )
-    else:
-        results_full = trainer.test(
-            model=model, dataloaders=dataloaders, ckpt_path=ckpt_path, verbose=False
-        )
+    # --- 1. Standard Test (Full Dataset) ---
+    if not skip_full_test:
+        print("    Running test on FULL dataset...")
+        model.test_prefix = "test"
 
-    if results_full:
-        final_metrics.update(results_full[0])
-        # print(f"    Full Test Metrics: {results_full[0]}")
+        if datamodule:
+            results_full = trainer.test(
+                model=model, datamodule=datamodule, ckpt_path=ckpt_path, verbose=False
+            )
+        else:
+            results_full = trainer.test(
+                model=model, dataloaders=dataloaders, ckpt_path=ckpt_path, verbose=False
+            )
+
+        if results_full:
+            final_metrics.update(results_full[0])
+            # print(f"    Full Test Metrics: {results_full[0]}")
 
     # --- 2. Subset Test (from .npy) ---
-    print("    Running test on SUBSET 300 dataset (from .npy)...")
+    print("    Running test on SUBSET dataset (from .npy)...")
 
     if hdf5_dir:
         npy_files = list(Path(hdf5_dir).glob("test_sub500*.npy"))
