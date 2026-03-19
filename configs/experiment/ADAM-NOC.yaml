@@ -15,9 +15,12 @@ model:
 callbacks:
   compare_recon_to_gt:
     patch_dir: ${paths.data_dir}
-    split_large_patch: False
-    blend_method: "count"
-    stride: 128
+    log_every_n_epochs: 1
+    verbose: True
+  monitor_val_recon:
+    log_every_n_epochs: 1
+    num_images: 5
+    verbose: True
 
 trainer:
   min_epochs: 1
@@ -32,7 +35,7 @@ logger:
 
 # The task name determines the logs path, by convention use <task>/<dataset>/<model>
 task_name: train/sar_ddc/adam_noc
-tags: ["TSX_SSC", "adam_noc"]
+tags: ["TSX_SSC", "ADAM_NOC"]
 seed: 42
 
 # Flatten the lmbda value because W&B custom chart expressions do not support nested dicts

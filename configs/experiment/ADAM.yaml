@@ -19,6 +19,7 @@ data:
 model:
   net:
     no_output_padding: True
+    activation: "relu"
   criterion:
     metric: "merlin" # "mse" or "ssim" or "ms_ssim"
     lmbda: 100
@@ -28,13 +29,12 @@ model:
 callbacks:
   compare_recon_to_gt:
     patch_dir: ${paths.data_dir}
-    split_large_patch: False
-    blend_method: "count"
-    stride: 256
     log_every_n_epochs: 2
+    verbose: True
   monitor_val_recon:
     log_every_n_epochs: 2
     num_images: 4
+    verbose: True
 
 trainer:
   min_epochs: 1
@@ -50,7 +50,7 @@ logger:
 
 # The task name determines the logs path, by convention use <task>/<dataset>/<model>
 task_name: train/sar_ddc/hyperprior
-tags: ["TSX_SSC", "hyperprior"]
+tags: ["TSX_SSC", "hyperprior", "retesting"]
 seed: 42
 
 # Flatten the lmbda value because W&B custom chart expressions do not support nested dicts

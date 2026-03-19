@@ -1,3 +1,5 @@
+"""Usage example: python scripts/dataset/convert_h5_to_np.py --dataset_path data/processed_hdf5/TSX_preprocessed_spatial_splits_5_256x256/test.h5 --subset 500 --seed 42"""
+
 import argparse
 from pathlib import Path
 
@@ -12,6 +14,7 @@ parser.add_argument(
     default=None,
     help="Optional number of images to extract from the dataset",
 )
+parser.add_argument("--seed", type=int, default=42, help="Random seed for subset selection")
 
 
 def main():
@@ -33,13 +36,17 @@ def main():
                 )
                 patches = f["patches"][:]
             else:
-                patches = f["patches"][:subset]
+                print(f"Selecting {subset} random patches (seed={args.seed})...")
+                rng = np.random.default_rng(args.seed)
+                # h5py requires indices to be sorted for list selection
+                indices = np.sort(rng.choice(total, subset, replace=False))
+                patches = f["patches"][indices]
         else:
             patches = f["patches"][:]
-        print(f"Saving patches ({patches.shape=}) to NumPy format (.npy).")
 
     # Save as NumPy binary format (.npy)
-    out_path = dataset_path.parent / f"{dataset_path.stem}_{subset}.npy"
+    out_path = dataset_path.parent / f"{dataset_path.stem}_sub{subset}_seed{args.seed}.npy"
+    print(f"Saving patches ({patches.shape=}) to NumPy format (.npy) at {out_path}.")
     np.save(out_path, patches)
 
 

@@ -14,7 +14,7 @@ import lightning
 import torch
 from torch import Tensor
 
-from src.utils.constants import EPS, amp_max, amp_min
+from src.utils.constants import AMP_MAX, AMP_MIN, EPS
 
 
 class MerlinModule(lightning.LightningModule):
@@ -63,7 +63,7 @@ class MerlinModule(lightning.LightningModule):
 
     def forward(self, x: Tensor):
         """Normalize x and forward pass through the network."""
-        x = (torch.log(torch.square(x) + EPS) - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
+        x = (torch.log(torch.square(x) + EPS) - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
         return self.net(x)
 
     def _log_metrics(self, prefix: str, criterion: Dict[str, Any]) -> None:

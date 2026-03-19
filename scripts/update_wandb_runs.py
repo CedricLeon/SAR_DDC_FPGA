@@ -7,7 +7,7 @@ this script:
     3. Rebuilds the test dataloader using config["data"].
     4. Runs model.test() on the new dataset.
     5. Updates W&B summary:
-        - Moves existing test/* metrics to old_test/*
+        - Erases existing old_test/* and test/* metrics
         - Adds new test/* metrics from the new evaluation
         - Logs a timestamp in config["retested_on"]
 """
@@ -15,13 +15,20 @@ this script:
 import warnings
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Mapping, Optional
 
 import hydra
 import rootutils
 import torch
 import wandb
 from lightning import LightningModule, Trainer
+from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig, OmegaConf
+
+rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+from src.utils.evaluation import run_dual_evaluation
+
+# from src.callbacks.compare_reconstruction_to_gt import CompareReconstructionToGT  # noqa: E402
 
 warnings.filterwarnings(
     "ignore",
@@ -32,21 +39,25 @@ warnings.filterwarnings("ignore", category=FutureWarning, message=".*weights_onl
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
-# from src.data.sar_datamodule import TSXSSCDataModule  # noqa: E402
-# from src.models.sar_ddc_module import SARDDCModule  # noqa: E402
-
 # =============== User settings ===============
 ENTITY = "cedric-leonard"
-PROJECT = "SAR_DDC-RD-curve"
+PROJECT = "SAR_DDC_FPGA"
 CHECKPOINT_NAME = "last.ckpt"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 FILTERS_CONFIG = [
-    # ("model.criterion.lmbda", "==", 100),
-    ("retested_on", "is_none", None),  # skip already re-tested runs
-    # ("_timestamp", ">", datetime(2024, 10, 1).timestamp()),  # skip too old runs
+    ("model.criterion.lmbda", "in", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]),
+    # ("seed", "==", 42),
+    ("seed", "in", [0, 1, 2, 3, 4, 5]),  # exclude seed=42 (manual test run)
+    # Restrict to DPU-deployable architecture to match FPGA comparison set.
+    # Comment these two lines out to re-evaluate all architectures.
+    ("model.net.activation", "==", "relu"),
+    ("model.net.no_output_padding", "==", True),
+    # ("retested_on", "is_none", None),
+    # ("retested_on", "is_none_or_older_than", datetime(2026, 2, 12, 23, 59, 0)),
+    # ("retested_on", "is_after", datetime(2026, 2, 11, 10, 0, 0)),
+    # ("retested_on", "is_before", datetime(2026, 2, 11, 10, 0, 0)),
 ]
-# For other filters add them directly to the main
-# ============================================
 
 
 def check_single_condition(value, op, test_value) -> bool:
@@ -55,8 +66,28 @@ def check_single_condition(value, op, test_value) -> bool:
         return value == test_value
     elif op == "!=":
         return value != test_value
+    elif op == "in":
+        return value in test_value
+    elif op == "not in":
+        return value not in test_value
     elif op == "is_none":
         return value is None
+    elif op == "is_before":
+        if value is None:
+            return False
+        return datetime.fromisoformat(str(value)) < test_value
+    elif op == "is_after":
+        if value is None:
+            return False
+        return datetime.fromisoformat(str(value)) > test_value
+    elif op == "is_none_or_is_before":
+        if value is None:
+            return True
+        return datetime.fromisoformat(str(value)) < test_value
+    elif op == "is_none_or_is_after":
+        if value is None:
+            return True
+        return datetime.fromisoformat(str(value)) > test_value
     elif op == "exists":
         return value is not None
     elif op == ">":
@@ -77,13 +108,17 @@ def run_matches_config_filters(run_cfg: dict) -> bool:
     return True
 
 
-def instantiate_model_and_load_weights(hydra_cfg: DictConfig, ckpt_path: Path) -> LightningModule:
+def instantiate_model_and_load_weights(
+    hydra_cfg: DictConfig, ckpt_path: Path, force_patch_version: bool = False
+) -> LightningModule:
     """Instantiate the model from training config and load weights from checkpoint."""
-    print(f"Instantiating model <{hydra_cfg.model._target_}>")
+    print(f"    Instantiating model <{hydra_cfg.model._target_}>")
+    if force_patch_version:
+        hydra_cfg.model.net.export_dpu = True
     model: LightningModule = hydra.utils.instantiate(hydra_cfg.model)
     checkpoint = torch.load(str(ckpt_path), map_location="cpu")
     msg = model.load_state_dict(checkpoint["state_dict"], strict=True)
-    print(f"Loaded checkpoint state_dict with message: {msg}")
+    print(f"    Loaded checkpoint state_dict with message: {msg}")
     model.to(DEVICE)
     model.eval()
     return model
@@ -97,45 +132,231 @@ def build_test_dataloader(hydra_cfg: DictConfig):
     return datamodule.test_dataloader()
 
 
-def evaluate_model(model: LightningModule, test_loader):
-    """Run Lightning test loop and return metrics dict."""
+class DictLogger(Logger):
+    """A dummy logger that captures metrics in a dictionary."""
+
+    def __init__(self):
+        super().__init__()
+        self._metrics = {}
+
+    @property
+    def name(self) -> str:
+        """Name of the logger."""
+        return "DictLogger"
+
+    @property
+    def version(self) -> str:
+        """Version of the logger."""
+        return "0.1"
+
+    @property
+    def experiment(self) -> Any:
+        """The callback calls self.logger.experiment.log(...)"""
+        return self
+
+    def log_hyperparams(self, params: Any, *args, **kwargs):
+        """DummyLogger."""
+        pass
+
+    def log_metrics(self, metrics: Mapping[str, float], step: int | None = None):
+        """Update the internal metrics dictionary with new values."""
+        self._metrics.update(metrics)
+
+    def log(self, metrics: Mapping[str, Any]):
+        """Custom log method to support .experiment.log({...}) style calls."""
+        self._metrics.update(metrics)
+
+    def save(self):
+        """DummyLogger."""
+        pass
+
+    def finalize(self, status: str):
+        """DummyLogger."""
+        pass
+
+
+def evaluate_model_captured(
+    model: LightningModule,
+    full_loader,
+    hydra_cfg: DictConfig,
+    log_dir: Path,
+    run_id: str = "unknown",
+):
+    """Run Lightning test loop and return metrics dict, capturing callback logs."""
+
+    # Setup dummy logger to capture callback outputs
+    dict_logger = DictLogger()
+
+    # Use the original run directory for logs so that reconstruction images are saved there
+    print(f"    Logs (images) for this run {run_id} will be saved in: {log_dir}")
+
+    # Instantiate callbacks from config if available
+    callbacks = []
+    if "callbacks" in hydra_cfg and "compare_recon_to_gt" in hydra_cfg.callbacks:
+        # Convert to a plain dict so we can freely add/remove keys without hitting OmegaConf struct-mode restrictions (Hydra configs are read-only by default).
+        cb_dict: Dict[str, Any] = OmegaConf.to_container(hydra_cfg.callbacks.compare_recon_to_gt, resolve=True)  # type: ignore[assignment]
+        cb_dict["verbose"] = True
+        # Migrate old API keys (blend_method/stride) to the new patch_infer API (blend_profile/overlap).
+        cb_dict.pop("split_large_patch", None)
+        cb_dict.pop("blend_method", None)
+        cb_dict.pop("stride", None)
+        cb_dict.setdefault("blend_profile", "sigmoid")
+        cb_dict.setdefault("overlap", 16)
+
+        gt_callback = hydra.utils.instantiate(cb_dict)
+        callbacks.append(gt_callback)
+
     trainer = Trainer(
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        logger=False,
+        logger=dict_logger,  # Pass our dummy logger
+        callbacks=callbacks,
+        enable_checkpointing=False,
+        default_root_dir=str(log_dir),
+        # limit_test_batches=1, # Quick debug: test on only 1 batch
     )
-    results = trainer.test(model, dataloaders=test_loader, verbose=False)
-    # results is a list of dicts (one per dataloader)
-    print(f"  Obtained test metrics ({len(results)=}): {results}")
-    return results[0] if results else {}
+    # Manually call on_fit_start to set up callback internal state (e.g. load reference images).
+    # Guard: gt_callback is only defined when the callback config existed.
+    if callbacks:
+        gt_callback.on_fit_start(trainer, model)  # Manually call to setup any internal state
+
+    # Run evaluation on full_test and on subset300
+    final_metrics = run_dual_evaluation(
+        trainer=trainer,
+        model=model,
+        dataloaders=full_loader,
+        hdf5_dir=hydra_cfg.data.get("hdf5_dir", None),
+        batch_size=hydra_cfg.data.get("batch_size", 1),
+        num_workers=hydra_cfg.data.get("num_workers", 0),
+        skip_full_test=True,
+    )
+
+    # Add metrics captured by the callback (e.g. from DictLogger)
+    media_artifacts = {}
+    if dict_logger._metrics:
+        print(f"    Captured {len(dict_logger._metrics)} additional metrics from callbacks.")
+        for k, v in dict_logger._metrics.items():
+            if isinstance(v, wandb.Image):
+                media_artifacts[k] = v
+            else:
+                final_metrics[k] = v
+
+    return final_metrics, media_artifacts
 
 
-def rename_old_test_metrics(summary_dict: dict) -> dict:
-    """Move existing test/* metrics to old_test/* to preserve them."""
-    updated = {}
+def clean_summary_dict(summary_dict: dict) -> dict:
+    """Remove 'old_test/*' keys, 'test/*' keys, and new dual test set prefix keys to start
+    fresh."""
+    cleaned = {}
     for k, v in summary_dict.items():
-        if k.startswith("test/"):
-            updated[f"old_{k}"] = v
-        else:
-            updated[k] = v
-    return updated
+        if k.startswith("test_full/") or k.startswith("test/") or k.startswith("test_sub500/"):
+            continue
+        cleaned[k] = v
+    return cleaned
 
 
-def update_wandb_run(run, new_metrics: dict):
-    """Update W&B summary and config for the run."""
-    print(f"  Updating W&B summary for run {run.id}")
-    # Backup old test metrics
-    summary = run.summary._json_dict
-    summary = rename_old_test_metrics(summary)
+_SHOW_KEYS = [
+    # Noisy
+    "test_sub500/psnr_noisy",
+    "test_sub500/enl_recon",
+    "test_sub500/ratio_mean",
+    "test_sub500/ratio_enl",
+    # Despeckling quality vs references
+    "test_sub500/psnr_adam_noc",
+    "test_sub500/psnr_merlin",
+    "test_sub500/ssim_merlin",
+    "test_sub500/epd_merlin",
+    # Compression
+    "test_sub500/bpp",
+    "test_sub500/bpp_bitstream",
+]
 
-    # Add new ones
-    summary.update(new_metrics)
 
-    # Update summary and mark the timestamp in config
-    run.summary._json_dict = summary
-    run.config["retested_on"] = datetime.now().isoformat()
-    run.update()
-    print("  Updated successfully.\n")
+def _print_before_after(before: dict, after: dict) -> None:
+    """Print a compact Before / After table for the keys listed in _SHOW_KEYS."""
+    col_w = 12  # width for value column
+    print(f"    {'Metric':<35} {'Before':>{col_w}}  {'After':>{col_w}}")
+    print(f"    {'-'*35} {'-'*col_w}  {'-'*col_w}")
+    for key in _SHOW_KEYS:
+        b_val = before.get(key)
+        a_val = after.get(key)
+        b_str = f"{b_val:.4f}" if isinstance(b_val, (int, float)) else "—"
+        a_str = f"{a_val:.4f}" if isinstance(a_val, (int, float)) else "—"
+        changed = "  ✓" if b_str != a_str else ""
+        print(f"    {key:<35} {b_str:>{col_w}}  {a_str:>{col_w}}{changed}")
+
+
+def update_wandb_run(
+    run_obj, cfg, new_metrics: dict, output_dir: Path, media_artifacts: Optional[dict] = None
+):
+    """Update W&B summary and config for the run using a resumed run context.
+
+    Args:
+        run_obj: The run object returned by wandb.Api().run(...) (used for initial config access)
+        cfg: The hydra config (used for project/entity info)
+        new_metrics: Dictionary of scalar metrics to update.
+        media_artifacts: Dictionary of rich media (images) to log.
+    """
+    print(f"    Updating W&B summary for run {run_obj.id}")
+
+    # Capture before-update values for the comparison print
+    current_summary = run_obj.summary._json_dict
+    before_metrics = {k: current_summary.get(k) for k in _SHOW_KEYS}
+
+    # We use the API object to clean the summary first (faster than doing it in the run context)
+    # This ensures old keys are actually removed, not just overwritten in history
+    cleaned_summary = clean_summary_dict(current_summary)
+    run_obj.summary._json_dict = cleaned_summary
+    run_obj.update()
+
+    # Log new metrics and artifacts using a resumed run
+    # Note: We use cfg.logger.entity/project because run.entity might differ if you have access to multiple orgs
+
+    # Look for entity/project in run_obj if not in cfg (fallback)
+    entity = cfg.logger.get("entity", run_obj.entity)
+    project = cfg.logger.get("project", run_obj.project)
+
+    with wandb.init(
+        entity=entity, project=project, id=run_obj.id, dir=str(output_dir), resume="must"
+    ) as run:
+        # 1. Log media artifacts (Images, etc.)
+        if media_artifacts:
+            print(f"    Logging {len(media_artifacts)} media artifacts to W&B...")
+            run.log(media_artifacts)
+
+        # 2. Update scalar metrics
+        # We update the summary directly to ensure these are the "final" values displayed in the dash
+        # logging them normally would add a history step, which is also fine, but updating summary is explicit.
+        run.summary.update(new_metrics)
+
+        # 3. Mark the run as retested
+        run.config.update({"retested_on": datetime.now().isoformat()}, allow_val_change=True)
+
+    # Print verification
+    print(f"    [After] {len(new_metrics)} new test metrics saved.")
+    after_metrics = {k: new_metrics.get(k) for k in _SHOW_KEYS}
+    _print_before_after(before_metrics, after_metrics)
+
+
+def filter_runs_by_creation_date(runs: list, limit_date: datetime) -> list:
+    """Filter runs created after a specific date, handling timezone offsets.
+
+    Args:
+        runs: List of W&B runs.
+        limit_date: The naive datetime threshold.
+    """
+    kept_runs = []
+    for r in runs:
+        # W&B created_at is usually timezone-aware (UTC)
+        r_dt = datetime.fromisoformat(str(r.created_at))
+
+        # If run date is aware and limit is naive, strip tz from run date to compare
+        if r_dt.tzinfo is not None and limit_date.tzinfo is None:
+            r_dt = r_dt.replace(tzinfo=None)
+
+        if r_dt > limit_date:
+            kept_runs.append(r)
+    return kept_runs
 
 
 def main():
@@ -146,12 +367,17 @@ def main():
     # ----- Filtering -----
     # Apply FILTERS_CONFIG
     matching_runs = [r for r in runs if run_matches_config_filters(r.config)]
-    # Individual skips by run id
-    # matching_runs = [r for r in matching_runs if r.id in ["bo73yess"]]
+    # Uncomment the following line to test on a single run (replace ID with a valid one)
+    # matching_runs = [r for r in matching_runs if r.id in ["wpfl8zys"]]
+
+    # Filter by creation date using the helper to avoid timezone errors
+    # matching_runs = filter_runs_by_creation_date(matching_runs, datetime(2026, 2, 11, 10, 0, 0))
     print(f"{len(matching_runs)} runs match the filters: {FILTERS_CONFIG}")
 
-    for run in matching_runs:
-        print(f"Processing run {run.id} ({run.name})")
+    for i, run in enumerate(matching_runs):
+        print(
+            f"\n\033[32mProcessing run {i + 1}/{len(matching_runs)}: ID={run.id} ({run.name}), lambda={run.config.get('lambda', None)}, seed={run.config.get('seed', None)}, created {run.created_at}...\033[0m"
+        )
 
         output_dir = Path(run.config["paths"]["output_dir"])
         ckpt_path = Path(output_dir) / "checkpoints" / CHECKPOINT_NAME
@@ -159,33 +385,21 @@ def main():
         if isinstance(cfg, DictConfig):
             hydra_cfg = cfg
 
-        model = instantiate_model_and_load_weights(hydra_cfg, ckpt_path)
-        test_loader = build_test_dataloader(hydra_cfg)
-        metrics = evaluate_model(model, test_loader)
-        update_wandb_run(run, metrics)
+        try:
+            model = instantiate_model_and_load_weights(
+                hydra_cfg, ckpt_path, force_patch_version=False
+            )
+            test_loader = build_test_dataloader(hydra_cfg)
+            metrics, media = evaluate_model_captured(
+                model, test_loader, hydra_cfg, output_dir, run.id
+            )
+            update_wandb_run(run, hydra_cfg, metrics, output_dir, media)
+        except Exception as e:
+            print(f"    ERROR processing run {run.id}: {e}")
+            import traceback
 
-        # # --- Load model and data ---
-        # cfg = run.config
-        # try:
-        #     model = load_model_from_run(cfg)
-        #     test_loader = build_test_dataloader(cfg["data"])
-        # except Exception as e:
-        #     print(f"  ❌ Failed to load run {run.id}: {e}")
-        #     continue
-
-        # # --- Evaluate ---
-        # try:
-        #     metrics = evaluate_model(model, test_loader)
-        # except Exception as e:
-        #     print(f"  ❌ Failed to evaluate run {run.id}: {e}")
-        #     continue
-
-        # # --- Update W&B ---
-        # try:
-        #     update_wandb_run(run, metrics)
-        # except Exception as e:
-        #     print(f"  ❌ Failed to update W&B for run {run.id}: {e}")
-        #     continue
+            traceback.print_exc()
+            continue
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ Provided classes:
 
 from __future__ import annotations
 
+import math
 import warnings
 from typing import Any, Callable, List, Optional, Tuple, Union
 
@@ -26,7 +27,17 @@ from compressai._CXX import pmf_to_quantized_cdf as _pmf_to_quantized_cdf
 from compressai.entropy_models.entropy_models import _EntropyCoder
 from torch import Tensor
 
-from src.utils.debug import log_tensor_shape
+
+def get_scale_table(min: float = 0.11, max: float = 256, levels: int = 64) -> Tensor:
+    """Returns table of logarithmically scales.
+
+    Mirrors `compressai.models.base.get_scale_table` default behavior.
+
+    This helper is used to generate the default scale table for GaussianConditional
+    when it hasn't been persisted in the checkpoint (which is common, as standard
+    training uses continuous approximation and doesn't populate the table).
+    """
+    return torch.exp(torch.linspace(math.log(min), math.log(max), levels))
 
 
 # -------------------------------------------------------------------------
@@ -42,7 +53,7 @@ class LowerBoundPatched(nn.Module):  # (no custom autograd.Function)
     Note: During *training*, CompressAI's original LowerBound uses a custom
     gradient that still passes gradients when moving towards the bound. If you
     need identical training behavior, use the original implementation from
-    `context/compressai_original.py` instead of this patched version.
+    `compressai.ops.bound_ops` instead of this patched version.
     """
 
     bound: Tensor
@@ -52,7 +63,8 @@ class LowerBoundPatched(nn.Module):  # (no custom autograd.Function)
         self.register_buffer("bound", torch.tensor(float(bound)))
 
     def forward(self, x: Tensor) -> Tensor:
-        return torch.max(x, self.bound)
+        return F.relu(x - self.bound) + self.bound
+        # return torch.max(x, self.bound)
 
 
 # -------------------------------------------------------------------------
@@ -140,7 +152,7 @@ class GDNPatched(nn.Module):
         return out
 
 
-class GDN1Patched(GDNPatched):
+class GDN1Patched(nn.Module):
     r"""Simplified GDN layer.
 
     Introduced in `"Computationally Efficient Neural Image Compression"
@@ -151,6 +163,29 @@ class GDN1Patched(GDNPatched):
 
         y[i] = \frac{x[i]}{\beta[i] + \sum_j(\gamma[j, i] * |x[j]|}
     """
+
+    def __init__(
+        self,
+        in_channels: int,
+        inverse: bool = False,
+        beta_min: float = 1e-6,
+        gamma_init: float = 0.1,
+    ):
+        super().__init__()
+
+        beta_min = float(beta_min)
+        gamma_init = float(gamma_init)
+        self.inverse = bool(inverse)
+
+        self.beta_reparam = NonNegativeParametrizerPatched(minimum=beta_min)
+        beta = torch.ones(in_channels)
+        beta = self.beta_reparam.init(beta)
+        self.beta = nn.Parameter(beta)
+
+        self.gamma_reparam = NonNegativeParametrizerPatched()
+        gamma = gamma_init * torch.eye(in_channels)
+        gamma = self.gamma_reparam.init(gamma)
+        self.gamma = nn.Parameter(gamma)
 
     def forward(self, x: Tensor) -> Tensor:
         _, C, _, _ = x.size()
@@ -167,9 +202,6 @@ class GDN1Patched(GDNPatched):
         out = x * norm
 
         return out
-
-
-# Copilot rewrote half of the original CompressAI code, I don't trust it, so for the moment its just the original one commented out.
 
 
 def default_entropy_coder():

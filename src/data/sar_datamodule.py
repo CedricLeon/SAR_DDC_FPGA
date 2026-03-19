@@ -70,7 +70,6 @@ class TSXSSCDataModule(LightningDataModule):
 
     def prepare_data(self):
         """Data preparation (download, etc.) - runs once on the node."""
-        # Check if the HDF5 files exist
         for path in [self.train_path, self.val_path, self.test_path]:
             if not path.exists():
                 raise FileNotFoundError(f"HDF5 file not found: {path}")
@@ -102,14 +101,10 @@ class TSXSSCDataModule(LightningDataModule):
     def setup(self, stage=None):
         """Data setup per stage - runs on every process."""
         if stage == "fit" or stage is None:
-            # Create training dataset
             self.data_train = TSXSSCDataset(self.train_path)
-
-            # Create validation dataset
-            self.data_val = TSXSSCDataset(self.val_path)  # with_refs=True
+            self.data_val = TSXSSCDataset(self.val_path)
 
         if stage == "test" or stage is None:
-            # Create test dataset
             self.data_test = TSXSSCDataset(self.test_path, with_refs=True)
 
     def train_dataloader(self):

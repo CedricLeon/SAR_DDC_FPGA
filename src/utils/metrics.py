@@ -1,5 +1,5 @@
 import math
-from typing import Dict, Literal, Optional, Union
+from typing import Dict, Literal, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -16,8 +16,7 @@ from torchmetrics.image import (
     StructuralSimilarityIndexMeasure,
 )
 
-from src.utils.constants import EPS, amp_max, amp_min
-from src.utils.debug import print_statistics
+from src.utils.constants import AMP_LIN_99, AMP_MAX, AMP_MIN, EPS
 
 
 def get_all_distortion_metrics(
@@ -58,16 +57,26 @@ def get_all_distortion_metrics(
     }
 
 
-def mse(predicted: Tensor, target: Tensor) -> float:
-    """Compute Mean Squared Error (MSE) loss between predicted and target tensors."""
-    return torch.mean((predicted - target) ** 2).item()
+def mse(predicted_linA: Tensor, target_linA: Tensor) -> float:
+    """Compute Mean Squared Error (MSE) loss between predicted and target tensors in linear
+    Amplitude scale."""
+    # Clip target and predictions to 99% of distribution to avoid outliers dominating the PSNR computation.
+    # While this is "cheating" if comparing to other methods that do not use this clipping,
+    # these PSNR values are only use across experiments that always use this clipping.
+    predicted_linA = torch.clamp(predicted_linA, max=AMP_LIN_99)
+    target_linA = torch.clamp(target_linA, max=AMP_LIN_99)
+    # Compute MSE and PSNR on 99% of the value
+    return torch.mean((predicted_linA - target_linA) ** 2).item()
 
 
-def psnr(predicted: Tensor, target: Tensor, mse_value: Optional[float] = None) -> float:
-    """Compute Peak Signal-to-Noise Ratio (PSNR) between predicted and target tensors."""
-    mse_value = mse_value if mse_value is not None else mse(predicted, target)
-    peak = float(torch.max(predicted))
-    psnr_value = 20 * math.log10(peak) - 10 * math.log10(mse_value)
+def psnr(predicted_linA: Tensor, target_linA: Tensor, mse_value: Optional[float] = None) -> float:
+    """Compute Peak Signal-to-Noise Ratio (PSNR) between predicted_linA and target_linA tensors.
+
+    Both tensors must be in linear Amplitude scale as peak=AMP_LIN_99 is used for PSNR computation.
+    """
+    # MSE (and therefore PSNR) is computed on 99% of the value
+    mse_value = mse_value if mse_value is not None else mse(predicted_linA, target_linA)
+    psnr_value = 20 * math.log10(AMP_LIN_99) - 10 * math.log10(mse_value)
     return psnr_value
 
 
@@ -75,7 +84,9 @@ def ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = None) 
     """Compute Structural Similarity Index Measure (SSIM)."""
     if data_range is None:
         data_range = float(torch.max(predicted))
-    return structural_similarity_index_measure(predicted, target, data_range=data_range).item()
+    return Tensor(
+        structural_similarity_index_measure(predicted, target, data_range=data_range)
+    ).item()
 
 
 def ms_ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = None) -> float:
@@ -87,7 +98,110 @@ def ms_ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = Non
     ).item()
 
 
-def estimate_bpp(
+def enl(
+    linA: Union[Tensor, np.ndarray],
+    roi: Optional[Tuple[int, int, int, int]] = None,
+) -> float:
+    """Equivalent Number of Looks computed on linear intensity I = linA².
+
+    ENL = E[I]² / Var[I].  Higher ENL → more speckle reduction.
+
+    Args:
+        linA: Reconstruction in linear amplitude.  Any shape — squeezed to 2-D before use.
+        roi:  Optional (r0, r1, c0, c1) crop applied before computing.  Use to restrict
+              the metric to a homogeneous region (avoids texture bias).
+    """
+    arr: np.ndarray = linA.detach().cpu().numpy() if isinstance(linA, Tensor) else np.asarray(linA)
+    arr = arr.squeeze().astype(np.float32)
+    if roi is not None:
+        r0, r1, c0, c1 = roi
+        arr = arr[r0:r1, c0:c1]
+    lin_intensity = np.square(arr)
+    mu = float(np.mean(lin_intensity))
+    var = float(np.var(lin_intensity))
+    return mu**2 / var if var > 0.0 else float("nan")
+
+
+def ratio_mean(
+    recon_linA: Union[Tensor, np.ndarray],
+    noisy_linA: Union[Tensor, np.ndarray],
+) -> float:
+    """Mean of the ratio image R = I_noisy / I_recon (linear intensity).
+
+    R ≈ 1.0 → ideal filter.  R > 1 → under-filtering (residual speckle). R < 1 → over-smoothing.
+    """
+
+    def _arr(x: Union[Tensor, np.ndarray]) -> np.ndarray:
+        return (
+            (x.detach().cpu().numpy() if isinstance(x, Tensor) else np.asarray(x))
+            .squeeze()
+            .astype(np.float32)
+        )
+
+    recon_I = np.square(_arr(recon_linA))
+    noisy_I = np.square(_arr(noisy_linA))
+    return float(np.mean(noisy_I / (recon_I + 1e-10)))
+
+
+def ratio_enl(
+    recon_linA: Union[Tensor, np.ndarray],
+    noisy_linA: Union[Tensor, np.ndarray],
+) -> float:
+    """ENL of the ratio image R = I_noisy / I_recon (linear intensity).
+
+    For a perfect speckle filter R ~ Gamma(L, 1/L), so ENL(R) = L (number of looks). Deviations
+    signal over-smoothing (ENL(R) < L) or residual speckle (ENL(R) > L).
+    """
+
+    def _arr(x: Union[Tensor, np.ndarray]) -> np.ndarray:
+        return (
+            (x.detach().cpu().numpy() if isinstance(x, Tensor) else np.asarray(x))
+            .squeeze()
+            .astype(np.float32)
+        )
+
+    recon_I = np.square(_arr(recon_linA))
+    noisy_I = np.square(_arr(noisy_linA))
+    ratio = noisy_I / (recon_I + 1e-10)
+    mu = float(np.mean(ratio))
+    var = float(np.var(ratio))
+    return mu**2 / var if var > 0.0 else float("nan")
+
+
+def epd(
+    recon_linA: Union[Tensor, np.ndarray],
+    ref_linA: Union[Tensor, np.ndarray],
+) -> float:
+    r"""Edge Preservation Degree in linear amplitude.
+
+    EPD = Σ(\|∇recon\| · \|∇ref\|) / Σ(\|∇ref\|²). EPD = 1.0 → perfect edge preservation.  EPD < 1
+    → edge attenuation.
+
+    Uses a central-difference gradient for NumPy-only / Python-3.8 compatibility (consistent with
+    the FPGA-side implementation in inference_utils.py).
+    """
+
+    def _arr(x: Union[Tensor, np.ndarray]) -> np.ndarray:
+        return (
+            (x.detach().cpu().numpy() if isinstance(x, Tensor) else np.asarray(x))
+            .squeeze()
+            .astype(np.float32)
+        )
+
+    def _grad_mag(img: np.ndarray) -> np.ndarray:
+        gx = np.zeros_like(img)
+        gy = np.zeros_like(img)
+        gx[:, 1:-1] = img[:, 2:] - img[:, :-2]
+        gy[1:-1, :] = img[2:, :] - img[:-2, :]
+        return np.sqrt(gx**2 + gy**2)
+
+    grad_recon = _grad_mag(_arr(recon_linA))
+    grad_ref = _grad_mag(_arr(ref_linA))
+    denom = float(np.sum(grad_ref**2))
+    return float(np.sum(grad_recon * grad_ref) / denom) if denom > 0.0 else float("nan")
+
+
+def estimate_likelihoods_bpp(
     pred: Dict[str, Tensor],
 ) -> Union[Tensor, Literal[0]]:
     """Compute BPP based on the estimated likelihoods (Average of the estimated number of bits
@@ -99,6 +213,32 @@ def estimate_bpp(
         for likelihoods in pred["likelihoods"].values()
     )
     return bpp
+
+
+def compute_bitstream_bpp(strings: list, height: int, width: int, batch_size: int) -> float:
+    """Compute BPP based on the actual bitstream size.
+
+    Args:
+        strings (list): Nested list of byte strings from CompressAI (e.g. [[y_str, ...], [z_str, ...]])
+        height (int): Image height
+        width (int): Image width
+        batch_size (int): Image batch size
+
+    Returns:
+        float: Calculated bits per pixel
+    """
+    nb_pixels = height * width * batch_size
+    if nb_pixels == 0:
+        return 0.0
+
+    def _sum_bits(obj):
+        if isinstance(obj, bytes):
+            return len(obj) * 8
+        elif isinstance(obj, list):
+            return sum(_sum_bits(item) for item in obj)
+        return 0
+
+    return _sum_bits(strings) / nb_pixels
 
 
 @register_criterion("MerlinRDLoss")
@@ -118,10 +258,10 @@ class MerlinRDLoss(nn.Module):
         self.lmbda = lmbda if lmbda >= 0 else None  # deactivate rate if lmbda < 0
 
         self.mse = MeanSquaredError()  # nn.MSELoss(reduction="sum")
-        self.psnr = PeakSignalNoiseRatio(data_range=(2 * amp_min, 2 * amp_max))
-        self.ssim = StructuralSimilarityIndexMeasure(data_range=(2 * amp_min, 2 * amp_max))
+        self.psnr = PeakSignalNoiseRatio(data_range=(2 * AMP_MIN, 2 * AMP_MAX))
+        self.ssim = StructuralSimilarityIndexMeasure(data_range=(2 * AMP_MIN, 2 * AMP_MAX))
         self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(
-            data_range=(2 * amp_min, 2 * amp_max)
+            data_range=(2 * AMP_MIN, 2 * AMP_MAX)
         )
 
     def forward(self, output: Dict[str, Tensor], target: Tensor) -> Dict[str, Tensor]:
@@ -135,10 +275,10 @@ class MerlinRDLoss(nn.Module):
         """
         out = {}
         # Rate term (estimated bpp)
-        out["bpp"] = estimate_bpp(output)
+        out["bpp"] = estimate_likelihoods_bpp(output)
 
         # Denorm the reconstructions before computing losses
-        log_hat_R = 2 * (output["x_hat"] * (amp_max - amp_min) + amp_min)
+        log_hat_R = 2 * (output["x_hat"] * (AMP_MAX - AMP_MIN) + AMP_MIN)
         # print_statistics("      Predicted Reflectivity log_hat_R", log_hat_R)
         # ----- Classic MERLIN Loss (0.5 * log(r) + b^2 / r) -----
         hat_R = torch.exp(log_hat_R) + 1e-6  # must be non-zero
@@ -191,11 +331,9 @@ class MerlinLoss(nn.Module):
         super().__init__()
 
         self.mse = MeanSquaredError()
-        self.psnr = PeakSignalNoiseRatio(data_range=(2 * amp_min, 2 * amp_max))
-        self.ssim = StructuralSimilarityIndexMeasure(data_range=(2 * amp_min, 2 * amp_max))
-        self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(
-            data_range=(2 * amp_min, 2 * amp_max)
-        )
+        self.psnr = PeakSignalNoiseRatio(data_range=AMP_LIN_99)
+        self.ssim = StructuralSimilarityIndexMeasure(data_range=AMP_LIN_99)
+        self.ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=AMP_LIN_99)
 
     def forward(self, predicted: torch.Tensor, target: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Compute MERLIN loss.
@@ -210,7 +348,7 @@ class MerlinLoss(nn.Module):
         out = {}
 
         # Denorm the reconstructions before computing losses
-        log_hat_R = 2 * (predicted * (amp_max - amp_min) + amp_min)
+        log_hat_R = 2 * (predicted * (AMP_MAX - AMP_MIN) + AMP_MIN)
         # ----- Classic MERLIN Loss (0.5 * log(r) + b^2 / r) -----
         hat_R = torch.exp(log_hat_R) + 1e-6  # must be non-zero
         b_square = torch.square(target)

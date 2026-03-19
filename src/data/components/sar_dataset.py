@@ -4,15 +4,13 @@ import h5py
 import torch
 from torch.utils.data import Dataset
 
-from src.utils.constants import amp_max, amp_min
-
 
 class TSXSSCDataset(Dataset):
     """Dataset for pre-processed SAR patches in HDF5 format.
 
     This dataset loads pre-processed SAR patches from HDF5 files created by the
-    TSX_dataset_creation.py script.
-    This dataset can also load a special test set created with `create_test_set.py` which provides references (ground truth) for each patch. Its layout is then of shape [N, H, W, 4], channels = [real, imag, ADAM-NOC_logI, MERLIN_logI].
+    `scripts/dataset/create_dataset.py` script. Each patch is unnormalized, has 2 channels (real
+    and imaginary), and can come with references ("Ground-Truths") as 2 additional channels.
     """
 
     def __init__(
@@ -59,15 +57,10 @@ class TSXSSCDataset(Dataset):
             item = {}
 
             if self.with_refs:
-                # References already stored as log-intensity
                 item["adam_noc_ref"] = patch[:, :, 2].unsqueeze(0)
                 item["merlin_ref"] = patch[:, :, 3].unsqueeze(0)
-
                 patch = patch[:, :, :2]
 
-            # patch = torch.square(patch)
-            # patch = torch.log(patch + 1e-2)
-            # patch = (patch - 2 * amp_min) / (2 * amp_max - 2 * amp_min)
             item["real"] = patch[:, :, 0].unsqueeze(0)
             item["imag"] = patch[:, :, 1].unsqueeze(0)
 

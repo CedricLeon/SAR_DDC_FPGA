@@ -12,8 +12,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Add parent directory to path to import from src
-sys.path.append("../..")
-from src.utils.sar_utils import load_cosar, symmetrize
+project_root = Path(__file__).resolve().parent.parent.parent
+print(f"Adding {project_root} to sys.path for imports")
+sys.path.append(str(project_root))
+from src.utils.sar_utils import load_cosar, symmetrize  # noqa: E402
 
 
 class RunningStatistics:
@@ -112,7 +114,7 @@ class RunningStatistics:
         }
 
 
-def process_sar_image(filepath, stats_intensity_log, stats_amp_log_sqrt):
+def process_sar_image(filepath, stats_intensity, stats_amp):
     """Process a single SAR image and update statistics."""
     print(f"Processing {filepath.name}...")
 
@@ -130,17 +132,18 @@ def process_sar_image(filepath, stats_intensity_log, stats_amp_log_sqrt):
     # Square the components
     sar_data = np.square(sar_data)
     intensity = sar_data[:, :, 0] + sar_data[:, :, 1]
+    amplitude = np.sqrt(intensity)
 
-    # Apply log transformation
-    inten_log = np.log(intensity + 1e-2)
-    amp_log_sqrt = np.log(np.sqrt(intensity) + 1e-2)
+    # # Apply log transformation
+    # inten_log = np.log(intensity + 1e-2)
+    # amp_log_sqrt = np.log(np.sqrt(intensity) + 1e-2)
 
     # Update statistics
-    stats_intensity_log.update(inten_log)
-    stats_amp_log_sqrt.update(amp_log_sqrt)
+    stats_intensity.update(intensity)
+    stats_amp.update(amplitude)
 
     # Free memory
-    del sar_data, intensity, inten_log, amp_log_sqrt
+    del sar_data, intensity, amplitude
 
 
 def plot_histogram(stats, title, filename):
@@ -204,8 +207,8 @@ def plot_histogram(stats, title, filename):
 
 def main():
     # Configuration
-    data_dir = Path("../../data/TSX_cos_files")
-    output_dir = Path("../../data/analysis")
+    data_dir = project_root / "data/TSX_cos_files"
+    output_dir = project_root / "data/analysis"
     output_dir.mkdir(exist_ok=True, parents=True)
 
     # List .cos files
@@ -213,28 +216,27 @@ def main():
     print(f"Found {len(cos_files)} .cos files in {data_dir}")
 
     # Create statistics trackers
-    stats_intensity_log = RunningStatistics("Intensity (log + 1e-2)")
-    stats_amp_log_sqrt = RunningStatistics("Amplitude (log(sqrt(intensity) + 1e-2))")
+    stats_intensity = RunningStatistics("Intensity")
+    stats_amp = RunningStatistics("Amplitude")
 
     # Process each image
     for file_path in cos_files:
-        process_sar_image(file_path, stats_intensity_log, stats_amp_log_sqrt)
-
+        process_sar_image(file_path, stats_intensity, stats_amp)
     # Generate reports
-    print("\n=== INTENSITY STATISTICS (log + 1e-2) ===")
-    stats_intensity_log.report()
+    print("\n=== INTENSITY STATISTICS ===")
+    stats_intensity.report()
     plot_histogram(
-        stats_intensity_log,
-        "Intensity (log + 1e-2) Distribution",
-        output_dir / "intensity_log_1e-2_histogram.png",
+        stats_intensity,
+        "Intensity Distribution",
+        output_dir / "intensity_histogram.png",
     )
 
-    print("\n=== AMPLITUDE STATISTICS (log(sqrt(intensity) + 1e-2)) ===")
-    stats_amp_log_sqrt.report()
+    print("\n=== AMPLITUDE STATISTICS ===")
+    stats_amp.report()
     plot_histogram(
-        stats_amp_log_sqrt,
-        "Amplitude (log(sqrt(intensity) + 1e-2)) Distribution",
-        output_dir / "amplitude_log-sqrt_1e-2_histogram.png",
+        stats_amp,
+        "Amplitude Distribution",
+        output_dir / "amplitude_histogram.png",
     )
 
 

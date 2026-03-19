@@ -1,11 +1,66 @@
-from typing import Any, Callable, Dict, Iterable
+import json
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Tuple
 
+import cv2  # type: ignore
 import numpy as np
+import vart  # type: ignore
+import xir  # type: ignore
 
 # Normalization constants
-AMP_MIN = -4.605170249938965
+AMP_MIN = 4.605170249938965
 AMP_MAX = 10.742239952087402
 EPS = 1e-2
+AMP_LIN_99 = 545.2018433569272
+
+# -----------------------------------------------------------------------------
+# LOGGING UTILS
+# -----------------------------------------------------------------------------
+
+
+def display_manifest(script_path: Path) -> None:
+    """Check for and display manifest.json contents."""
+    script_dir = script_path.parent.resolve()
+    manifest_path = script_dir / "manifest.json"
+
+    if manifest_path.exists():
+        print("\n" + "=" * 60)
+        print("Build Manifest Found:")
+        try:
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+
+            # Essential Keys
+            model_name = manifest.get("model_name", "Unknown")
+            compiled_at = manifest.get("compiled_at", "Unknown")
+            print(f"  • Model: {model_name}")
+            print(f"  • Compiled At: {compiled_at}")
+
+            # Dynamic Keys (Print everything else)
+            img = ["model_name", "compiled_at"]
+            for k, v in manifest.items():
+                if k not in img:
+                    # Clean up key name for display
+                    readable_key = k.replace("_", " ").title()
+                    print(f"  • {readable_key}: {v}")
+
+        except Exception as e:
+            print(f"  [Error reading manifest: {e}]")
+        print("=" * 60 + "\n")
+    else:
+        print("[INFO] No manifest.json found in current directory.")
+
+
+def print_tensor_stats(name: str, tensor: np.ndarray):
+    """Print statistics of a given tensor."""
+    print(
+        f"{name}: shape={tensor.shape}, dtype={tensor.dtype}, min={tensor.min():.4f}, max={tensor.max():.4f}, mean={tensor.mean():.4f}, std={tensor.std():.4f}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# PROCESSING UTILS
+# -----------------------------------------------------------------------------
 
 
 def clip(
@@ -29,113 +84,141 @@ def clip(
 class MetricsTracker:
     """Accumulates and averages a set of metrics over multiple batches.
 
-    For BPP we use the normalized x_hat + likelihoods. For all other metrics we assume both inputs
+    For BPP we use the normalized x_hat + num_bytes. For all other metrics we assume both inputs
     are in linear amplitude [0, +inf].
     """
 
     def __init__(self, metrics_to_track: Iterable[str]):
         self._metric_names = list(metrics_to_track)
         self._metric_fns: Dict[str, Callable[..., float]] = {
-            "bpp": self.estimate_bpp,
+            "bpp": self.compute_bitstream_bpp,
             "mse": self.compute_mse,
             "psnr": self.compute_psnr,
             "ssim": self.compute_ssim,
             "ms_ssim": self.compute_ms_ssim,
-            "merlin": self.compute_merlin_loss,
+            "enl": self.compute_enl,
+            "ratio_mean": self.compute_ratio_mean,
+            "ratio_enl": self.compute_ratio_enl,
+            "epd": self.compute_epd,
         }
         self._sums: Dict[str, float] = {name: 0.0 for name in self._metric_names}
         self._count: int = 0
 
     @staticmethod
     def compute_mse(a: np.ndarray, b: np.ndarray) -> float:
-        """Compute MSE."""
+        """Compute MSE between 2 arrays expected in linear Amplitude scale as clipping between 0
+        and AMP_LIN_99 is done."""
+        # Clip target and predictions to 99% of distribution to avoid outliers dominating the PSNR computation.
+        a = np.clip(a, 0, AMP_LIN_99)
+        b = np.clip(b, 0, AMP_LIN_99)
         return float(np.mean((a - b) ** 2))
 
     @staticmethod
-    def compute_psnr(a: np.ndarray, b: np.ndarray) -> float:
-        """Compute PSNR (peak assumed to be max of 'a').
+    def compute_psnr(a: np.ndarray, b: np.ndarray, mse_value: Optional[float] = None) -> float:
+        """Compute Peak Signal-to-Noise Ratio (PSNR) between predicted_linA and target_linA
+        tensors.
 
-        Ideally peak should be derived from range, but for SAR Amplitude it varies. We follow
-        inference.py implementation using max(a).
+        Both tensors must be in linear Amplitude scale as peak=AMP_LIN_99 is used for PSNR
+        computation.
         """
-        mse = MetricsTracker.compute_mse(a, b)
-        if mse == 0:
-            return 100.0
-        peak = float(np.max(a))
-        if peak == 0:
-            return 0.0
-        return 20 * np.log10(peak) - 10 * np.log10(mse)
+        mse_value = mse_value if mse_value is not None else MetricsTracker.compute_mse(a, b)
+        psnr_value = 20 * np.log10(AMP_LIN_99) - 10 * np.log10(mse_value)
+        return psnr_value
 
     @staticmethod
     def compute_ssim(a: np.ndarray, b: np.ndarray) -> float:
-        """Compute SSIM."""
-        return 0.0  # Placeholder
+        """Compute SSIM using cv2.quality.QualitySSIM_compute.
+
+        Inputs are expected in linear amplitude [0, +inf], with arbitrary shape ([1, H, W, 1], [H,
+        W, 1], or [H, W]). Both arrays are squeezed to 2-D float32 before the call. The returned
+        value is the mean SSIM across channels (typically 1 channel).
+        """
+        a_2d = a.squeeze().astype(np.float32)
+        b_2d = b.squeeze().astype(np.float32)
+        # QualitySSIM_compute returns (scalar_per_channel, quality_map).
+        # scalar_per_channel is a 4-element tuple; the first element holds channel 0.
+        result, _ = cv2.quality.QualitySSIM_compute(a_2d, b_2d)  # type: ignore[attr-defined]
+        return float(result[0])
 
     @staticmethod
     def compute_ms_ssim(a: np.ndarray, b: np.ndarray) -> float:
-        """Compute MS-SSIM."""
-        return 0.0  # Placeholder
+        """Compute MS-SSIM.
 
-    @staticmethod
-    def compute_merlin_loss(r_linA: np.ndarray, b_linA: np.ndarray) -> float:
-        """Compute MERLIN loss.
-
-        Inputs are Linear Amplitude.
-        Formula logic from inference.py: 0.5 * r_log + exp(2*b_log - r_log)
-        Using r_log = log(r_linA^2) = 2*log(r_linA) might be cleaner?
-        Let's convert to Log-Intensity first like in inference.py implied context.
-        Actually inference.py compute_merlin_loss takes r_log, b_log?
-        Wait, inference.py `update` calls `fn(recon_linA, target_linA)`.
-        So the inputs to compute_merlin_loss ARE linA.
-        BUT the formula says: 0.5 * r_log + exp(2*b_log - r_log).
-        So we must convert linA to logI inside the function if inference.py implementation didn't do it?
-        Looking at inference.py:
-           metrics_to_merlin = self.compute_merlin_loss
-           ...
-           value = fn(recon_linA, target_linA)
-        But compute_merlin_loss vars are named r_log, b_log.
-        If inputs are linA, we need to convert.
-        r_log (Log-Intensity) = log(r_linA^2) = 2 * log(r_linA)
-        Let's assume inputs are Linear Amplitude and convert.
+        Not available on this platform — returns 0.0.
         """
-        r_log = 2 * np.log(r_linA + EPS)
-        b_log = 2 * np.log(b_linA + EPS)
-
-        # M = 0.5 * r_log + exp(2*b_log - r_log) ??
-        # Let's check logic:
-        # Original MERLIN Loss: L = log(R) + S/R  where R is reflectivity (Intensity), S is observed intensity.
-        # r_log is log(R). b_log is log(S).
-        # S = exp(b_log). R = exp(r_log).
-        # Loss = r_log + exp(b_log) / exp(r_log) = r_log + exp(b_log - r_log).
-        # This differs from 0.5 * ... check inference.py carefully.
-        # inference.py: 0.5 * r_log + np.exp(2 * b_log - r_log)??
-        # If inputs were Log-Amplitude, then 2*b_log is Log-Intensity.
-        # IF inputs are LinA, then r_log as defined above IS Log-Intensity.
-        # So maybe inference.py formula assumes specific input type?
-        # Let's stick to simple MSE/PSNR for now or standard MERLIN: log(mean) + obs/mean.
-        # Using inference.py formula directly for consistency:
-        merlin_loss = 0.5 * r_log + np.exp(b_log - r_log)  # Wait, 2*b_log - r_log?
-        # If b_log is Log-Intensity, then exp(b_log) is S.
-        # If inputs are linA, b_log = 2*log(linA) = log(linA^2) = log(I).
-        # So exp(b_log - r_log) = S/R.
-        # The 0.5 factor? Maybe loss is define on Amplitude?
-        # Let's just use:
-        loss = r_log + np.exp(b_log - r_log)
-        return float(np.mean(loss))
+        return 0.0  # cv2 does not provide MS-SSIM
 
     @staticmethod
-    def estimate_bpp(x_shape_holder: np.ndarray, likelihoods: Dict[str, np.ndarray]) -> float:
-        """Compute BPP."""
+    def compute_enl(a: np.ndarray, roi: Optional[Tuple[int, int, int, int]] = None) -> float:
+        """ENL on linear intensity.
+
+        roi=(r0, r1, c0, c1) optional crop for homogeneous regions.
+        """
+        arr = a.squeeze().astype(np.float32)
+        if roi is not None:
+            r0, r1, c0, c1 = roi
+            arr = arr[r0:r1, c0:c1]
+        lin_intensity = np.square(arr)
+        mu = float(np.mean(lin_intensity))
+        var = float(np.var(lin_intensity))
+        return mu**2 / var if var > 0.0 else float("nan")
+
+    @staticmethod
+    def compute_ratio_mean(recon: np.ndarray, noisy: np.ndarray) -> float:
+        """Mean of ratio image R = noisy_I / recon_I.
+
+        >1 = residual speckle, <1 = over-smooth.
+        """
+        recon_I = np.square(recon.squeeze().astype(np.float32))
+        noisy_I = np.square(noisy.squeeze().astype(np.float32))
+        return float(np.mean(noisy_I / (recon_I + 1e-10)))
+
+    @staticmethod
+    def compute_ratio_enl(recon: np.ndarray, noisy: np.ndarray) -> float:
+        """ENL of the ratio image R = noisy_I / recon_I."""
+        recon_I = np.square(recon.squeeze().astype(np.float32))
+        noisy_I = np.square(noisy.squeeze().astype(np.float32))
+        ratio = noisy_I / (recon_I + 1e-10)
+        mu = float(np.mean(ratio))
+        var = float(np.var(ratio))
+        return mu**2 / var if var > 0.0 else float("nan")
+
+    @staticmethod
+    def compute_epd(recon: np.ndarray, ref: np.ndarray) -> float:
+        """Edge Preservation Degree in linA domain.
+
+        EPD=1.0 means perfect edge preservation.
+        """
+
+        def _grad_mag(img: np.ndarray) -> np.ndarray:
+            gx = np.zeros_like(img)
+            gy = np.zeros_like(img)
+            gx[:, 1:-1] = img[:, 2:] - img[:, :-2]
+            gy[1:-1, :] = img[2:, :] - img[:-2, :]
+            return np.sqrt(gx**2 + gy**2)
+
+        g_r = _grad_mag(recon.squeeze().astype(np.float32))
+        g_f = _grad_mag(ref.squeeze().astype(np.float32))
+        denom = float(np.sum(g_f**2))
+        return float(np.sum(g_r * g_f) / denom) if denom > 0.0 else float("nan")
+
+    @staticmethod
+    def compute_bitstream_bpp(x_shape_holder: np.ndarray, num_bytes: int) -> float:
+        """Compute BPP.
+
+        Args:
+            x_shape_holder: Tensor with shape [B, H, W, C] to get dimensions.
+            num_bytes: Total number of bytes of the compressed representations.
+        """
         B, H, W, _ = x_shape_holder.shape
         num_pixels = B * H * W
-        bpp = sum((np.log(lh).sum() / (-np.log(2) * num_pixels)) for lh in likelihoods.values())
-        return float(bpp)
+        return float((num_bytes * 8) / num_pixels)
 
     def update(
         self,
         recon_linA: np.ndarray,
-        likelihoods: Dict[str, np.ndarray],
         target_linA: np.ndarray,
+        num_bytes: int,
     ) -> Dict[str, float]:
         """Update metrics with a new batch."""
         batch_metrics: Dict[str, float] = {}
@@ -145,7 +228,9 @@ class MetricsTracker:
                 continue
 
             if name == "bpp":
-                value = fn(recon_linA, likelihoods)
+                value = self.compute_bitstream_bpp(recon_linA, num_bytes)
+            elif name == "enl":
+                value = self.compute_enl(recon_linA)
             else:
                 value = fn(recon_linA, target_linA)
 
@@ -159,18 +244,29 @@ class MetricsTracker:
             return {k: 0.0 for k in self._sums}
         return {k: v / self._count for k, v in self._sums.items()}
 
+    @property
+    def count(self) -> int:
+        """Return the number of updates."""
+        return self._count
+
+
+# -----------------------------------------------------------------------------
+# VISUALIZATION UTILS
+# -----------------------------------------------------------------------------
+
 
 def visualize_patches(
-    noisy_complex: np.ndarray,
-    recon_complex: np.ndarray,
-    adam_linA: np.ndarray,
-    merlin_linA: np.ndarray,
+    noisy_logI: np.ndarray,
+    recon_logI: np.ndarray,
+    adam_logI: np.ndarray,
+    merlin_logI: np.ndarray,
     save_path: str,
     num_patches: int = 5,
 ):
     """Generate and save a 4-row comparison figure.
 
-    If matplotlib is missing, skips visualization.
+    If matplotlib is missing, skips visualization. Expects all inputs to be in log-Intensity
+    format.
     """
     try:
         import matplotlib.pyplot as plt
@@ -179,62 +275,406 @@ def visualize_patches(
         print(f"Would have saved to: {save_path}")
         return
 
-    N = min(num_patches, len(noisy_complex))
-    fig, axes = plt.subplots(4, N, figsize=(4 * N, 16))
+    N = min(num_patches, len(noisy_logI))
+    _, axes = plt.subplots(4, N, figsize=(4 * N, 16))
     if N == 1:
         axes = axes.reshape(4, 1)
 
-    # Prepare Data: Convert Complex -> Log Intensity for visualization
-    def complex_to_logI(c):
-        """Convert complex array to Log Intensity."""
-        # c: [H, W, 2]
-        Inten = np.square(c[..., 0]) + np.square(c[..., 1])
-        return np.log(Inten + EPS)
-
-    def linA_to_logI(a):
-        """Convert Linear Amplitude to Log Intensity."""
-        # a: [H, W, 1]
-        Inten = np.square(a[..., 0])
-        return np.log(Inten + EPS)
-
     for i in range(N):
-        # Row 0: Original Noisy (LogI)
-        noisy_logI = complex_to_logI(noisy_complex[i])
+        # Clipping
         noisy_disp = clip(noisy_logI)
-
-        # Row 1: Reconstruction (LogI)
-        recon_logI = complex_to_logI(recon_complex[i])
         recon_disp = clip(recon_logI)
-
-        # Row 2: MERLIN GT (LogI)
-        merlin_logI = linA_to_logI(merlin_linA[i])
         merlin_disp = clip(merlin_logI)
-
-        # Row 3: ADAM NOC GT (LogI)
-        adam_logI = linA_to_logI(adam_linA[i])
         adam_disp = clip(adam_logI)
 
-        # Plot
+        # Row 0: Original Noisy (LogI)
         axes[0, i].imshow(noisy_disp, cmap="gray")
         axes[0, i].axis("off")
         if i == 0:
             axes[0, i].set_title("Noisy Input")
 
+        # Row 1: Reconstruction (LogI)
         axes[1, i].imshow(recon_disp, cmap="gray")
         axes[1, i].axis("off")
         if i == 0:
             axes[1, i].set_title("Reconstruction")
 
-        axes[2, i].imshow(merlin_disp, cmap="gray")
+        # Row 2: ADAM NOC GT (LogI)
+        axes[2, i].imshow(adam_disp, cmap="gray")
         axes[2, i].axis("off")
         if i == 0:
-            axes[2, i].set_title("MERLIN GT")
+            axes[2, i].set_title("ADAM NOC GT")
 
-        axes[3, i].imshow(adam_disp, cmap="gray")
+        # Row 3: MERLIN GT (LogI)
+        axes[3, i].imshow(merlin_disp, cmap="gray")
         axes[3, i].axis("off")
         if i == 0:
-            axes[3, i].set_title("ADAM NOC GT")
+            axes[3, i].set_title("MERLIN GT")
 
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
+
+
+# -----------------------------------------------------------------------------
+# TILING UTILS
+# -----------------------------------------------------------------------------
+
+
+def pad_to_multiple(image: np.ndarray, patch_size: int) -> Tuple[np.ndarray, Tuple[int, int]]:
+    """Pad image using reflection so its dimensions are multiples of patch_size.
+
+    Args:
+        image: Input image [H, W, C]
+        patch_size: Size of the patch
+
+    Returns:
+        padded_image: The padded image
+        (h_pad, w_pad): The amount of padding added to height and width
+    """
+    h, w = image.shape[:2]
+    h_pad = (patch_size - h % patch_size) % patch_size
+    w_pad = (patch_size - w % patch_size) % patch_size
+
+    if h_pad == 0 and w_pad == 0:
+        return image, (0, 0)
+
+    # Pad with reflection ((top, bottom), (left, right), (channels...))
+    pad_width = ((0, h_pad), (0, w_pad)) + ((0, 0),) * (image.ndim - 2)
+    padded_image = np.pad(image, pad_width, mode="reflect")
+    return padded_image, (h_pad, w_pad)
+
+
+def extract_patches(image: np.ndarray, patch_size: int) -> np.ndarray:
+    """Extract non-overlapping patches from the image.
+
+    Args:
+        image: Input image [H, W, C] (must be divisible by patch_size)
+
+    Returns:
+        patches: Array of shape [N_patches, patch_size, patch_size, C]
+    """
+    h, w = image.shape[:2]
+    c = image.shape[2]
+
+    # Reshape to (n_h, patch_h, n_w, patch_w, C)
+    n_h = h // patch_size
+    n_w = w // patch_size
+
+    reshaped = image.reshape(n_h, patch_size, n_w, patch_size, c)
+    # Transpose to (n_h, n_w, patch_h, patch_w, C)
+    transposed = reshaped.transpose(0, 2, 1, 3, 4)
+    # Reshape to (N, patch_h, patch_w, C)
+    patches = transposed.reshape(-1, patch_size, patch_size, c)
+    return patches
+
+
+def reconstruct_from_patches(
+    patches: np.ndarray, image_shape: Tuple[int, int], patch_size: int
+) -> np.ndarray:
+    """Reconstruct image from non-overlapping patches.
+
+    Args:
+        patches: [N, patch_size, patch_size, C]
+        image_shape: (H, W) of the target image (must be divisible by patch_size)
+        patch_size: size of patches
+
+    Returns:
+        Reconstructed image [H, W, C]
+    """
+    h, w = image_shape
+    c = patches.shape[-1]
+    n_h = h // patch_size
+    n_w = w // patch_size
+
+    # Reshape to (n_h, n_w, patch_h, patch_w, c)
+    reshaped_patches = patches.reshape(n_h, n_w, patch_size, patch_size, c)
+    # Transpose to (n_h, patch_h, n_w, patch_w, c)
+    transposed = reshaped_patches.transpose(0, 2, 1, 3, 4)
+    # Reshape to (H, W, C)
+    image = transposed.reshape(h, w, c)
+    return image
+
+
+def patch_infer_fpga(
+    image: np.ndarray,
+    infer_fn: Callable[[np.ndarray], Tuple[np.ndarray, int]],
+    patch_size: int = 256,
+    overlap: int = 16,
+    eliminate_border_px: int = 0,
+    blend_profile: str = "sigmoid",
+    blend_alpha: float = 6.0,
+) -> Tuple[np.ndarray, int]:
+    """Run overlap-blended patch inference on a large image using the FPGA pipeline.
+
+    Inspired from simon-donike and opensr-utils (https://github.com/ESAOpenSR/opensr-utils/).
+
+    The DPU input buffer has a fixed spatial size (typically 256×256), so large images
+    must be split into patches, processed individually, and reassembled. A naive
+    non-overlapping split introduces visible seams at patch boundaries because the model
+    has no context outside each patch. This function solves that by using overlapping
+    windows and blending the results in the overlap zones with smooth feathering ramps.
+
+    **Tiling strategy.**  A sliding window of size ``patch_size × patch_size`` advances
+    with stride ``patch_size - overlap``. An extra snap-to-border window is appended when
+    the last regular window does not end exactly at the image edge, guaranteeing full
+    coverage for any image dimension ≥ ``patch_size`` without explicit zero-padding
+    or post-crop.
+
+    **Blending.**  In overlap zones each patch contributes according to a 1-D feathering
+    ramp (sigmoid, linear, or cosine) that rises from 0 at the leading edge to 1 toward
+    the interior. The 2-D weight map is the outer product of the horizontal and vertical
+    ramps. At the global image borders no ramp is applied, so the output has full weight
+    at the image edges (no fading-to-zero frame). The final pixel value is the weighted
+    average of all patches covering it: accumulated weighted sum ÷ accumulated weight.
+
+    **FPGA I/O convention.**  Patches and outputs are kept in HWC layout throughout,
+    matching the NHWC convention of VART and the DPU runners.
+
+    **Canvas allocation.**  The output canvas is allocated lazily on the first inference
+    result so that the output channel count (C_out) is inferred from the actual pipeline
+    output, avoiding a redundant dummy DPU call just to probe the output shape.
+
+    **Byte accounting.**  ``infer_fn`` returns both the reconstructed patch and the number
+    of compressed bytes for that patch. The byte counts are summed across all patches and
+    returned as ``total_bytes`` alongside the blended image. With overlap, some image
+    regions are independently encoded more than once, so ``total_bytes`` exceeds what a
+    non-overlapping tiling would produce — treat it as an upper-bound BPP estimate.
+
+    Parameters
+    ----------
+    image : np.ndarray, shape [H, W, C_in]
+        Input image in HWC layout (raw complex float, unnormalized). Normalization is
+        handled inside infer_fn / process_single_tile.
+    infer_fn : Callable
+        FPGA inference function with signature::
+
+            (patch_hwc: np.ndarray[patch_size, patch_size, C_in])
+            -> (output_hwc: np.ndarray[patch_size, patch_size, C_out], num_bytes: int)
+
+        Typically a lambda that closes over the DPU runners and entropy models, e.g.::
+
+            lambda patch: process_single_tile(patch, runners, eb, gc)
+
+    patch_size : int, default=256
+        Square patch size in pixels. Must match the fixed DPU input buffer size.
+    overlap : int, default=16
+        Number of pixels of overlap between adjacent patches. Must be a positive even
+        integer, strictly less than patch_size. Larger values give smoother transitions
+        but increase compute and total_bytes.
+    eliminate_border_px : int, default=0
+        Outermost pixels at each patch edge forced to zero weight before the feathering
+        ramp begins (hard-discards the strongest edge artefacts, replacing them entirely
+        with data from the neighbouring patch). Must be a non-negative even integer,
+        strictly less than overlap. Set to 0 to rely on feathering only.
+    blend_profile : str, default="sigmoid"
+        Shape of the 1-D feathering ramp in overlap zones:
+          - "sigmoid" : S-curve, concentrates the transition in the middle of the
+                        overlap zone. Recommended for most natural blends.
+          - "linear"  : straight ramp from 0 to 1.
+          - "cosine"  : half-cosine ease-in/ease-out, smooth at both ends.
+    blend_alpha : float, default=6.0
+        Steepness of the sigmoid curve. Only used when blend_profile="sigmoid".
+
+    Returns
+    -------
+    output : np.ndarray, shape [H, W, C_out]
+        Blended reconstruction in HWC layout (normalized log-intensity, matching the
+        output convention of process_single_tile). Same spatial dimensions as the input.
+    total_bytes : int
+        Sum of compressed bytes across all processed patches (including overlapping ones).
+
+    Raises
+    ------
+    ValueError
+        If overlap / eliminate_border_px constraints are violated, or if the image is
+        smaller than patch_size in either dimension.
+    """
+    image_np = image.astype(np.float32, copy=False)
+    H, W = image_np.shape[:2]
+
+    # ------------------------------------------------------------------
+    # 1. Validate parameters
+    # ------------------------------------------------------------------
+    if overlap <= 0 or overlap % 2 != 0:
+        raise ValueError(f"`overlap` must be a positive even integer, got {overlap}.")
+    if overlap >= patch_size:
+        raise ValueError(
+            f"`overlap` ({overlap}) must be strictly less than `patch_size` ({patch_size})."
+        )
+    if eliminate_border_px < 0 or eliminate_border_px % 2 != 0:
+        raise ValueError(
+            f"`eliminate_border_px` must be a non-negative even integer, got {eliminate_border_px}."
+        )
+    if eliminate_border_px >= overlap:
+        raise ValueError(
+            f"`eliminate_border_px` ({eliminate_border_px}) must be strictly less than `overlap` ({overlap})."
+        )
+    if H < patch_size:
+        raise ValueError(f"Image height ({H}) is smaller than `patch_size` ({patch_size}).")
+    if W < patch_size:
+        raise ValueError(f"Image width ({W}) is smaller than `patch_size` ({patch_size}).")
+
+    # ------------------------------------------------------------------
+    # 2. Build the list of overlapping patch windows
+    #    Each window is (row_off, col_off) in image pixel coordinates.
+    #    Strategy: sliding window with stride = patch_size - overlap,
+    #    plus extra snap-to-border windows to guarantee full coverage.
+    # ------------------------------------------------------------------
+    stride = patch_size - overlap
+
+    def _make_offsets(dim_size: int) -> List[int]:
+        """Return starting offsets for one spatial dimension."""
+        offsets = list(range(0, dim_size - patch_size + 1, stride))
+        # Snap-to-border: ensure the last window ends exactly at the image edge
+        last = dim_size - patch_size
+        if not offsets or offsets[-1] != last:
+            offsets.append(last)
+        return offsets
+
+    row_offsets = _make_offsets(H)
+    col_offsets = _make_offsets(W)
+    n_patches = len(row_offsets) * len(col_offsets)
+    print(
+        f"[patch_infer_fpga] {H}x{W} image => {n_patches} patches "
+        f"({len(row_offsets)} rows x {len(col_offsets)} cols), "
+        f"patch_size={patch_size}, overlap={overlap}, stride={stride}."
+    )
+
+    # ------------------------------------------------------------------
+    # 3. Allocate accumulators.
+    #    The output canvas is allocated lazily on the first inference call
+    #    so that C_out is inferred from the actual output without a
+    #    separate dummy DPU probe pass (which would waste a full round-trip
+    #    through the encoder, entropy coder, and decoder).
+    # ------------------------------------------------------------------
+    canvas: Optional[np.ndarray] = None
+    weight_canvas = np.zeros((H, W), dtype=np.float32)
+    total_bytes: int = 0
+
+    # ------------------------------------------------------------------
+    # 4. Helper: build a 1-D feathering ramp of length n, going 0 → 1
+    # ------------------------------------------------------------------
+    def _make_ramp(n: int) -> np.ndarray:
+        if n <= 0:
+            return np.zeros(0, dtype=np.float32)
+        t = np.linspace(0.0, 1.0, n, dtype=np.float32)
+        if blend_profile == "linear":
+            return t
+        elif blend_profile == "sigmoid":
+            a = float(blend_alpha)
+            r = 1.0 / (1.0 + np.exp(-a * (t - 0.5)))
+            r = (r - r[0]) / (r[-1] - r[0] + 1e-12)  # renormalize to [0, 1]
+            return r.astype(np.float32)
+        elif blend_profile == "cosine":
+            return (0.5 * (1.0 - np.cos(np.pi * t))).astype(np.float32)
+        else:
+            raise ValueError(
+                f"Unknown blend_profile '{blend_profile}'. Choose 'sigmoid', 'linear', or 'cosine'."
+            )
+
+    # ------------------------------------------------------------------
+    # 5. Helper: build the 2-D weight map for one patch
+    #    Takes care of:
+    #      - eliminate_border_px  (hard zero at outermost pixels)
+    #      - feathering ramp      (smooth 0→1 across overlap zone)
+    #      - global border guard  (no ramp at the image edge)
+    # ------------------------------------------------------------------
+    def _patch_weight_map(row_off: int, col_off: int) -> np.ndarray:
+        """Return a [patch_size, patch_size] float32 weight map for this patch."""
+        touch_top = row_off == 0
+        touch_bottom = row_off + patch_size == H
+        touch_left = col_off == 0
+        touch_right = col_off + patch_size == W
+
+        ramp_len = overlap - eliminate_border_px  # length of the actual ramp
+
+        u = np.ones(patch_size, dtype=np.float32)  # horizontal (W) weights
+        v = np.ones(patch_size, dtype=np.float32)  # vertical   (H) weights
+
+        ramp = _make_ramp(ramp_len)  # goes 0 → 1
+
+        for vec, touch_start, touch_end in [
+            (u, touch_left, touch_right),
+            (v, touch_top, touch_bottom),
+        ]:
+            if not touch_start:
+                # Hard-zero the outermost eliminate_border_px pixels
+                if eliminate_border_px > 0:
+                    vec[:eliminate_border_px] = 0.0
+                # Then apply the ramp (0 → 1) over the next ramp_len pixels
+                if ramp_len > 0:
+                    vec[eliminate_border_px : eliminate_border_px + ramp_len] = ramp
+
+            if not touch_end:
+                # Mirror of the above on the trailing edge (1 → 0)
+                if eliminate_border_px > 0:
+                    vec[-eliminate_border_px:] = 0.0
+                if ramp_len > 0:
+                    vec[
+                        -(eliminate_border_px + ramp_len) : (
+                            None if eliminate_border_px == 0 else -eliminate_border_px
+                        )
+                    ] = ramp[::-1]
+
+        # Outer product: 2-D weight is the product of horizontal and vertical weights
+        return (v[:, None] * u[None, :]).astype(np.float32)  # [patch_size, patch_size]
+
+    # ------------------------------------------------------------------
+    # 6. Main loop: extract patch → run FPGA pipeline → accumulate into canvas.
+    #
+    #    Each patch is extracted in HWC layout, the native convention for VART
+    #    and DPU runners (NHWC). infer_fn executes the full pipeline — DPU
+    #    encoder (g_a), hyper-encoder (h_a), entropy coder, entropy decoder,
+    #    hyper-decoder (h_s), DPU decoder (g_s) — and returns the reconstructed
+    #    HWC patch together with its compressed byte count.
+    #
+    #    The patch is multiplied by its 2-D weight map and added to the canvas.
+    #    The weight map is simultaneously accumulated in weight_canvas. Dividing
+    #    canvas by weight_canvas in step 7 yields the final weighted average,
+    #    which smoothly blends contributions from all overlapping patches.
+    # ------------------------------------------------------------------
+    for row_off in row_offsets:
+        for col_off in col_offsets:
+            # Extract HWC patch — no transposition needed
+            patch_hwc = image_np[
+                row_off : row_off + patch_size,
+                col_off : col_off + patch_size,
+                :,
+            ]  # [patch_size, patch_size, C_in]
+
+            # Run the full FPGA pipeline (DPU encoder/decoder + entropy coding)
+            out_hwc, patch_bytes = infer_fn(patch_hwc)  # [patch_size, patch_size, C_out], int
+
+            # Lazy canvas allocation on the first result — avoids a dummy DPU probe
+            if canvas is None:
+                C_out = out_hwc.shape[-1]
+                canvas = np.zeros((H, W, C_out), dtype=np.float32)
+            total_bytes += patch_bytes
+
+            # Accumulate weighted patch into canvas
+            w2d = _patch_weight_map(row_off, col_off)  # [patch_size, patch_size]
+            canvas[
+                row_off : row_off + patch_size,
+                col_off : col_off + patch_size,
+                :,
+            ] += (
+                out_hwc * w2d[:, :, None]
+            )
+            weight_canvas[
+                row_off : row_off + patch_size,
+                col_off : col_off + patch_size,
+            ] += w2d
+
+    if canvas is None:
+        raise ValueError("No patches were processed. Verify image dimensions and patch_size.")
+
+    # ------------------------------------------------------------------
+    # 7. Normalise: divide accumulated weighted sum by accumulated weights.
+    #    Every pixel is covered by at least one patch, so weight_canvas
+    #    should be > 0 everywhere. Guard against /0 with a small epsilon.
+    # ------------------------------------------------------------------
+    weight_canvas = np.maximum(weight_canvas, 1e-8)
+    output = canvas / weight_canvas[:, :, None]  # [H, W, C_out]
+
+    return output, total_bytes

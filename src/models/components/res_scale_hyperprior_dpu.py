@@ -1,7 +1,7 @@
 """DPU-friendly Residual Scale Hyperprior model.
 
 This mirrors `src/models/components/res_scale_hyperprior.py::ResidualScaleHyperprior` but replaces
-GDN with a DPU-safe variant (GDNPatched) during export / inference.
+CompressAi DPU-problematic operations by patched versions from `src.models.components.compressai_dpu`.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from context.compressai_original import (  # from compressai.entropy_models
 from src.models.components.compressai_dpu import (
     EntropyBottleneckPatched,
     GaussianConditionalPatched,
+    get_scale_table,
 )
 from src.models.components.layers import ResidualBlock, make_activation
 from src.utils.debug import log_tensor_shape
@@ -29,11 +30,14 @@ from src.utils.debug import log_tensor_shape
 # DPU-friendly ResidualScaleHyperprior
 # -------------------------------------------------------------------------
 class ResidualScaleHyperpriorPatched(CompressionModel):
-    """Residual Scale Hyperprior model for SAR despeckling and compression (DPU-friendly).
+    """Residual Scale Hyperprior model for SAR despeckling and compression (DPU-friendly version).
 
-    The model architecture is identical to the original `ResidualScaleHyperprior` (called ADAM in the literature), but allows transforming the model in a DPU-exportable format via the `export_dpu` switch. The intended usage is:
-      - During normal training: `export_dpu=False`. The model then uses original CompressAI ops (EntropyBottleneck, GaussianConditional, and GDN) that include a custom backward pass.
-      - During DPU export/inference: `export_dpu=True`. The model then uses Patched variations of CompressAI ops, without a custom backward pass.
+    Joel Amao-Oliva, Nils Foix-Colonier, Francescopaolo Sica. (2024). Joint compression and despeckling by SAR representation learning. (ISPRS Journal of Photogrammetry and Remote Sensing).
+
+    The model architecture is identical to the original `ResidualScaleHyperprior` (called ADAM in the literature), but allows transforming the model in a DPU-exportable format via the `export_dpu` switch.
+    The intended usage is:
+      - During normal training: `export_dpu=False`. The model then uses original CompressAI ops (EntropyBottleneck, GaussianConditional, and GDN) that include a custom backward pass called `LowerBoundFunction(torch.autograd.Function)`.
+      - During DPU export/inference: `export_dpu=True`. The model then uses Patched variations of CompressAI ops, without this custom backward pass which is not supported by Vitis-AI.
     """
 
     def __init__(
@@ -48,16 +52,16 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
         Architectures information:
         - The Main encoder/decoder each have four stride=2 (de)convolution layers. Therefore, the latent space has a size 1/16 of the input resolution (e.g., 256 -> 16).
         - Similarly, the hyper encoder/decoder each have three stride=2 (de)convolution layers. Therefore, the hyperlatent space has a size 1/8 of the latent space resolution (e.g., 16 -> 2).
-        With a default `nb_channels_main=128`, the hyper encoder/decoder have twice (concatenation of the latents for the real and imaginary parts), so 256 channels.
-        For example, it gives the following dimensions (without batch dimension):
+        The hyper encoder/decoder have a doubled channel size, because of the concatenation of the latents for the real and imaginary parts, so 256 channels if `nb_channels_main=128`.
+        Dimensions examples (without batch dimension):
         - Input image: [2, 256, 256]
         - Latent space: [256, 16, 16]
         - Hyperlatent space: [256, 2, 2]
 
         Args:
             nb_channels_main (int): Number of channels for main path (default: 128)
-            activation (str): Activation function to use. 'gdn', 'relu', etc. (default: 'gdn')
-            no_output_padding (bool): If True, modifies ConvTranspose2d kernels size to not use output padding (default: True)
+            activation (str): Activation function to use. 'gdn', 'relu', 'gdn1', etc. (default: 'gdn')
+            no_output_padding (bool): If True, modifies ConvTranspose2d kernels size to not use output padding as it is not supported by Vitis-AI DPU (default: True)
             export_dpu (bool): If True, use DPU-patched layers for inference/export (default: False)
         """
         super().__init__()
@@ -65,14 +69,12 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
         M = 2 * N  # Number of channels for hyperprior
         self.export_dpu: bool = export_dpu
         self.activation: str = activation
+        self.DEBUG_MODE: bool = False  # Big ugly parameter for shape logging during inference
 
         if export_dpu and not no_output_padding:
             raise ValueError(
-                "DPU export with output padding, i.e., ConvTranspose2d use a non-zero `out_padding` argument, is not supported."
+                "DPU export with output padding, i.e., ConvTranspose2d use a non-zero `out_padding` argument, which is not supported by Vitis-AI DPU and will crash the compilation."
             )
-
-        # Big ugly parameter for shape logging during inference
-        self.DEBUG_MODE: bool = False
 
         # Same ConvTranspose2d config as original model
         convT_kernel: int = 4 if no_output_padding else 5
@@ -193,6 +195,20 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
             ),
         )
 
+    @property
+    def main_downsampling_factor(self) -> int:
+        """Return the overall downsampling factor of the main encoder."""
+        return 16  # 2^4 from the 4 stride=2 layers in g_a
+
+    @property
+    def hyper_downsampling_factor(self) -> int:
+        """Return the overall downsampling factor of the hyperprior."""
+        return 8  # 2^3 from the 3 stride=2 layers in h_a
+
+    def aux_loss(self) -> Tensor:
+        """Return the EntropyBottleneck's auxiliary loss for training."""
+        return self.entropy_bottleneck.loss()
+
     def scale_hyperprior(self, y: Tensor) -> tuple[Tensor, Tensor]:
         """Apply hyperprior to predict the scales of each latent variable and compute the
         z-likelihoods.
@@ -219,10 +235,10 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
 
     # ---------------- Forward ----------------
     def forward(self, x: Tensor) -> dict[str, Tensor | dict[str, Tensor]]:
-        """Forward pass.
+        """Complete forward pass. Expects 1-channel input during training and 2-channel input
+        during evaluation/inference. When `export_dpu=True`, this module is intended to be used
+        only in eval mode (no training), ensuring LowerBoundPatched is only used at inference.
 
-        When `export_dpu=True`, this module is intended to be used only in eval
-        mode (no training), ensuring LowerBoundPatched is only used at inference.
         Args:
             x (Tensor): Input tensor. Shape [B, 1, H, W] during training, [B, 2, H, W] (real, imag) during evaluation/inference.
         Returns:
@@ -240,8 +256,6 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
 
             # Analysis transform to get latent representation
             y: Tensor = self.g_a(x)
-            if self.DEBUG_MODE:
-                log_tensor_shape("forward.train.y", y)
             # Concatenate y with itself along channel dimension
             y = torch.cat((y, y), dim=1)
 
@@ -309,6 +323,27 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
             "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
         }
 
+    # ---------------- Update Entropy ----------------
+    def update(self, force: bool = False) -> None:
+        """Update entropy models (e.g., populate tables).
+
+        We need to explicitly update components because we are using "Patched" components that are
+        skipped by CompressionModel.update() (Patched components are no instances of
+        compressai.entropy_models.EntropyModel).
+        """
+        print(
+            f"  -> Updating {type(self.entropy_bottleneck).__name__} and {type(self.gaussian_conditional).__name__}..."
+        )
+        self.entropy_bottleneck.update(force=force)
+        gc = self.gaussian_conditional
+
+        # Check if scale_table is populated (from checkpoint) or needs initialization
+        if gc.scale_table.numel() == 0:
+            # Default Log-Scale table from CompressAI see https://interdigitalinc.github.io/CompressAI/models.html
+            gc.update_scale_table(get_scale_table(), force=force)
+        else:
+            gc.update_scale_table(gc.scale_table, force=force)
+
     # ---------------- Compress ----------------
     def compress(self, x: Tensor) -> dict[str, list[bytes] | Size]:
         """Compress an input tensor into strings.
@@ -328,16 +363,14 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
         y: Tensor = torch.cat((y_real, y_imag), dim=1)
 
         # Apply hyperprior to get scales necessary for entropy coding of the main latent
-        z: Tensor = self.h_a(torch.abs(y))
-        z_strings, _ = self.entropy_bottleneck.compress(z)
+        z: Tensor = self.h_a(torch.abs(y))  # [N, 2*N, H'', W''], e.g., [12, 256, 2, 2]
+        z_strings = self.entropy_bottleneck.compress(z)
         z_hat: Tensor = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
         scales: Tensor = self.h_s(z_hat)
 
         # Apply entropy coding
         indexes = self.gaussian_conditional.build_indexes(scales)
         y_strings = self.gaussian_conditional.compress(y, indexes)
-
-        print(f"Warning: I DID NOT CHECK WHY SHAPE IS {z.shape[-2:]=}.")
 
         return {"strings": [y_strings, z_strings], "shape": z.shape[-2:]}
 
@@ -369,8 +402,3 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
         x_hat: Tensor = torch.cat((x_hat_real, x_hat_imag), dim=1)
 
         return x_hat
-
-    # ---------------- Aux loss ----------------
-    def aux_loss(self) -> Tensor:
-        """Return the EntropyBottleneck's auxiliary loss for training."""
-        return self.entropy_bottleneck.loss()

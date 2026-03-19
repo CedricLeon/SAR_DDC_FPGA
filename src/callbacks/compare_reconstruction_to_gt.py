@@ -1,6 +1,7 @@
+import json
 import warnings
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Dict, Literal, Mapping, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,47 +10,64 @@ import wandb
 from lightning import Callback, LightningModule, Trainer
 from matplotlib.ticker import FuncFormatter
 
-from src.utils.constants import EPS, amp_max, amp_min
-from src.utils.metrics import get_all_distortion_metrics, ms_ssim, mse, psnr, ssim
-from src.utils.processing_utils import clip, process_large_patch
-from src.utils.sar_utils import symmetrize
+from src.utils.constants import AMP_MAX, AMP_MIN, EPS
+from src.utils.debug import print_images_statistics
+from src.utils.metrics import (
+    compute_bitstream_bpp,
+    enl,
+    epd,
+    get_all_distortion_metrics,
+    ratio_enl,
+    ratio_mean,
+)
+from src.utils.processing_utils import clip, patch_infer
+
+# Homogeneous water-body ROI in the 1024×1024 Hamburg large tile [rows 800:1000, cols 400:600].
+# Used to compute ENL on a texture-free area for reliable speckle statistics.
+HAMBURG_ENL_ROI: tuple = (400, 600, 800, 1000)
 
 
 class CompareReconstructionToGT(Callback):
-    """Callback to compare model reconstructions to MERLIN ground truth on a large validation
+    """Callback to compare model reconstructions to MERLIN_DDS ground truth on a large validation
     patch."""
 
     def __init__(
         self,
         patch_dir: str,
         log_every_n_epochs: int,
-        split_large_patch: bool = False,
-        blend_method: str = "linear",
-        stride: int = -1,
+        blend_profile: Literal["sigmoid", "linear", "cosine"] = "sigmoid",
+        overlap: int = 16,
+        verbose: bool = False,
     ):
         super().__init__()
-        self.patch_dir = Path(patch_dir) / "visualization"
+        self.patch_dir = Path(patch_dir) / "visualization/Hamburg_[11000:12024-8500:9524]/"
         self.log_every_n_epochs = log_every_n_epochs
         # --- Details for clipping ---
         self.clip_for_visualization = True  # Enable or disable clipping
         self.mean_std_norm = True  # True: use mean/std, False use percentiles
         self.clip_factor = 3  # Clip to mean +/- self.clip_factor * std
         self.clip_percentiles = (5, 95)  # Clip to these percentiles
-        # --- Processing large patch as small patches or not ---
-        self.split_large_patch = split_large_patch
-        self.blend_method = blend_method
-        self.stride = stride
+        self.clip_info = (
+            f" (clipped with {'mean/std' if self.mean_std_norm else f'percentiles {self.clip_percentiles}'})"
+            if self.clip_for_visualization
+            else " (no clipping)"
+        )
+        # --- Parameters to process large tile as patches during testing---
+        self.overlap: int = overlap
+        self.blend_profile: Literal["sigmoid", "linear", "cosine"] = blend_profile
 
         self.with_compression = None
+        self.verbose = verbose
 
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule):
         """Find the large patch and convert it to a torch tensor."""
-        print(
-            f"\n[CompareReconstructionToGT] Setting up Callback. {self.clip_for_visualization=}, {self.clip_factor=}, {self.split_large_patch=} ({self.blend_method=}, {self.stride=})"
-        )
-        print(
-            f"    Called with {pl_module.__class__.__name__}: net = {pl_module.net.__class__.__name__}, criterion = {pl_module.criterion.__class__.__name__}."
-        )
+        if self.verbose:
+            print(
+                f"\n[CompareReconstructionToGT] Setting up Callback. {self.clip_for_visualization=}, {self.clip_factor=},({self.blend_profile=}, {self.overlap=})"
+            )
+            print(
+                f"    Called with {pl_module.__class__.__name__}: net = {pl_module.net.__class__.__name__}, criterion = {pl_module.criterion.__class__.__name__}."
+            )
         if pl_module.__class__.__name__ == "MerlinModule":
             self.with_compression = False
         elif pl_module.__class__.__name__ == "SARDDCModule":
@@ -57,95 +75,121 @@ class CompareReconstructionToGT(Callback):
         else:
             raise ValueError(f"Unsupported LightningModule class: {pl_module.__class__.__name__}")
         # ----- Load the noisy patch -----
-        # For the files in patch_dir find the one that starts with raw_ and ends with .npy
+        # For the files in patch_dir find the one that starts with sym_ and ends with .npy
         found_patch = False
-        for file in self.patch_dir.glob("raw_*.npy"):
+        for file in self.patch_dir.glob("sym_Noisy.npy"):
             self.patch_path = file
             found_patch = True
             break
         if not found_patch:
             raise FileNotFoundError(
-                f"No validation patch found in {self.patch_dir}. "
-                "Please ensure the directory contains a file starting with 'val_' and ending with '.npy'."
+                f"No symmetrized patch found in {self.patch_dir}. "
+                "Please ensure the directory contains a file starting with 'sym_' and ending with '.npy'."
             )
 
         # --- load and symmetrize ---
         patch_data = np.load(self.patch_path)  # [H, W, 2]
-        print(f"    Loaded RAW PATCH from {self.patch_path}.")
-        print(
-            f"        RAW PATCH (shape={patch_data.shape}) statistics: min={patch_data.min():.4f}, max={patch_data.max():.4f}, mean={patch_data.mean():.4f}, std={patch_data.std():.4f}. Is NaN={np.isnan(patch_data).any()}."
-        )
-        patch_data = symmetrize(patch_data)
+        if self.verbose:
+            print(f"    Loaded Symmetrized PATCH from {self.patch_path}.")
 
         # --- Prepare noisy patch data as numpy arrays for visualization ---
         noisy_linI = np.square(patch_data[:, :, 0]) + np.square(patch_data[:, :, 1])
         self.noisy_linA = np.sqrt(noisy_linI)
         self.noisy_logI = np.log(noisy_linI + EPS)
         del noisy_linI
-        print(
-            f"        NOISY LIN-A (shape={self.noisy_linA.shape}) statistics: min={self.noisy_linA.min():.4f}, max={self.noisy_linA.max():.4f}, mean={self.noisy_linA.mean():.4f}, std={self.noisy_linA.std():.4f}. Is NaN={np.isnan(self.noisy_linA).any()}."
-        )
-        print(
-            f"        NOISY LOG-I (shape={self.noisy_logI.shape}) statistics: min={self.noisy_logI.min():.4f}, max={self.noisy_logI.max():.4f}, mean={self.noisy_logI.mean():.4f}, std={self.noisy_logI.std():.4f}. Is NaN={np.isnan(self.noisy_logI).any()}."
-        )
 
         # --- Store as torch tensors on device for forward passes ---
         patch_tensor = torch.from_numpy(patch_data).to(pl_module.device).float()
         # NO NORMALIZATION, IT'S DONE IN model.forward()
         # Add batch and channel dimensions
         self.patch = patch_tensor.unsqueeze(0).permute(0, 3, 1, 2).contiguous()  # [1, 2, H, W]
-        del patch_tensor, patch_data
 
-        # ----- Load MERLIN Ground Truth -----
+        # ----- Load MERLIN_DDS Ground Truth -----
         found_merlin = False
-        for file in self.patch_dir.glob("denoised_by_MERLIN_*.npy"):
+        for file in self.patch_dir.glob("linA_MERLIN_DDS.npy"):
             self.merlin_gt_path = file
-            merlin_patch_dict = np.load(self.merlin_gt_path, allow_pickle=True).item()
+            self.merlin_linA = np.load(self.merlin_gt_path)
+            if self.verbose:
+                print(f"    Loaded MERLIN_DDS GT from {self.merlin_gt_path}.")
 
-            # Denoised image from MERLIN comes in linear amplitude scale, see https://github.com/hi-paris/deepdespeckling
-            self.merlin_linA = merlin_patch_dict["denoised"]["full"]
+            # Denoised image from MERLIN_DDS comes in linear amplitude scale, see https://github.com/hi-paris/deepdespeckling
             self.merlin_logI = np.log(np.square(self.merlin_linA) + EPS)
 
-            print(f"    Loaded MERLIN GT from {self.merlin_gt_path}.")
-            print(
-                f"        MERLIN LIN-A (shape={self.merlin_linA.shape}) statistics: min={self.merlin_linA.min():.4f}, max={self.merlin_linA.max():.4f}, mean={self.merlin_linA.mean():.4f}, std={self.merlin_linA.std():.4f}. Is NaN={np.isnan(self.merlin_linA).any()}."
-            )
+            if self.verbose:
+                # Quick print metrics between noisy and MERLIN_DDS GT
+                metrics = get_all_distortion_metrics(self.noisy_linA, self.merlin_linA)
+                print("    Initial metrics between Noisy and MERLIN_DDS GT:", end="")
+                for key, value in metrics.items():
+                    print(f" {key}={value:.4f}", end=",")
+                print()
 
-            # Quick print metrics between noisy and MERLIN GT
-            metrics = get_all_distortion_metrics(self.noisy_linA, self.merlin_linA)
-            print("        Initial metrics between Noisy and MERLIN GT:", end="")
-            for key, value in metrics.items():
-                print(f" {key}={value:.4f}", end=",")
-            print()
             found_merlin = True
             break
 
         if not found_merlin:
             warnings.warn(
-                f"No MERLIN Ground Truth found in {self.patch_dir}. Skipping GT logging."
+                f"No MERLIN_DDS Ground Truth found in {self.patch_dir}. Skipping GT logging."
             )
             self.merlin_linA = None
             self.merlin_logI = None
-        elif self.merlin_gt_path.name.split("_")[3] != self.patch_path.name.split("_")[1]:
-            warnings.warn(
-                f"Patch and MERLIN GT filenames do not match: {self.patch_path.name} vs {self.merlin_gt_path.name}. "
-                "This may lead to incorrect logging."
+
+        if self.verbose:
+            # Print all images statistics for debugging
+            print_images_statistics(
+                {
+                    "Noisy Symmetrized": patch_data,
+                    "Noisy LinA": self.noisy_linA,
+                    "MERLIN_DDS LinA": self.merlin_linA,
+                    "Noisy LogI": self.noisy_logI,
+                    "MERLIN_DDS LogI": self.merlin_logI,
+                },
+                title=f"Epoch {trainer.current_epoch} - Image Statistics{self.clip_info}",
             )
+        del patch_tensor, patch_data
 
     def on_test_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         """Log the final reconstruction of the large patch at the end of testing."""
-        if self.with_compression:
-            recon = pl_module.forward(self.patch)
-            criterion = pl_module.criterion(recon, self.patch)
-            recon = recon["x_hat"]
-        else:
-            recon_real = pl_module.forward(self.patch[:, 0:1, :, :])
-            recon_imag = pl_module.forward(self.patch[:, 1:2, :, :])
-            recon = torch.cat([recon_real, recon_imag], dim=1)
-            criterion = pl_module.criterion(recon, self.patch)
+        # We only need to run this callback once, so we mute it if it's called on the "test_sub500.npy" set used for FPGA comparison
+        prefix = getattr(pl_module, "test_prefix", "test")
+        if "sub500" not in prefix:
+            print(
+                f"\n[CompareReconstructionToGT] Skipping on {prefix} set to avoid redundant logging."
+            )
+            return
+
+        # Move everything to CPU for final visualization and logging to avoid GPU memory issues, especially with large patches and compression outputs.
+        pl_module.net.cpu()
+        self.patch = self.patch.cpu()
+
+        # Always split large patch during test; Build infer_fn for patch_infer based on module type.
+        if self.with_compression:  # SARDDCModule
+
+            def _infer_fn(patch: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
+                out = pl_module.forward(patch)
+                crit = pl_module.criterion(out, patch)
+                patch_norm = (torch.log(torch.square(patch) + EPS) - 2 * AMP_MIN) / (
+                    2 * AMP_MAX - 2 * AMP_MIN
+                )
+                out_enc = pl_module.net.compress(patch_norm)
+                out_dec = pl_module.net.decompress(out_enc["strings"], out_enc["shape"])
+                _N, _, _H, _W = patch.shape
+                crit["bpp_bitstream"] = compute_bitstream_bpp(out_enc["strings"], _H, _W, _N)
+                return out_dec, crit
+
+        else:  # MerlinModule: real and imaginary channels are processed independently.
+
+            def _infer_fn(patch: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
+                recon_real = pl_module.forward(patch[:, 0:1])
+                recon_imag = pl_module.forward(patch[:, 1:2])
+                recon_patch = torch.cat([recon_real, recon_imag], dim=1)
+                return recon_patch, pl_module.criterion(recon_patch, patch)
+
+        recon, criterion = patch_infer(
+            self.patch, _infer_fn, overlap=self.overlap, blend_profile=self.blend_profile
+        )  # [1, 2, H, W], dict with keys like "loss", "bpp", "bpp_bitstream"
 
         # ----- Denorm the reconstructions  -----
-        recon_denorm = recon * (amp_max - amp_min) + amp_min
+        recon_denorm = recon * (AMP_MAX - AMP_MIN) + AMP_MIN
         recon_lin = torch.exp(recon_denorm)
         recon_linI = 0.5 * (
             torch.square(recon_lin[:, 0, :, :]) + torch.square(recon_lin[:, 1, :, :])
@@ -160,12 +204,35 @@ class CompareReconstructionToGT(Callback):
         # compute metrics
         metrics_to_merlin = self._compute_metrics_to_merlin(criterion, recon_linA)
 
-        # Save image locally
+        # Save reconstructions locally: PNG for log-I and NPY for lin-A
+        img_name = "recon_" + self.patch_dir.name
         log_dir = Path(trainer.log_dir) if trainer.log_dir else Path(trainer.default_root_dir)
-        save_path = log_dir / "reconstruction_test.png"
+        log_dir.mkdir(parents=True, exist_ok=True)
 
-        plt.imsave(save_path, recon_logI, cmap="gray")
-        print(f"[CompareReconstructionToGT] Saved test reconstruction to {save_path}")
+        png_path = log_dir / f"{img_name}_logI.png"
+        plt.imsave(png_path, recon_logI, cmap="gray")
+        npy_path = log_dir / f"{img_name}_linA.npy"
+        np.save(npy_path, recon_linA)
+
+        # Save per-tile metrics to JSON so the comparison notebook can read bpp / bpp_bitstream without re-running inference.
+        metrics_json_path = log_dir / f"{img_name}_metrics.json"
+        with open(metrics_json_path, "w") as _f:
+            json.dump(metrics_to_merlin, _f, indent=4)
+
+        if self.verbose:
+            print(f"[CompareReconstructionToGT] Saved test reconstruction to {png_path}")
+            print(f"[CompareReconstructionToGT] Saved test reconstruction (linA) to {npy_path}")
+            print(f"[CompareReconstructionToGT] Saved tile metrics to {metrics_json_path}")
+
+        print_images_statistics(
+            {
+                "Noisy LinA": self.noisy_linA,
+                "recon_linA": recon_linA,
+                "MERLIN_DDS LinA": self.merlin_linA,
+                "recon_logI": recon_logI,
+            },
+            title=f"Stats [CompareReconstructionToGT] on_test_end() - PSNR to MERLIN_DDS = {metrics_to_merlin['psnr']:.2f}dB, bbp (criterion) = {metrics_to_merlin['bpp']:.4f}, bpp (bitstream) = {metrics_to_merlin['bpp_bitstream']:.4f}",
+        )
 
         # Log to WandB
         if (
@@ -179,18 +246,49 @@ class CompareReconstructionToGT(Callback):
             caption = ", ".join([f"{k}={v:.4f}" for k, v in valid_metrics.items()])
 
             pl_module.logger.experiment.log(
-                {"test/reconstruction_image": wandb.Image(str(save_path), caption=caption)}
+                {"test/reconstruction_image_logI": wandb.Image(str(png_path), caption=caption)}
             )
 
     def _compute_metrics_to_merlin(self, criterion: dict, recon_linA: np.ndarray) -> dict:
-        """Compute distortion metrics between reconstruction and MERLIN GT in LINEAR-AMPLITUDE."""
-        metrics_to_merlin = {"mse": -1.0, "psnr": -1.0, "bpp": -1.0, "ssim": -1.0, "ms_ssim": -1.0}
-        metrics_to_merlin["loss"] = criterion["loss"].item()
+        """Compute distortion metrics between reconstruction and MERLIN_DDS GT in LINEAR-
+        AMPLITUDE."""
+        metrics_to_merlin = {
+            "mse": -1.0,
+            "psnr": -1.0,
+            "bpp": -1.0,
+            "bpp_bitstream": -1.0,
+            "ssim": -1.0,
+            "ms_ssim": -1.0,
+            # SAR quality metrics
+            "enl_recon": -1.0,
+            "enl_roi": -1.0,
+            "ratio_mean": -1.0,
+            "ratio_enl": -1.0,
+            "epd": -1.0,
+        }
+        if "loss" in criterion:
+            metrics_to_merlin["loss"] = criterion["loss"].item()
+
         if self.merlin_linA is not None:
             for key, value in get_all_distortion_metrics(recon_linA, self.merlin_linA).items():
                 metrics_to_merlin[key] = value
-        if self.with_compression:
-            metrics_to_merlin["bpp"] = criterion["bpp"].item()
+            metrics_to_merlin["epd"] = epd(recon_linA, self.merlin_linA)
+
+        # SAR quality metrics (reference-free / noisy-paired)
+        metrics_to_merlin["enl_recon"] = enl(recon_linA)
+        metrics_to_merlin["enl_roi"] = enl(recon_linA, roi=HAMBURG_ENL_ROI)
+        metrics_to_merlin["ratio_mean"] = ratio_mean(recon_linA, self.noisy_linA)
+        metrics_to_merlin["ratio_enl"] = ratio_enl(recon_linA, self.noisy_linA)
+
+        # Log BPP from criterion (likelihood)
+        if "bpp" in criterion:
+            val = criterion["bpp"]
+            metrics_to_merlin["bpp"] = val.item() if isinstance(val, torch.Tensor) else val
+
+        # Log BPP from bitstream if available
+        if "bpp_bitstream" in criterion:
+            metrics_to_merlin["bpp_bitstream"] = criterion["bpp_bitstream"]
+
         return metrics_to_merlin
 
     def on_validation_batch_end(
@@ -202,47 +300,42 @@ class CompareReconstructionToGT(Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        """Log reconstruction comparison with MERLIN GT."""
+        """Log reconstruction comparison with MERLIN_DDS GT."""
         # Only log on specified epochs and for the first batch
         if (trainer.current_epoch % self.log_every_n_epochs != 0) or batch_idx > 0:
             return
-        print(f"\n[CompareReconstructionToGT] Epoch {trainer.current_epoch}.")
+
+        if self.verbose:
+            print(f"\n[CompareReconstructionToGT] Epoch {trainer.current_epoch}.")
 
         # ----- Forward pass to get reconstruction and metrics -----
         with torch.no_grad():
-            if self.split_large_patch:
-                criterion, recon = process_large_patch(
-                    model=pl_module,
-                    input=self.patch,
-                    target=self.patch,
-                    stride=self.stride,
-                    blend_method=self.blend_method,
-                )
+            if self.with_compression:
+                recon = pl_module.forward(self.patch)
+                criterion = pl_module.criterion(recon, self.patch)
+                recon = recon["x_hat"]
             else:
-                if self.with_compression:
-                    recon = pl_module.forward(self.patch)
-                    criterion = pl_module.criterion(recon, self.patch)
-                    recon = recon["x_hat"]
-                else:
-                    recon_real = pl_module.forward(self.patch[:, 0:1, :, :])
-                    recon_imag = pl_module.forward(self.patch[:, 1:2, :, :])
-                    recon = torch.cat([recon_real, recon_imag], dim=1)
-                    criterion = pl_module.criterion(recon, self.patch)
+                recon_real = pl_module.forward(self.patch[:, 0:1, :, :])
+                recon_imag = pl_module.forward(self.patch[:, 1:2, :, :])
+                recon = torch.cat([recon_real, recon_imag], dim=1)
+                criterion = pl_module.criterion(recon, self.patch)
 
         # ----- Denorm the reconstructions  -----
-        recon_denorm = recon * (amp_max - amp_min) + amp_min
+        recon_denorm = recon * (AMP_MAX - AMP_MIN) + AMP_MIN
         recon_lin = torch.exp(recon_denorm)
         recon_linI = 0.5 * (
             torch.square(recon_lin[:, 0, :, :]) + torch.square(recon_lin[:, 1, :, :])
         )
         recon_linA = torch.sqrt(recon_linI).squeeze().cpu().numpy()
         recon_logI = torch.log(recon_linI + EPS).squeeze().cpu().numpy()
-        print(
-            f"    RECON LIN-A: min={recon_linA.min():.4f}, max={recon_linA.max():.4f}, mean={recon_linA.mean():.4f}, std={recon_linA.std():.4f}. Is NaN={np.isnan(recon_linA).any()}."
-        )
-        print(
-            f"    NOISY LIN-A: min={self.noisy_linA.min():.4f}, max={self.noisy_linA.max():.4f}, mean={self.noisy_linA.mean():.4f}, std={self.noisy_linA.std():.4f}."
-        )
+        if self.verbose:
+            print_images_statistics(
+                {
+                    "Reconstruction LinA": recon_linA,
+                    "Noisy LinA": self.noisy_linA,
+                },
+                title=f"Epoch {trainer.current_epoch} - Reconstruction Statistics{self.clip_info}",
+            )
 
         fig_A, metrics_to_merlin = self._visualize_with_histograms(
             recon_linA,
@@ -279,7 +372,7 @@ class CompareReconstructionToGT(Callback):
         criterion: dict,
         trainer: Trainer,
     ) -> tuple[Any, dict]:
-        """Visualize the reconstruction, noisy input, MERLIN GT (if available) and their
+        """Visualize the reconstruction, noisy input, MERLIN_DDS GT (if available) and their
         histograms."""
         metrics_to_merlin = self._compute_metrics_to_merlin(criterion, recon_linA)
 
@@ -310,17 +403,17 @@ class CompareReconstructionToGT(Callback):
         axes[0, 1].axis("off")
         fig.colorbar(im1, ax=axes[0, 1], shrink=0.8)
 
-        # MERLIN GT (if available)
+        # MERLIN_DDS GT (if available)
         if self.merlin_logI is not None:
             im3 = axes[0, 2].imshow(merlin_logI, cmap="gray")
-            axes[0, 2].set_title("MERLIN GT Log-I")
+            axes[0, 2].set_title("MERLIN_DDS GT Log-I")
             axes[0, 2].axis("off")
             fig.colorbar(im3, ax=axes[0, 2], shrink=0.8)
         else:
             axes[0, 2].text(
                 0.5,
                 0.5,
-                "MERLIN GT\nNot Available",
+                "MERLIN_DDS GT\nNot Available",
                 ha="center",
                 va="center",
                 transform=axes[0, 2].transAxes,
@@ -372,14 +465,14 @@ class CompareReconstructionToGT(Callback):
         # Reconstruction histogram
         plot_histogram(axes[1, 1], recon_logI, "Recon LOG-I Histogram")
 
-        # MERLIN GT histogram (if available)
+        # MERLIN_DDS GT histogram (if available)
         if self.merlin_logI is not None:
-            plot_histogram(axes[1, 2], merlin_logI, "MERLIN GT LOG-I Histogram")
+            plot_histogram(axes[1, 2], merlin_logI, "MERLIN_DDS GT LOG-I Histogram")
         else:
             axes[1, 2].text(
                 0.5,
                 0.5,
-                "MERLIN GT\nHistogram\nNot Available",
+                "MERLIN_DDS GT\nHistogram\nNot Available",
                 ha="center",
                 va="center",
                 transform=axes[1, 2].transAxes,
@@ -390,7 +483,7 @@ class CompareReconstructionToGT(Callback):
         fig.suptitle(
             f"Val Large patch ({'clipped and normalized' if self.clip_for_visualization else 'raw'}), epoch {trainer.current_epoch}: "
             f"Loss={metrics_to_merlin['loss']:.3f}, BPP={metrics_to_merlin['bpp']:.4f}."
-            f"\n metrics to MERLIN GT (LIN-A): MSE={metrics_to_merlin['mse']:.4f}, PSNR={metrics_to_merlin['psnr']:.2f}dB, SSIM={metrics_to_merlin['ssim']:.4f}, MS-SSIM={metrics_to_merlin['ms_ssim']:.4f}",
+            f"\n metrics to MERLIN_DDS GT (LIN-A): MSE={metrics_to_merlin['mse']:.4f}, PSNR={metrics_to_merlin['psnr']:.2f}dB, SSIM={metrics_to_merlin['ssim']:.4f}, MS-SSIM={metrics_to_merlin['ms_ssim']:.4f}",
             fontsize=14,
         )
 

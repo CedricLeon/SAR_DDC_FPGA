@@ -12,7 +12,7 @@ from src.utils import pylogger, rich_utils
 log = pylogger.RankedLogger(__name__, rank_zero_only=True)
 
 
-def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
+def make_wandb_run_name(cfg: Dict[str, Any]) -> str:
     """Generate a descriptive run name based on important parameters.
 
     :param cfg: The configuration dictionary
@@ -68,7 +68,7 @@ def early_wandb_initialization(cfg: DictConfig) -> None:
         wandb_osh.set_log_level("ERROR")  # for wandb_osh.__version__ >= 1.2.0
 
     run_name = (
-        make_a_nice_run_name(cfg)
+        make_wandb_run_name(cfg)
         if cfg.logger.wandb.get("run_name", None) is None
         else cfg.logger.wandb.get("run_name")
     )
