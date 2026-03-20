@@ -690,23 +690,271 @@ The following metrics can be computed from the benchmark output:
 
 ---
 
-## 9. Future Work
+## 9. GPU / CPU Benchmark: `scripts/benchmark_gpu.py`
 
-- [ ] **GPU benchmark** (`benchmark_gpu.py`): Mirror the same JSON schema with
-  `torch.cuda.Event` timing, NVIDIA power readings, and perun integration.
+### 9.1 Purpose & Relationship to FPGA Benchmark
+
+`benchmark_gpu.py` measures per-component latency, throughput, and power for the
+**same model** running on a CUDA GPU and/or host CPU.  It produces JSON output with
+the **same schema** as `benchmark_fpga.py` so results can be loaded into a single
+comparison table or plot.
+
+Key differences from the FPGA benchmark:
+- **Precision**: FP32 on GPU/CPU vs. INT8 on FPGA — quality (PSNR/SSIM) **must**
+  be compared alongside speed.
+- **Batch size**: Always 1 (matching the FPGA baseline).
+- **Entropy coding**: Same CompressAI Python implementation runs on **both** GPU
+  and CPU host.  On the FPGA, this runs on the ARM A53 via C++ `ans.so`.
+
+### 9.2 Dual-Device Mode
+
+By default, a single invocation measures on **GPU first, then CPU sequentially**.
+Skip either with:
+- `--no-gpu` — skip GPU measurement (useful on CPU-only machines)
+- `--no-cpu` — skip CPU measurement (faster iteration on GPU numbers)
+
+Each device produces its own JSON file:
+```
+results/benchmark/<run_name>/benchmark_gpu_<scenario>.json
+results/benchmark/<run_name>/benchmark_cpu_<scenario>.json
+```
+
+### 9.3 Scenarios
+
+| Scenario | Steps Timed | Purpose |
+|---|---|---|
+| `full` | All (compress + decompress) | End-to-end latency for one tile |
+| `compress` | g_a → h_a → EB → h_s → GC | Encode-only latency |
+| `decompress` | EB → h_s → GC → g_s | Decode-only latency (from cached bitstream) |
+| `nn_only` | g_a, h_a, h_s, g_s | Isolate NN latency, no entropy coding |
+| `entropy_only` | EB + GC (compress + decompress) | Isolate CPU entropy coding |
+
+The `nn_only` scenario is analogous to `dpu_only` on the FPGA.
+
+### 9.4 Step Labels & Prefixing Convention
+
+| Prefix | Meaning | When used |
+|---|---|---|
+| `gpu_` | NN subgraph running on GPU | GPU measurement mode |
+| `nn_` | NN subgraph running on CPU | CPU measurement mode |
+| `cpu_` | CPU-side operation (entropy coding, concat, split) | Both modes |
+
+This allows automatic aggregation (e.g., sum all `gpu_*` steps for total GPU NN time).
+
+### 9.5 Timing Methodology
+
+| Device | Method | Precision |
+|---|---|---|
+| **GPU** (wall-clock) | `time.perf_counter()` with `torch.cuda.synchronize()` | ~µs |
+| **GPU** (CUDA events) | `torch.cuda.Event(enable_timing=True)` | ~µs, no CPU-side jitter |
+| **CPU** | `time.perf_counter()` | ~µs |
+
+The GPU measurement records **both** wall-clock and CUDA event timings for every
+step.  CUDA events are stored in `latency_breakdown_cuda_events` — prefer these
+for NN sub-graph comparisons as they exclude Python/CPU overhead.
+
+### 9.6 Power Measurement
+
+| Source | Metric | How |
+|---|---|---|
+| **GPU** | Board-level GPU draw | `nvidia-smi --query-gpu=power.draw` polled at `--power-hz` (default 10 Hz) in a background thread |
+| **CPU** | Package + DRAM power | Intel RAPL via `/sys/class/powercap/intel-rapl/` — energy counter delta between start/stop |
+
+**Limitations**:
+- `nvidia-smi` power is the **full GPU board** (incl. idle), not incremental.
+- RAPL reports **package** (all cores + uncore) and **DRAM**, but not
+  motherboard, PSU, fans, etc.
+- Neither captures host system total power.  For publication, consider an
+  external wall-plug meter.
+
+### 9.7 Usage
+
+The script accepts the model either via `--model-dir` (recommended — reads the
+checkpoint path from `manifest.json`) or `--ckpt` (direct checkpoint path).
+The two are mutually exclusive.
+
+```bash
+# ---- Recommended: use --model-dir (reads manifest.json → checkpoint) ----
+
+# Full pipeline, GPU + CPU, with power measurement
+python scripts/benchmark_gpu.py \
+    --model-dir results/fpga/active_model/ \
+    --scenario full \
+    --warmup 20 --iters 100 \
+    --power
+
+# GPU only, compress scenario, idle baseline
+python scripts/benchmark_gpu.py \
+    --model-dir results/fpga/active_model/ \
+    --scenario compress \
+    --no-cpu --power --idle-baseline 10
+
+# CPU only, entropy isolation
+python scripts/benchmark_gpu.py \
+    --model-dir results/fpga/active_model/ \
+    --scenario entropy_only \
+    --no-gpu --iters 200
+
+# ---- Alternative: direct checkpoint path ----
+
+python scripts/benchmark_gpu.py \
+    --ckpt logs/train/runs/<run>/checkpoints/last.ckpt \
+    --scenario full \
+    --warmup 20 --iters 100
+
+# Custom output directory (works with either source)
+python scripts/benchmark_gpu.py \
+    --model-dir results/fpga/active_model/ \
+    --scenario full \
+    --output-dir results/my_benchmark
+```
+
+When `--model-dir` is used, the output directory defaults to
+`results/benchmark/<model_name>/` (e.g. `ResSHyp-relu_s1_L1000_pt`).
+When `--ckpt` is used, it defaults to `results/benchmark/<run_timestamp>/`.
+
+### 9.8 JSON Output Schema
+
+```json
+{
+  "platform": "GPU_NVIDIA_RTX_A4000",
+  "device": "cuda",
+  "scenario": "full",
+  "timestamp": "2025-...",
+  "n_warmup": 20,
+  "n_iters": 100,
+
+  "latency_breakdown": {
+    "preprocess":       {"mean_s": 0.000001, "std_s": ..., "median_s": ..., "min_s": ..., "max_s": ..., "p95_s": ..., "n": 100},
+    "gpu_g_a":          {"mean_s": 0.0012,   ...},
+    "cpu_concat_abs":   {"mean_s": 0.00003,  ...},
+    "gpu_h_a":          {"mean_s": 0.0005,   ...},
+    "cpu_eb_compress":  {"mean_s": 0.035,    ...},
+    "cpu_eb_decompress":{"mean_s": 0.002,    ...},
+    "gpu_h_s":          {"mean_s": 0.0005,   ...},
+    "cpu_gc_compress":  {"mean_s": 0.12,     ...},
+    "cpu_gc_decompress":{"mean_s": 0.14,     ...},
+    "cpu_split_y_hat":  {"mean_s": 0.000002, ...},
+    "gpu_g_s":          {"mean_s": 0.0014,   ...},
+    "postprocess":      {"mean_s": 0.000001, ...}
+  },
+  "latency_breakdown_cuda_events": {
+    "preprocess":       {"mean_s": ..., ...},
+    "gpu_g_a":          {"mean_s": 0.00098, ...},
+    "..."
+  },
+
+  "latency_total_mean_s": 0.301,
+  "latency_total_mean_ms": 301.0,
+  "latency_gpu_total_mean_ms": 3.6,
+  "latency_cpu_total_mean_ms": 297.4,
+  "latency_wall_total_s": 30.1,
+
+  "throughput_fps": 3.32,
+  "avg_compressed_bytes": 1234,
+
+  "power": {
+    "gpu":            {"avg_power_w": 85.0, "energy_j": 2550.0, "n_samples": 300, "duration_s": 30.1},
+    "cpu_rapl": {
+      "package-0":    {"avg_power_w": 42.0, "energy_j": 1264.2, ...},
+      "dram":         {"avg_power_w": 5.2,  "energy_j": 156.5, ...}
+    },
+    "gpu_avg_w":           85.0,
+    "cpu_rapl_total_avg_w": 47.2,
+    "idle_gpu":            {"avg_power_w": 15.0, ...},
+    "idle_cpu_rapl": {
+      "package-0":    {"avg_power_w": 12.0, ...},
+      "dram":         {"avg_power_w": 3.0,  ...}
+    }
+  },
+
+  "hw_info": {
+    "name": "NVIDIA RTX A4000",
+    "cuda_version": "12.4",
+    "cudnn_version": "90100",
+    "torch_version": "2.5.1+cu124",
+    "memory_total_mb": 16376,
+    "power_limit_w": 140.0,
+    "max_sm_clock_mhz": 1560.0,
+    "max_mem_clock_mhz": 7001.0
+  },
+
+  "model_info": {
+    "total_params": 15000000,
+    "trainable_params": 15000000,
+    "weights_size_mb": 57.22,
+    "N": 128,
+    "M": 256
+  }
+}
+```
+
+### 9.9 Interpreting Results & Cross-Platform Comparison
+
+#### 9.9.1 What to compare
+
+| Metric | Fair comparison? | Notes |
+|---|---|---|
+| **NN latency** (gpu/dpu/nn steps) | ✅ Comparable | Different devices executing the same subgraphs |
+| **Entropy latency** (cpu_ steps) | ⚠️ Be careful | GPU benchmark runs entropy on x86; FPGA on ARM A53. The x86 is vastly faster |
+| **Total latency** | ✅ Comparable | Apples-to-apples if batch=1 |
+| **Throughput** (fps) | ✅ Comparable | Derived from total latency |
+| **Power** | ⚠️ Different scopes | GPU = board GPU power; FPGA = SoC rails. Not directly comparable |
+| **Energy per inference** | ✅ Best metric | $E = P_\text{avg} \times t_\text{total}$ for each platform |
+| **Quality** (PSNR/SSIM) | ✅ Essential | FP32 vs INT8 quality gap must be reported alongside speed |
+
+#### 9.9.2 Pitfalls
+
+1. **Entropy coding dominates on all platforms.**  On both GPU and FPGA, entropy
+   coding (CompressAI's rANS) runs on the CPU.  The x86 host is ~10–30× faster
+   than the ARM A53, so total latency differences are dominated by this component
+   rather than NN inference speed.
+2. **GPU warmup.**  The first CUDA kernel launch incurs JIT compilation overhead.
+   Always use `--warmup ≥ 10` to ensure steady-state.
+3. **GPU power states.**  An idle GPU draws ~15W.  Under load, RTX A4000 can reach
+   ~140W.  If `--iters` is too low, the GPU may not reach steady-state power,
+   inflating apparent energy efficiency.
+4. **CUDA events vs. wall-clock.**  `latency_breakdown_cuda_events` excludes
+   CPU-side overhead (Python dispatch, memory copies).  For GPU NN steps, CUDA
+   events are more accurate; for end-to-end latency, use the wall-clock breakdown.
+5. **CPU benchmark is single-threaded by default.**  PyTorch uses `torch.get_num_threads()`
+   threads for CPU ops.  This may differ across machines.  Report `torch_threads`
+   from the JSON output alongside results.
+
+#### 9.9.3 Recommended comparison table format
+
+For a publication, present results as:
+
+| | FPGA (ZCU102) | GPU (RTX A4000) | CPU (host) |
+|---|---|---|---|
+| **NN latency** (ms) | 167 | ? | ? |
+| **Entropy latency** (ms) | 258 | ? | ? |
+| **Total latency** (ms) | 425 | ? | ? |
+| **Throughput** (patches/s) | 2.35 | ? | ? |
+| **Power** (W) | 11.62 (SoC) | ? (GPU board) | ? (RAPL pkg) |
+| **Energy/patch** (J) | 4.94 | ? | ? |
+| **PSNR** (dB) | from eval | from eval | from eval |
+| **Precision** | INT8 | FP32 | FP32 |
+
+---
+
+## 10. Future Work
+
+- [x] **GPU benchmark** (`benchmark_gpu.py`): Mirror the same JSON schema with
+  `torch.cuda.Event` timing, NVIDIA power readings, and Intel RAPL.
+- [ ] **Run GPU benchmark and populate Section 9 with real results**.
 - [ ] **vaitrace validation**: Run `vaitrace` once to get DPU-level hardware timing
   and validate against our Python-level measurements.
 - [ ] **Tile-level benchmarking**: Benchmark on full 512×512 or 1024×1024 images
   using `patch_infer_fpga()` with overlap-blended tiling.
 - [ ] **Multi-thread DPU**: Test 3-thread operation to measure throughput scaling.
 - [ ] **USB power meter**: External 12V input measurement for true board power.
-- [ ] **perun integration**: CPU energy via Intel RAPL on host for GPU benchmark.
 - [ ] **Thermal characterization**: Monitor DPU junction temperature during extended
   runs to assess thermal throttling risk.
 
 ---
 
-## 10. References
+## 11. References
 
 - **UG1182** (v1.7): Xilinx ZCU102 Evaluation Board User Guide, February 2023.
   - Table 3-22: I2C0 U60 Mux Target Bus Connections (INA226 chip U-ref → I2C address).

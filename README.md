@@ -9,7 +9,7 @@
 
 </div>
 
-Yes, that's a lot of acronyms. But now you know why it's called DDC_FPGA.
+Yes, that's a lot of acronyms. But now you know why it's called SAR_DDC_FPGA.
 This project implements the solution presented by Amao-Oliva et al. [1] available at [sciencedirect.com](https://www.sciencedirect.com/science/article/pii/S0924271624004866) on FPGA.
 
 ### TODOs
@@ -18,6 +18,7 @@ This project implements the solution presented by Amao-Oliva et al. [1] availabl
 
 - [ ] "NWML" warning, see [NVML is the NVIDIA Management Library and is used on NVIDIA GPUs](https://discuss.pytorch.org/t/cant-initialize-nvml-error-with-rvc-project/194206)
 - [ ] Add in README that the syntax is Python 3.8 compatible because it is used by the Vitis-AI container and we can't bump it. (It mostly implies using `Option[]` and `Union[]` from `typing` instead of `|`)
+- [ ] Use [rootutils](https://github.com/ashleve/rootutils) better, for example using `find_root()` instead of `setup_root(Path(__file__).resolve().parent.parent` ...
 
 ### Long-term Experiments/Upgrades
 
