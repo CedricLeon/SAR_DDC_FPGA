@@ -136,6 +136,7 @@ xdputil xmodel /home/root/SAR_DDC/active_model/compiled_model/*.xmodel -l
 ```
 
 This outputs JSON. Per DPU subgraph, the relevant fields are:
+
 - `"workload"` → total OPs (values in the "Workload" column)
 - `"reg info"` → memory regions: `REG_0` (CONST = INT8 weights), `REG_1`
   (WORKSPACE), `REG_2` (INPUT), `REG_3` (OUTPUT). The `"size"` field in
@@ -178,8 +179,11 @@ vs ~71 ms for g_a + g_s).
 
 **Multi-core note**: Using all 3 DPU cores in parallel (3 threads) could yield
 up to ~3× system throughput (theoretical max: $3 \times 1.23 = 3.69$ TOPS), but
-the per-core utilization would remain ~90%. Multi-core benchmarking is a future
-work item (Section 9).
+the per-core utilization would remain ~90%. The `full_parallel` scenario
+(Section 5.2) exploits this: g_a and g_s are each called twice per inference
+(real + imag channels), and both calls are dispatched simultaneously to two
+separate DPU cores, reducing the effective DPU time for those steps from ~2×
+to ~1× single-subgraph latency.
 
 ### 3.3 xmodel Memory Summary
 
@@ -246,6 +250,7 @@ not driven by our inference workload.
 
 **Source for rail ↔ function mapping**: The "What It Powers" descriptions are
 not guesses — they come from the official Xilinx/AMD documentation:
+
 - **DS925** (Zynq UltraScale+ Data Sheet): "Recommended Operating Conditions"
   table, which defines each rail with a short description
   (e.g., VCCINT = "Internal core supply", VCC_PSINTFP = "PS full-power domain
@@ -265,6 +270,7 @@ just a sequential ID. It is printed on the PCB silkscreen next to the component
 and used in the schematic to identify it.
 
 On the ZCU102:
+
 - **U47** is a MAX15301 voltage regulator that *generates* the VCCINT rail.
 - **U79** is an INA226 power monitor that *measures* the VCCINT rail.
 
@@ -282,6 +288,7 @@ regulators and the TI INA226 monitors — over the same physical wires.
 
 On the ZCU102, all PMBus devices hang off the **I2C0 bus** through a
 **PCA9544A 4-channel I2C mux** (chip U60). The mux has separate channels:
+
 - **Channel 0 (MAXIM_PMBUS)**: Maxim voltage regulators (for programming
   voltage setpoints, enable/disable, reading regulator-reported telemetry).
 - **Channel 1 (PS_PMBUS)**: INA226 monitors for PS-side rails.
@@ -308,7 +315,7 @@ monitors, we need to cross-reference **two tables** from UG1182 (v1.7):
 
 Matching on `(bus channel, I2C address)` gives the definitive mapping:
 
-```
+```text
 sysfs "ina226_u79" → (Table 3-22) U79 on PL_PMBUS @ 0x40
                    → (Table 3-56) PL:0x40 = VCCINT
                    → U79 monitors VCCINT ✓
@@ -389,6 +396,7 @@ Unmonitored rails include DDR DRAM cells, SD card, HDMI/DP, USB, etc. The
 power.
 
 **Cross-verification options**:
+
 1. **External power meter** (recommended for publication): Measure at the 12 V
    barrel jack input with an inline meter (e.g., J7-C USB meter or bench supply
    with current readout). This gives true total board power including all
@@ -433,6 +441,7 @@ power.
 | `decompress` | EB → h_s → GC → g_s | Decode-only latency (from cached bitstream) |
 | `dpu_only` | g_a, h_a, h_s, g_s | Isolate DPU latency, no entropy coding |
 | `entropy_only` | EB.compress, EB.decompress, GC.compress, GC.decompress | Isolate CPU entropy coding |
+| `full_parallel` | All (compress + decompress) | Like `full` but g_a and g_s run on two DPU cores simultaneously |
 
 ### 5.3 Deployment to Board
 
@@ -445,6 +454,7 @@ The benchmark script is automatically included in the deploy pipeline
 ```
 
 For manual transfer:
+
 ```bash
 scp scripts/fpga/benchmark_fpga.py ZCU102:/home/root/SAR_DDC/active_model/
 ```
@@ -456,7 +466,7 @@ scp scripts/fpga/benchmark_fpga.py ZCU102:/home/root/SAR_DDC/active_model/
 cd /home/root/SAR_DDC/active_model
 
 # Full pipeline with power + idle baseline + HW metadata
-# Output auto-saved to results/benchmark_full.json
+# Output auto-saved to results/benchmark_fpga_full.json
 python3 benchmark_fpga.py \
     --xmodel ResidualScaleHyperpriorDPUWrapper_pt.xmodel \
     --scenario full \
@@ -467,19 +477,19 @@ python3 benchmark_fpga.py \
     --idle-baseline 10 \
     --collect-hw-meta
 
-# Compress-only → results/benchmark_compress.json
+# Compress-only → results/benchmark_fpga_compress.json
 python3 benchmark_fpga.py \
     --xmodel ResidualScaleHyperpriorDPUWrapper_pt.xmodel \
     --scenario compress \
     --warmup 20 --iters 100 --power
 
-# DPU-only for isolating DPU latency → results/benchmark_dpu_only.json
+# DPU-only for isolating DPU latency → results/benchmark_fpga_dpu_only.json
 python3 benchmark_fpga.py \
     --xmodel ResidualScaleHyperpriorDPUWrapper_pt.xmodel \
     --scenario dpu_only \
     --iters 200
 
-# Entropy-only for CPU-bound analysis → results/benchmark_entropy_only.json
+# Entropy-only for CPU-bound analysis → results/benchmark_fpga_entropy_only.json
 python3 benchmark_fpga.py \
     --xmodel ResidualScaleHyperpriorDPUWrapper_pt.xmodel \
     --scenario entropy_only \
@@ -487,7 +497,7 @@ python3 benchmark_fpga.py \
 ```
 
 **Note**: When `--output` is omitted, the script automatically saves to
-`results/benchmark_<scenario>.json`. Only use `--output` to override the path.
+`results/benchmark_fpga_<scenario>.json`. Only use `--output` to override the path.
 
 ### 5.5 JSON Output Schema
 
@@ -536,18 +546,28 @@ python3 benchmark_fpga.py \
 ### 5.6 Key Implementation Details
 
 #### DPUSubgraphRunner
+
 - Wraps VART `Runner` with float-in/float-out interface
 - Handles INT8 quantization (input: `× 2^fix_point`) and dequantization
   (output: `× 2^(-fix_point)`) automatically
-- Uses `execute_async()` + `wait()` for single-threaded sequential execution
+- `run()` — synchronous, single-call convenience method (calls `execute_async` + `wait` internally)
+- `submit()` / `collect()` — split asynchronous interface; `submit()` dispatches a job and returns a `DPUJob` handle immediately; `collect()` waits and dequantizes. Used by `full_parallel`.
+
+#### DPUJob
+
+- Lightweight handle returned by `submit()` that holds strong Python references to both the input and output INT8 buffers
+- Prevents the Python GC from freeing DMA buffers while the DPU is still writing into them
+- Must not be discarded before `collect()` is called
 
 #### INA226PowerSampler
+
 - Background thread with busy-wait polling (avoids `time.sleep` jitter)
 - Reads `power1_input` from sysfs (micro-watts, hardware-computed by INA226)
 - Returns per-rail average power (W) and total energy (J) over the measurement window
 - Automatic sensor discovery: scans `/sys/class/hwmon/` for `ina226_*` names
 
 #### StepTimer
+
 - Uses `time.perf_counter()` for high-resolution wall-clock timing
 - Mark/commit pattern: `mark("label")` records transition points,
   `commit()` saves the inter-mark deltas for one iteration
@@ -632,24 +652,29 @@ fixed overhead dominates the actual DPU computation time.
 The following metrics can be computed from the benchmark output:
 
 ### 7.1 Latency & Throughput
+
 - **Per-tile latency** (ms): `latency_total_mean_ms`
 - **Throughput** (tiles/s): `throughput_fps`
 - **DPU fraction**: `latency_dpu_total_mean_ms / latency_total_mean_ms`
 
 ### 7.2 Model Size
+
 - **FP32 parameters**: ~15M params × 4 bytes = ~60 MB
 - **INT8 quantized weights**: 14.4 MB (from xmodel CONST regions)
 - **Compression ratio**: 60 / 14.4 ≈ 4.2× (quantization + pruning)
 
 ### 7.3 Computational Efficiency
+
 - **GOPS/W** (DPU): Throughput_TOPS / DPU_fabric_power_W
 - **GOPS/W** (Board): Throughput_TOPS / board_total_power_W
 
 ### 7.4 Energy per Inference
+
 - **DPU energy/tile**: $E = P_\text{DPU\_fabric} \times t_\text{DPU\_total}$
 - **Board energy/tile**: $E = P_\text{board\_total} \times t_\text{total}$
 
 ### 7.5 Compression Performance (codec metrics)
+
 - **Bitrate** (bpp): `avg_compressed_bytes × 8 / (256 × 256)`
 - **Bits per pixel** for the compressed representation
 
@@ -658,6 +683,7 @@ The following metrics can be computed from the benchmark output:
 ## 8. Known Limitations & Caveats
 
 ### 8.1 Power Measurement
+
 1. **INA226 temporal resolution**: The INA226 integrates current over a configurable
    window (typically 1–4 ms). At 50 Hz polling we undersample relative to the
    sensor's integration time, which is acceptable for steady-state workloads but
@@ -670,16 +696,20 @@ The following metrics can be computed from the benchmark output:
    $P_\text{dynamic} = P_\text{load} - P_\text{idle}$.
 
 ### 8.2 Timing
+
 1. **Python overhead**: Using Python `time.perf_counter()` includes the Python
    function call overhead (~µs per call). For sub-ms operations (h_a, h_s), this
    overhead is non-trivial. Consider using `vaitrace` for DPU-level timing.
-2. **Single-threaded DPU**: The benchmark uses 1 thread on 1 DPU core. The board
-   has 3 DPU cores; multi-threaded operation could improve throughput by ~3× but
-   increases complexity.
+2. **Single-threaded DPU (default)**: Most scenarios use 1 thread on 1 DPU core. The
+   board has 3 DPU cores; the `full_parallel` scenario creates two runners for g_a
+   and g_s to dispatch real and imag calls simultaneously, reducing those steps to
+   ~1× single-call latency. h_a and h_s are not parallelisable within a single
+   inference (each has a data dependency on its predecessor).
 3. **Entropy coding is sequential**: The C++ rANS entropy coding (via `ans` module)
    runs on the ARM A53, which is relatively slow. This may dominate total latency.
 
 ### 8.3 Comparison Fairness (GPU vs FPGA)
+
 1. **Data format**: FPGA uses INT8, GPU uses FP32 — the FPGA's lower precision
    introduces quantization error. Quality comparison (PSNR, SSIM) is essential.
 2. **Batch size**: GPU batching amortises overhead; FPGA benchmark uses batch=1.
@@ -700,6 +730,7 @@ the **same schema** as `benchmark_fpga.py` so results can be loaded into a singl
 comparison table or plot.
 
 Key differences from the FPGA benchmark:
+
 - **Precision**: FP32 on GPU/CPU vs. INT8 on FPGA — quality (PSNR/SSIM) **must**
   be compared alongside speed.
 - **Batch size**: Always 1 (matching the FPGA baseline).
@@ -710,13 +741,16 @@ Key differences from the FPGA benchmark:
 
 By default, a single invocation measures on **GPU first, then CPU sequentially**.
 Skip either with:
+
 - `--no-gpu` — skip GPU measurement (useful on CPU-only machines)
 - `--no-cpu` — skip CPU measurement (faster iteration on GPU numbers)
 
 Each device produces its own JSON file:
+
 ```
 results/benchmark/<run_name>/benchmark_gpu_<scenario>.json
 results/benchmark/<run_name>/benchmark_cpu_<scenario>.json
+results/benchmark/<run_name>/benchmark_fpga_<scenario>.json
 ```
 
 ### 9.3 Scenarios
@@ -761,6 +795,7 @@ for NN sub-graph comparisons as they exclude Python/CPU overhead.
 | **CPU** | Package + DRAM power | Intel RAPL via `/sys/class/powercap/intel-rapl/` — energy counter delta between start/stop |
 
 **Limitations**:
+
 - `nvidia-smi` power is the **full GPU board** (incl. idle), not incremental.
 - RAPL reports **package** (all cores + uncore) and **DRAM**, but not
   motherboard, PSU, fans, etc.
@@ -942,6 +977,10 @@ For a publication, present results as:
 
 - [x] **GPU benchmark** (`benchmark_gpu.py`): Mirror the same JSON schema with
   `torch.cuda.Event` timing, NVIDIA power readings, and Intel RAPL.
+- [x] **Analysis notebook** (`notebooks/benchmark_analysis.ipynb`): Cross-platform
+  comparison visualisations, summary tables, and CSV export (see §12).
+- [x] **Full benchmark orchestrator** (`scripts/fpga/run_full_benchmark.py`): Runs all
+  scenarios on GPU/CPU + FPGA, transfers model, fetches results.
 - [ ] **Run GPU benchmark and populate Section 9 with real results**.
 - [ ] **vaitrace validation**: Run `vaitrace` once to get DPU-level hardware timing
   and validate against our Python-level measurements.
@@ -954,7 +993,184 @@ For a publication, present results as:
 
 ---
 
-## 11. References
+## 11. Full Benchmark Orchestrator: `scripts/fpga/run_full_benchmark.py`
+
+The orchestrator script runs the complete benchmark suite for one compiled model across
+all three platforms in four phases:
+
+| Phase | Description | Location |
+|---|---|---|
+| **1 — GPU + CPU** | `benchmark_gpu.py` × 5 scenarios | Host (this machine) |
+| **2 — FPGA setup** | Copy `benchmark_fpga.py` + `scp` model → ZCU102 | Host → ZCU102 |
+| **3 — FPGA run** | `benchmark_fpga.py` × 5 scenarios via SSH | ZCU102 |
+| **4 — Fetch** | `scp` JSON results back to host | ZCU102 → Host |
+
+### 11.1 Usage
+
+```bash
+# Full run with power measurement (~14 min with idle baseline)
+python scripts/fpga/run_full_benchmark.py \
+    --model-dir results/fpga/active_model/ \
+    --power --idle-baseline 10
+
+# GPU + CPU only (no board access required)
+python scripts/fpga/run_full_benchmark.py \
+    --model-dir results/fpga/active_model/ --no-fpga
+
+# FPGA only (model already on board)
+python scripts/fpga/run_full_benchmark.py \
+    --model-dir results/fpga/active_model/ --no-gpu --no-cpu --skip-transfer
+```
+
+### 11.2 Output Layout
+
+All results are stored in `results/benchmark/<model_name>/`:
+
+```
+results/benchmark/ResSHyp-relu_s1_L1000_pt/
+├── benchmark_gpu_full.json
+├── benchmark_gpu_compress.json
+├── benchmark_gpu_decompress.json
+├── benchmark_gpu_nn_only.json
+├── benchmark_gpu_entropy_only.json
+├── benchmark_cpu_full.json
+├── benchmark_cpu_compress.json
+├── benchmark_cpu_decompress.json
+├── benchmark_cpu_nn_only.json
+├── benchmark_cpu_entropy_only.json
+├── benchmark_fpga_full.json
+├── benchmark_fpga_compress.json
+├── benchmark_fpga_decompress.json
+├── benchmark_fpga_dpu_only.json
+├── benchmark_fpga_entropy_only.json
+└── benchmark_fpga_full_parallel.json
+```
+
+### 11.3 Estimated Runtime
+
+| Component | No power | `--power --idle-baseline 10` |
+|---|---|---|
+| GPU + CPU (5 scenarios) | ~5 min | ~8 min |
+| FPGA (6 scenarios) | ~5 min | ~6 min |
+| Transfer (scp) | ~1 min | ~1 min |
+| **Total** | **~10 min** | **~14 min** |
+
+Estimates assume `--warmup 20 --iters 100` (defaults).
+
+---
+
+## 12. Analysis Notebook: `notebooks/benchmark_analysis.ipynb`
+
+### 12.1 Purpose
+
+The analysis notebook loads all JSON result files produced by the benchmark suite
+(`benchmark_gpu.py`, `benchmark_fpga.py`, via `run_full_benchmark.py`) and produces
+cross-platform comparison visualisations.  It is the **single source of truth** for
+interpreting benchmark data and generating publication figures.
+
+### 12.2 Data Loading & Schema Unification
+
+All `benchmark_*.json` files in `results/benchmark/<model_name>/` are loaded and
+classified by filename pattern:
+
+| Pattern | Platform |
+|---|---|
+| `benchmark_gpu_<scenario>.json` | GPU (CUDA) |
+| `benchmark_cpu_<scenario>.json` | CPU (x86) |
+| `benchmark_fpga_<scenario>.json` | FPGA (ZCU102) |
+
+**Scenario canonicalisation**: FPGA's `dpu_only` is mapped to `nn_only` for uniform
+cross-platform comparison.
+
+**Step label canonicalisation**: Per-step breakdown labels are renamed from
+platform-specific prefixes (`gpu_`, `dpu_`) to a canonical `nn_` prefix, enabling
+direct visual comparison of the same logical step across platforms.
+
+### 12.3 Derived Metrics & Formulas
+
+The following metrics are derived from the raw JSON fields during loading:
+
+#### NN vs CPU Latency Split
+
+$$t_\text{NN} = \texttt{latency\_\{gpu,dpu,nn\}\_total\_mean\_ms}$$
+$$t_\text{CPU} = \texttt{latency\_cpu\_total\_mean\_ms}$$
+$$f_\text{NN} = \frac{t_\text{NN}}{t_\text{total}}$$
+
+These are read directly from JSON.  The per-step breakdown provides a finer view:
+
+$$t_\text{NN}^{(\text{steps})} = \sum_{s \in \texttt{nn\_*}} s.\texttt{mean\_s} \times 1000$$
+$$t_\text{CPU}^{(\text{steps})} = \sum_{s \in \texttt{cpu\_*}} s.\texttt{mean\_s} \times 1000$$
+
+#### Power Aggregation
+
+Power is aggregated differently per platform due to different measurement instruments:
+
+| Platform | `power_total_w` | `power_nn_w` | `power_cpu_w` |
+|---|---|---|---|
+| **GPU** | `nvidia-smi` + RAPL total | `nvidia-smi` avg | RAPL total |
+| **CPU** | RAPL total | — | RAPL total |
+| **FPGA** | `board_total_avg_w` (INA226) | `groups.DPU_fabric` | `groups.PS_compute` |
+
+Idle baseline (when captured via `--idle-baseline`) is stored as `power_idle_total_w`.
+
+#### Energy per Inference
+
+$$E_\text{tile}\;[\text{mJ}] = P_\text{total}\;[\text{W}] \times t_\text{total}\;[\text{ms}]$$
+
+Dynamic energy removes idle/static power:
+
+$$E_\text{dyn}\;[\text{mJ}] = (P_\text{load} - P_\text{idle})\;[\text{W}] \times t_\text{total}\;[\text{ms}]$$
+
+#### Bits per Pixel (BPP)
+
+$$\text{BPP} = \frac{\texttt{avg\_compressed\_bytes} \times 8}{256 \times 256}$$
+
+#### Throughput
+
+$$\text{Throughput}\;[\text{patches/s}] = \frac{N_\text{iters}}{t_\text{wall}\;[\text{s}]}$$
+
+### 12.4 Notebook Sections
+
+| § | Title | Visualisation | Key insight |
+|---|---|---|---|
+| 1 | Setup | — | Set `BENCHMARK_DIR` to target model |
+| 2 | Load & merge | Print summary | Verify completeness, spot anomalies |
+| 3 | Overview table | Styled DataFrame | Quick scan of all metrics |
+| 4 | End-to-end latency | Grouped bars (log) | Compare total latency per scenario |
+| 5 | Per-step breakdown | Stacked horizontal bars | Where time is spent within each scenario |
+| 6 | NN vs entropy split | Grouped bars + pie | Bottleneck identification (NN vs entropy) |
+| 7 | Throughput | Grouped bars (log) | System sizing (patches/s) |
+| 8 | Power | Per-scenario bars + idle overlay | Absolute power draw with caveats |
+| 9 | Energy per inference | Grouped bars + dynamic printout | Fairest cross-platform metric |
+| 10 | Summary table | Publication DataFrames + CSV | Final numbers for the thesis |
+
+### 12.5 Key Measurement Caveats (Summary)
+
+These are discussed in detail within the notebook's markdown cells:
+
+1. **Power scope mismatch**: nvidia-smi (GPU board), RAPL (CPU package + DRAM),
+   INA226 (18 SoC rails) measure different system subsets.  Numbers are indicative
+   but not perfectly comparable.
+2. **RAPL requires root** on kernels ≥ 5.10 (`energy_uj` files are `-r--------`).
+   If unavailable, CPU power is reported as 0 W.  The `RAPLPowerSampler` now
+   probe-reads during discovery and skips unreadable domains.
+3. **Batch=1 everywhere**: GPU is underutilised.  FPGA DPU B4096 only supports batch=1.
+4. **Entropy coding dominates total latency** on all platforms.  The `nn_only` scenario
+   isolates the NN accelerator ceiling; `entropy_only` isolates the coding bottleneck.
+5. **FPGA DPU times include Python/VART overhead** (10–20% above raw hardware time).
+
+### 12.6 Operational Comparison
+
+The notebook concludes with a **satellite downlink** scenario table:
+
+- **Satellite side** (compress): FPGA `compress` scenario metrics
+- **Ground side** (decompress): GPU and CPU `decompress` scenario metrics
+
+This is the most deployment-relevant comparison for the SAR DDC use case.
+
+---
+
+## 13. References
 
 - **UG1182** (v1.7): Xilinx ZCU102 Evaluation Board User Guide, February 2023.
   - Table 3-22: I2C0 U60 Mux Target Bus Connections (INA226 chip U-ref → I2C address).

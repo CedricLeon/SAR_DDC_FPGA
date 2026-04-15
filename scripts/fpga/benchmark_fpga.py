@@ -6,11 +6,17 @@ for the SAR DDC model running on the Vitis-AI DPU + ARM CPU.
 
 Scenarios
 ---------
-  full        : Compress + Decompress (g_a -> h_a -> EB -> h_s -> GC -> g_s)
-  compress    : Encode only          (g_a -> h_a -> EB.compress -> GC.compress)
-  decompress  : Decode only          (EB.decompress -> h_s -> GC.decompress -> g_s)
-  dpu_only    : All four DPU subgraphs back-to-back, no entropy coding
-  entropy_only: Entropy coding round-trip only (EB + GC compress/decompress)
+  full         : Compress + Decompress (g_a -> h_a -> EB -> h_s -> GC -> g_s)
+  compress     : Encode only          (g_a -> h_a -> EB.compress -> GC.compress)
+  decompress   : Decode only          (EB.decompress -> h_s -> GC.decompress -> g_s)
+  dpu_only     : All four DPU subgraphs back-to-back, no entropy coding
+  entropy_only : Entropy coding round-trip only (EB + GC compress/decompress)
+
+By default all scenarios that call g_a or g_s process real and imag channels
+in parallel via Python threads.  ``execute_async`` releases the GIL while
+waiting on hardware, so two threads genuinely overlap on separate DPU cores
+when ≥2 cores are available (confirmed on ZCU102 B4096).
+Use --no-parallel to revert to sequential single-core execution for comparison.
 
 Usage (on ZCU102):
     python3 benchmark_fpga.py --xmodel model.xmodel --scenario full [options]
@@ -24,12 +30,17 @@ Requires Python >= 3.8 (Vitis-AI container / PetaLinux constraint).
 from __future__ import annotations
 
 import argparse
+import ctypes
+import fcntl
 import json
 import os
 import statistics
+import struct
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -54,6 +65,13 @@ C_MAIN = 128
 C_HYPER = C_MAIN * 2
 
 SCENARIOS = ["full", "compress", "decompress", "dpu_only", "entropy_only"]
+
+# When True (default), g_a and g_s subgraphs run real and imag channels in
+# parallel via Python threads.  execute_async releases the Python GIL while
+# waiting on hardware, so two threads genuinely overlap at the DPU level when
+# ≥2 physical cores are available.
+# Set to False via --no-parallel for a sequential single-core baseline.
+_PARALLEL: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -109,8 +127,6 @@ class INA226PowerSampler:
                 pass
 
     def start(self) -> None:
-        import threading
-
         self._running = True
         self._samples = {r: [] for r in self._rail_map}
         self._timestamps = []
@@ -328,6 +344,33 @@ def preprocess_patch(noisy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 # ---------------------------------------------------------------------------
+# Parallel execution helper
+# ---------------------------------------------------------------------------
+def run_dual(
+    runner_main: DPUSubgraphRunner,
+    runner_aux: DPUSubgraphRunner | None,
+    data_a: np.ndarray,
+    data_b: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run one DPU subgraph twice for two independent inputs.
+
+    When ``_PARALLEL`` is True and ``runner_aux`` is provided, both calls are
+    dispatched simultaneously via Python threads.  ``execute_async`` releases
+    the GIL while waiting on hardware, so two threads genuinely overlap at
+    the DPU hardware level when ≥2 physical cores are available.
+
+    Falls back to sequential calls on ``runner_main`` when ``_PARALLEL`` is
+    False (``--no-parallel``) or when ``runner_aux`` is None.
+    """
+    if _PARALLEL and runner_aux is not None:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_a = pool.submit(runner_main.run, data_a)
+            fut_b = pool.submit(runner_aux.run, data_b)
+            return fut_a.result(), fut_b.result()
+    return runner_main.run(data_a), runner_main.run(data_b)
+
+
+# ---------------------------------------------------------------------------
 # Scenario runners
 # ---------------------------------------------------------------------------
 def run_scenario_full(
@@ -346,8 +389,7 @@ def run_scenario_full(
 
     # ---- Encode ----
     timer.mark("dpu_g_a")
-    y_real = runners["g_a"].run(real)
-    y_imag = runners["g_a"].run(imag)
+    y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
 
     timer.mark("cpu_concat_abs")
     y = np.concatenate((y_real, y_imag), axis=-1)
@@ -380,8 +422,7 @@ def run_scenario_full(
     y_hat_imag = y_hat[..., C_MAIN:]
 
     timer.mark("dpu_g_s")
-    _recon_real = runners["g_s"].run(y_hat_real)
-    _recon_imag = runners["g_s"].run(y_hat_imag)
+    run_dual(runners["g_s"], runners.get("g_s_1"), y_hat_real, y_hat_imag)
 
     timer.mark("postprocess")
     # (postprocess placeholder — no denorm needed for timing)
@@ -406,8 +447,7 @@ def run_scenario_compress(
     timer.mark("preprocess")
 
     timer.mark("dpu_g_a")
-    y_real = runners["g_a"].run(real)
-    y_imag = runners["g_a"].run(imag)
+    y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
 
     timer.mark("cpu_concat_abs")
     y = np.concatenate((y_real, y_imag), axis=-1)
@@ -475,8 +515,7 @@ def run_scenario_decompress(
     y_hat_imag = y_hat[..., C_MAIN:]
 
     timer.mark("dpu_g_s")
-    _recon_real = runners["g_s"].run(y_hat_real)
-    _recon_imag = runners["g_s"].run(y_hat_imag)
+    run_dual(runners["g_s"], runners.get("g_s_1"), y_hat_real, y_hat_imag)
 
     timer.mark("_end")
     timer.commit()
@@ -493,8 +532,7 @@ def run_scenario_dpu_only(
 ) -> int:
     """DPU subgraphs only — no entropy coding, no CPU pre/postprocessing."""
     timer.mark("dpu_g_a")
-    y_real = runners["g_a"].run(real)
-    y_imag = runners["g_a"].run(imag)
+    y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
 
     timer.mark("cpu_concat_abs")
     y = np.concatenate((y_real, y_imag), axis=-1)
@@ -512,8 +550,7 @@ def run_scenario_dpu_only(
     # Feed y directly (skip quantise/dequantise through entropy)
     y_hat_real = y[..., :C_MAIN]
     y_hat_imag = y[..., C_MAIN:]
-    _recon_real = runners["g_s"].run(y_hat_real)
-    _recon_imag = runners["g_s"].run(y_hat_imag)
+    run_dual(runners["g_s"], runners.get("g_s_1"), y_hat_real, y_hat_imag)
 
     timer.mark("_end")
     timer.commit()
@@ -530,8 +567,7 @@ def run_scenario_entropy_only(
 ) -> int:
     """Entropy coding only — produce latents via DPU then time only the CPU coding."""
     # We need real latents for meaningful entropy coding, so run encoders once (untimed)
-    y_real = runners["g_a"].run(real)
-    y_imag = runners["g_a"].run(imag)
+    y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
     y = np.concatenate((y_real, y_imag), axis=-1)
     y_abs = np.abs(y)
     z = runners["h_a"].run(y_abs)
@@ -571,8 +607,7 @@ def _precompress(
     gc: GaussianConditional,
 ) -> dict[str, Any]:
     """Run a single encode pass and cache everything the decompress scenario needs."""
-    y_real = runners["g_a"].run(real)
-    y_imag = runners["g_a"].run(imag)
+    y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
     y = np.concatenate((y_real, y_imag), axis=-1)
     y_abs = np.abs(y)
     z = runners["h_a"].run(y_abs)
@@ -720,6 +755,25 @@ def run_benchmark(
             sg,
             key,
         )
+
+    # Create auxiliary runners for g_s and g_a so run_dual() can dispatch real and imag channels to separate DPU cores simultaneously.
+    # execute_async releases the GIL, so two Python threads overlap at the hardware level when ≥2 physical cores are available.
+    #
+    # CRITICAL — creation ORDER determines VART's static core assignment (round-robin):
+    #   xmodel topo order to cores:  h_s→0, h_a→1, g_s→2, g_a→0  (from xdputil xmodel -l)
+    #   aux runners:        g_s_1→1, g_a_1→2
+    # This ensures g_s (core 2) ‖ g_s_1 (core 1)  — different cores ✓
+    #               g_a (core 0) ‖ g_a_1 (core 2)  — different cores ✓
+    # If the order were reversed (g_a_1 then g_s_1), g_s_1 would land on core 2
+    # (same as g_s) and get NO speedup — as was observed empirically.
+    for key in ("g_s", "g_a"):  # g_s MUST come first
+        if key in sg_map:
+            runners[f"{key}_1"] = DPUSubgraphRunner(
+                vart.Runner.create_runner(sg_map[key], "run"),
+                sg_map[key],
+                f"{key}_1",
+            )
+    print(f"Parallel : {'ON (threaded real‖imag)' if _PARALLEL else 'OFF (sequential)'}")
 
     # ---- Prepare input ----
     if data_path is not None and data_path.exists():
@@ -911,9 +965,22 @@ def main() -> None:
     parser.add_argument(
         "--output",
         default=None,
-        help="Output JSON path (default: results/benchmark_<scenario>.json)",
+        help="Output JSON path (default: results/benchmark_fpga_<scenario>.json)",
+    )
+    parser.add_argument(
+        "--no-parallel",
+        action="store_true",
+        help=(
+            "Run g_a and g_s sequentially on a single DPU core (single-core baseline). "
+            "By default all scenarios process real and imag channels in parallel via "
+            "Python threads, exploiting multiple DPU cores. "
+            "Output is saved with a '_sequential' suffix when this flag is set."
+        ),
     )
     args = parser.parse_args()
+
+    global _PARALLEL
+    _PARALLEL = not getattr(args, "no_parallel", False)
 
     xmodel_path = Path(args.xmodel).resolve()
     if not xmodel_path.exists():
@@ -943,7 +1010,12 @@ def main() -> None:
     # Save
     output_dir = xmodel_path.parent / "results"
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = Path(args.output) if args.output else output_dir / f"benchmark_{args.scenario}.json"
+    seq_suffix = "_sequential" if not _PARALLEL else ""
+    out_path = (
+        Path(args.output)
+        if args.output
+        else output_dir / f"benchmark_fpga_{args.scenario}{seq_suffix}.json"
+    )
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nResults saved to {out_path}")
