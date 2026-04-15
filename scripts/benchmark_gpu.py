@@ -330,7 +330,12 @@ class RAPLPowerSampler:
     """Background polling of CPU package power via Intel RAPL sysfs.
 
     Reads energy_uj counters at start/stop and computes average power. Optionally polls at
-    intervals for time-series data.
+    intervals for time-series data. By default `energy_uj` files are readable only by root.
+    Therefore, to measure power run this file as root, or temporarily change permissions of the relevant `energy_uj` files to be world-readable:
+    ```bash
+    sudo chmod o+r /sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj
+    sudo chmod o+r /sys/class/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/energy_uj
+    ```
     """
 
     RAPL_BASE = "/sys/class/powercap/intel-rapl"
@@ -344,8 +349,23 @@ class RAPLPowerSampler:
         self._thread: threading.Thread | None = None
         self._discover_domains()
 
+    @staticmethod
+    def _try_read_energy_uj(path: Path) -> bool:
+        """Return True if *path* exists and is readable by the current user."""
+        try:
+            path.read_text()
+            return True
+        except (OSError, PermissionError):
+            return False
+
     def _discover_domains(self) -> None:
-        """Discover RAPL domains by scanning sysfs and populate self._domains."""
+        """Discover RAPL domains by scanning sysfs and populate self._domains.
+
+        Each ``energy_uj`` file is probe-read during discovery: domains whose
+        file exists but is not readable (e.g. ``-r--------`` requiring root on
+        kernels ≥ 5.10) are silently skipped so that ``available`` correctly
+        returns ``False`` instead of collecting 0.0 W readings.
+        """
         base = Path(self.RAPL_BASE)
         if not base.exists():
             return
@@ -354,7 +374,11 @@ class RAPLPowerSampler:
                 continue
             energy_file = pkg_dir / "energy_uj"
             name_file = pkg_dir / "name"
-            if energy_file.exists() and name_file.exists():
+            if (
+                energy_file.exists()
+                and name_file.exists()
+                and self._try_read_energy_uj(energy_file)
+            ):
                 name = name_file.read_text().strip()
                 self._domains[name] = str(energy_file)
                 self._samples[name] = []
@@ -364,7 +388,11 @@ class RAPLPowerSampler:
                     continue
                 sub_energy = sub_dir / "energy_uj"
                 sub_name = sub_dir / "name"
-                if sub_energy.exists() and sub_name.exists():
+                if (
+                    sub_energy.exists()
+                    and sub_name.exists()
+                    and self._try_read_energy_uj(sub_energy)
+                ):
                     sname = sub_name.read_text().strip()
                     self._domains[sname] = str(sub_energy)
                     self._samples[sname] = []
@@ -1035,7 +1063,11 @@ def run_benchmark_on_device(
             print(f"  RAPL CPU power sampling at {power_poll_hz} Hz")
         else:
             rapl_power = None
-            print("  RAPL not available — CPU power disabled")
+            print(
+                "  RAPL not available — CPU power disabled\n"
+                "  (energy_uj files require root; run with sudo or:\n"
+                "   sudo chmod o+r /sys/class/powercap/intel-rapl/*/energy_uj)"
+            )
 
     # ---- Idle baseline ----
     idle_gpu_results: dict[str, Any] | None = None
