@@ -99,8 +99,6 @@ class INA226PowerSampler:
         rail_map: dict[str, str],
         poll_interval_s: float = 0.01,
     ):
-        import threading
-
         self._rail_map = rail_map
         self._poll_interval = poll_interval_s
         self._samples: dict[str, list[float]] = {r: [] for r in rail_map}
@@ -117,6 +115,7 @@ class INA226PowerSampler:
             return 0.0
 
     def _poll_loop(self) -> None:
+        """Poll loop running in background thread."""
         while self._running:
             t = time.perf_counter()
             for rail, path in self._rail_map.items():
@@ -127,6 +126,7 @@ class INA226PowerSampler:
                 pass
 
     def start(self) -> None:
+        """Start the background polling thread."""
         self._running = True
         self._samples = {r: [] for r in self._rail_map}
         self._timestamps = []
@@ -134,6 +134,7 @@ class INA226PowerSampler:
         self._thread.start()
 
     def stop(self) -> None:
+        """Stop the background polling thread and wait for it to finish."""
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=2.0)
@@ -231,7 +232,189 @@ POWER_GROUPS: dict[str, list[str]] = {
     ],
     "DPU_fabric": ["VCCINT", "VCCBRAM"],  # Directly driven by DPU activity
     "PS_compute": ["VCCPSINTFP", "VCCPSINTLP"],  # ARM A53 (entropy coding)
+    "peripherals": ["DDR4_DIMM_VDDQ", "UTIL_3V3", "UTIL_5V0"],  # PMBus rails (not in INA226)
 }
+
+# PMBus-accessible rails not covered by INA226 sensors.
+# Read via /dev/i2c-4 (MAXIM_PMBUS virtual bus) using raw I2C_RDWR ioctl.
+# The three MAX15303 controllers do not implement READ_POUT (0x97).
+# Power is computed as P = V * I from READ_VOUT (0x8b) and READ_IOUT (0x8c).
+#
+# Typical idle values on ZCU102 (measured):
+#   DDR4_DIMM_VDDQ : ~0.58 W   (1.2 V DDR4 SODIMM core supply)
+#   UTIL_3V3       : ~2.19 W   (Ethernet PHY, USB hubs, FMC digital)
+#   UTIL_5V0       : ~0.00 W   (5 V USB VBUS — ~0 W when no USB device attached)
+PMBUS_RAIL_MAP: dict[str, int] = {
+    "DDR4_DIMM_VDDQ": 0x1D,
+    "UTIL_3V3": 0x1A,
+    "UTIL_5V0": 0x1B,
+}
+PMBUS_BUS: str = "/dev/i2c-4"  # MAXIM_PMBUS virtual bus (i2c mux channel 2)
+
+
+class PMBusRailSampler:
+    """Polls DDR4_DIMM_VDDQ, UTIL_3V3, UTIL_5V0 via /dev/i2c-4 (I2C_RDWR).
+
+    These three rails are powered by MAX15303 (Maxim InTune) controllers that
+    expose PMBus but have no INA226 companion chip.  MAX15303 does not
+    implement READ_POUT (0x97), so power is computed as V x I using
+    READ_VOUT (0x8b, Linear16) and READ_IOUT (0x8c, Linear11).
+
+    VOUT_MODE (0x20) is read once at init; for all three rails on ZCU102 it
+    returns 0x14 -> exponent = 20 - 32 = -12.
+
+    Transport: I2C_RDWR with a two-message write+read transaction.
+    No i2cset/i2cget needed; raw ioctl bypasses the kernel driver lock.
+
+    Poll latency: ~3.4 ms for all 3 rails x 2 registers -> max ~290 Hz.
+    Recommend poll_interval_s=0.04 (25 Hz) to keep overhead below 20 percent.
+
+    Requires Python >= 3.8 (ctypes + fcntl only).
+    """
+
+    _I2C_RDWR = 0x0707
+    _I2C_M_RD = 0x0001
+
+    # PMBus command codes
+    _CMD_VOUT_MODE = 0x20  # 1 byte: bits[4:0] = signed 5-bit exponent for Linear16
+    _CMD_READ_VOUT = 0x8B  # 2 bytes LE: Linear16  V = raw * 2^exp
+    _CMD_READ_IOUT = 0x8C  # 2 bytes LE: Linear11  val = mant * 2^exp (embedded)
+
+    def __init__(
+        self,
+        rail_map: dict[str, int],
+        bus: str = PMBUS_BUS,
+        poll_interval_s: float = 0.04,
+    ):
+        self._rail_map = rail_map
+        self._bus = bus
+        self._poll_interval = poll_interval_s
+        self._samples: dict[str, list[float]] = {r: [] for r in rail_map}
+        self._timestamps: list[float] = []
+        self._running = False
+        self._thread: threading.Thread | None = None
+
+        # Read VOUT_MODE once at init to determine Linear16 exponent per rail.
+        # On ZCU102 all three rails return 0x14 (exp = 20-32 = -12).
+        self._vout_exp: dict[str, int] = {}
+        try:
+            fd = os.open(bus, os.O_RDWR)
+            try:
+                for rail, addr in rail_map.items():
+                    raw = self._rdwr_read(fd, addr, self._CMD_VOUT_MODE, 1)[0]
+                    exp = raw & 0x1F
+                    if exp > 15:
+                        exp -= 32
+                    self._vout_exp[rail] = exp
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            print(f"PMBusRailSampler: cannot open {bus}: {exc}")
+            self._vout_exp = {r: -12 for r in rail_map}  # safe fallback
+
+    # ------------------------------------------------------------------
+    # Internal I2C helpers (Python 3.8 compatible, ctypes only)
+    # ------------------------------------------------------------------
+
+    def _rdwr_read(self, fd: int, addr: int, cmd: int, n: int) -> bytes:
+        """Issue a PMBus read: write <cmd> then repeated-start read <n> bytes."""
+        # Build two i2c_msg structs packed as a ctypes array.
+        # Layout: addr(u16), flags(u16), len(u16), __pad(u16), buf(u64 ptr)
+        # (matches struct i2c_msg in <linux/i2c.h> on a 64-bit ARM system)
+        fmt = "HHHH Q"  # H=uint16, Q=uint64
+
+        wb = (ctypes.c_uint8 * 1)(cmd)
+        rb = (ctypes.c_uint8 * n)(*([0] * n))
+
+        msg_write = struct.pack(fmt, addr, 0, 1, 0, ctypes.addressof(wb))
+        msg_read = struct.pack(fmt, addr, self._I2C_M_RD, n, 0, ctypes.addressof(rb))
+        msgs_buf = ctypes.create_string_buffer(msg_write + msg_read)
+
+        # struct i2c_rdwr_ioctl_data { struct i2c_msg *msgs; __u32 nmsgs; }
+        rdwr_fmt = "QI"  # ptr(u64) + nmsgs(u32)
+        rdwr_buf = ctypes.create_string_buffer(
+            struct.pack(rdwr_fmt, ctypes.addressof(msgs_buf), 2)
+        )
+        fcntl.ioctl(fd, self._I2C_RDWR, rdwr_buf)
+        return bytes(rb)
+
+    @staticmethod
+    def _linear11(raw16: int) -> float:
+        """Decode a PMBus Linear11 word into a float."""
+        exp = (raw16 >> 11) & 0x1F
+        mant = raw16 & 0x7FF
+        if exp > 15:
+            exp -= 32
+        if mant > 1023:
+            mant -= 2048
+        return mant * (2.0**exp)
+
+    def _read_power_w(self, fd: int, rail: str, addr: int) -> float:
+        """Read V_out and I_out for one rail and return V*I (W)."""
+        raw_v = struct.unpack("<H", self._rdwr_read(fd, addr, self._CMD_READ_VOUT, 2))[0]
+        raw_i = struct.unpack("<H", self._rdwr_read(fd, addr, self._CMD_READ_IOUT, 2))[0]
+        v = raw_v * (2.0 ** self._vout_exp[rail])
+        i = self._linear11(raw_i)
+        return max(0.0, v * i)
+
+    # ------------------------------------------------------------------
+    # Sampler interface (mirrors INA226PowerSampler)
+    # ------------------------------------------------------------------
+
+    def _poll_loop(self) -> None:
+        """Poll loop running in background thread."""
+        fd = os.open(self._bus, os.O_RDWR)
+        try:
+            while self._running:
+                t = time.perf_counter()
+                for rail, addr in self._rail_map.items():
+                    try:
+                        p = self._read_power_w(fd, rail, addr)
+                    except OSError:
+                        p = 0.0
+                    self._samples[rail].append(p)
+                self._timestamps.append(t)
+                while time.perf_counter() - t < self._poll_interval:
+                    pass
+        finally:
+            os.close(fd)
+
+    def start(self) -> None:
+        """Start the background polling thread."""
+        self._running = True
+        self._samples = {r: [] for r in self._rail_map}
+        self._timestamps = []
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the background polling thread and wait for it to finish."""
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def results(self) -> dict[str, dict[str, float]]:
+        """Return per-rail statistics (same schema as INA226PowerSampler.results)."""
+        out: dict[str, dict[str, float]] = {}
+        if len(self._timestamps) < 2:
+            for rail in self._rail_map:
+                out[rail] = {
+                    "avg_power_w": 0.0,
+                    "energy_j": 0.0,
+                    "n_samples": 0,
+                    "duration_s": 0.0,
+                }
+            return out
+        duration = self._timestamps[-1] - self._timestamps[0]
+        for rail, samples in self._samples.items():
+            avg_w = statistics.mean(samples) if samples else 0.0
+            out[rail] = {
+                "avg_power_w": round(avg_w, 4),
+                "energy_j": round(avg_w * duration, 6),
+                "n_samples": len(samples),
+                "duration_s": round(duration, 4),
+            }
+        return out
 
 
 def discover_ina226_sensors() -> dict[str, str]:
@@ -287,6 +470,7 @@ class StepTimer:
         self._history: dict[str, list[float]] = {}
 
     def mark(self, label: str) -> None:
+        """Record a timestamp with the given label."""
         self._marks.append((label, time.perf_counter()))
 
     def commit(self) -> None:
@@ -803,6 +987,7 @@ def run_benchmark(
 
     # ---- Power setup ----
     power_sampler: INA226PowerSampler | None = None
+    pmbus_sampler: PMBusRailSampler | None = None
     if measure_power:
         rails = discover_ina226_sensors()
         if rails:
@@ -810,19 +995,36 @@ def run_benchmark(
             power_sampler = INA226PowerSampler(rails, poll_interval_s=1.0 / power_poll_hz)
         else:
             print("Warning: No INA226 sensors found — power measurement disabled.")
+        if Path(PMBUS_BUS).exists():
+            pmbus_sampler = PMBusRailSampler(PMBUS_RAIL_MAP, poll_interval_s=0.04)
+            print(f"PMBus rails enabled: {list(PMBUS_RAIL_MAP.keys())}")
+        else:
+            print(f"Warning: {PMBUS_BUS} not found — PMBus rail measurement disabled.")
 
     # ---- Idle baseline (power only, no inference) ----
     idle_baseline_results: dict[str, dict[str, float]] | None = None
-    if power_sampler is not None and idle_baseline_s > 0:
+    idle_pmbus_results: dict[str, dict[str, float]] | None = None
+    if (power_sampler is not None or pmbus_sampler is not None) and idle_baseline_s > 0:
         print(f"\nCapturing idle baseline ({idle_baseline_s:.0f}s, no inference)...")
         idle_sampler = INA226PowerSampler(
             {r: p for r, p in discover_ina226_sensors().items()},
             poll_interval_s=1.0 / power_poll_hz,
         )
+        idle_pmbus = (
+            PMBusRailSampler(PMBUS_RAIL_MAP, poll_interval_s=0.04)
+            if pmbus_sampler is not None
+            else None
+        )
         idle_sampler.start()
+        if idle_pmbus is not None:
+            idle_pmbus.start()
         time.sleep(idle_baseline_s)
         idle_sampler.stop()
+        if idle_pmbus is not None:
+            idle_pmbus.stop()
         idle_baseline_results = idle_sampler.results()
+        if idle_pmbus is not None:
+            idle_pmbus_results = idle_pmbus.results()
         print("Idle baseline captured.")
 
     # ---- Warmup ----
@@ -841,6 +1043,8 @@ def run_benchmark(
 
     if power_sampler is not None:
         power_sampler.start()
+    if pmbus_sampler is not None:
+        pmbus_sampler.start()
 
     wall_start = time.perf_counter()
     for _ in range(n_iters):
@@ -853,6 +1057,8 @@ def run_benchmark(
 
     if power_sampler is not None:
         power_sampler.stop()
+    if pmbus_sampler is not None:
+        pmbus_sampler.stop()
 
     wall_total = wall_end - wall_start
 
@@ -897,22 +1103,39 @@ def run_benchmark(
         per_rail = power_sampler.results()
         power_data: dict[str, Any] = {"per_rail": per_rail}
 
-        # Aggregate by semantic group
+        # Aggregate by semantic group (INA226 rails only for PL/PS groups)
         groups_agg: dict[str, float] = {}
         for group_name, group_rails in POWER_GROUPS.items():
+            if group_name == "peripherals":
+                continue  # handled separately via PMBus
             total_w = sum(per_rail[r]["avg_power_w"] for r in group_rails if r in per_rail)
             groups_agg[group_name] = round(total_w, 4)
         power_data["groups_avg_w"] = groups_agg
 
-        # Board total
+        # Board total (INA226 rails)
         board_total_w = sum(v["avg_power_w"] for v in per_rail.values())
         power_data["board_total_avg_w"] = round(board_total_w, 4)
+
+        # PMBus rails (DDR4_DIMM_VDDQ, UTIL_3V3, UTIL_5V0)
+        if pmbus_sampler is not None:
+            pmbus_rail_results = pmbus_sampler.results()
+            power_data["pmbus_rails"] = pmbus_rail_results
+            pmbus_total_w = sum(v["avg_power_w"] for v in pmbus_rail_results.values())
+            power_data["board_total_extended_avg_w"] = round(board_total_w + pmbus_total_w, 4)
+            # Add peripherals group to groups_avg_w
+            groups_agg["peripherals"] = round(pmbus_total_w, 4)
 
         # Idle baseline (if captured)
         if idle_baseline_results is not None:
             power_data["idle_baseline"] = idle_baseline_results
             idle_total_w = sum(v["avg_power_w"] for v in idle_baseline_results.values())
             power_data["idle_board_total_avg_w"] = round(idle_total_w, 4)
+            if idle_pmbus_results is not None:
+                power_data["idle_pmbus_rails"] = idle_pmbus_results
+                idle_pmbus_total_w = sum(v["avg_power_w"] for v in idle_pmbus_results.values())
+                power_data["idle_board_total_extended_avg_w"] = round(
+                    idle_total_w + idle_pmbus_total_w, 4
+                )
 
         results["power"] = power_data
 
@@ -1033,11 +1256,17 @@ def main() -> None:
         print(f"  Avg BPP        : {bpp:.4f}")
     if "power" in results:
         pdata = results["power"]
-        print(f"  Board total    : {pdata.get('board_total_avg_w', 0):.3f} W")
+        print(f"  Board total    : {pdata.get('board_total_avg_w', 0):.3f} W  (INA226 rails)")
         for group, watts in pdata.get("groups_avg_w", {}).items():
             print(f"    {group:14s} : {watts:.3f} W")
+        if "board_total_extended_avg_w" in pdata:
+            pmbus_total = pdata["board_total_extended_avg_w"] - pdata.get("board_total_avg_w", 0)
+            print(f"  PMBus rails    : {pmbus_total:.3f} W  (DDR4+UTIL_3V3+UTIL_5V0)")
+            print(f"  Extended total : {pdata['board_total_extended_avg_w']:.3f} W")
         if "idle_board_total_avg_w" in pdata:
-            print(f"  Idle baseline  : {pdata['idle_board_total_avg_w']:.3f} W")
+            print(f"  Idle baseline  : {pdata['idle_board_total_avg_w']:.3f} W  (INA226)")
+            if "idle_board_total_extended_avg_w" in pdata:
+                print(f"  Idle extended  : {pdata['idle_board_total_extended_avg_w']:.3f} W")
             delta = pdata["board_total_avg_w"] - pdata["idle_board_total_avg_w"]
             print(f"  Dynamic delta  : {delta:.3f} W")
 

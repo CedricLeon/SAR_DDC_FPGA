@@ -177,13 +177,23 @@ too small to fully occupy the B4096 processing elements. This is expected and no
 a concern since these subgraphs contribute negligible latency (~1.5 ms combined
 vs ~71 ms for g_a + g_s).
 
-**Multi-core note**: Using all 3 DPU cores in parallel (3 threads) could yield
-up to ~3× system throughput (theoretical max: $3 \times 1.23 = 3.69$ TOPS), but
-the per-core utilization would remain ~90%. The `full_parallel` scenario
-(Section 5.2) exploits this: g_a and g_s are each called twice per inference
-(real + imag channels), and both calls are dispatched simultaneously to two
-separate DPU cores, reducing the effective DPU time for those steps from ~2×
-to ~1× single-subgraph latency.
+**Multi-core note — both g_a and g_s can be parallelized**: By default, `benchmark_fpga.py`
+dispatches the real and imag channel calls for both `g_a` and `g_s` in parallel via
+`ThreadPoolExecutor(2)`.  `execute_async` releases the Python GIL while waiting on
+hardware, so two threads genuinely overlap at the DPU hardware level.
+
+The key constraint is that VART assigns runners to cores **statically at creation
+time** (round-robin).  The runner creation order in `run_benchmark()` is carefully
+ordered so that g_s_1 is created before g_a_1, ensuring each pair lands on different
+cores (see §3.3).  Confirmed measurements for g_a; g_s results pending re-test with
+the corrected creation order:
+
+| Step | Sequential | Parallel | Speedup |
+|---|---|---|---|
+| `g_a` (real ‖ imag) | 74.0 ms | 39.0 ms | **1.9× ✓** |
+| `g_s` (real ‖ imag) | 73.6 ms | TBD | TBD |
+
+Use `--no-parallel` to measure the sequential baseline.
 
 ### 3.3 xmodel Memory Summary
 
@@ -197,6 +207,32 @@ From `xdputil xmodel <xmodel> -l`:
 | g_s | 3,289,088 B (3.14 MB) | 8,257,536 B (7.87 MB) | 32,768 B | 65,536 B |
 
 **Total weight memory**: ~14.4 MB (INT8 quantized).
+
+**Workspace asymmetry note**: All register sizes are in **bytes**.  `DATA_LOCAL_INPUT`
+and `DATA_LOCAL_OUTPUT` are the pinned DMA buffers for the actual I/O tensors (e.g.
+g_a `DATA_LOCAL_INPUT` = 66,320 B ≈ `[1,256,256,1]` INT8 = 65,536 B + padding).  The
+`WORKSPACE` is the DDR scratchpad for intermediate activations.  Total per runner:
+~11 MB for g_s, ~10 MB for g_a — both negligible vs the 4 GB DDR4 on the ZCU102.
+DDR capacity is **not** a constraint.
+
+**Why g_s initially failed to parallelize — runner creation order bug**:
+VART assigns each runner to a DPU core at **creation time**, round-robin.  The xmodel
+topological sort (from `xdputil xmodel -l`) gives DPU subgraphs in index order:
+h_s (4) → h_a (6) → g_s (8) → g_a (10).  With 3 physical B4096 cores:
+
+| Creation # | Runner | Core (round-robin) |
+|---|---|---|
+| 1 | h_s | **0** |
+| 2 | h_a | **1** |
+| 3 | g_s | **2** |
+| 4 | g_a | **0** |
+| 5 | g_s_1 | **1** ← different from g_s (2) ✓ |
+| 6 | g_a_1 | **2** ← different from g_a (0) ✓ |
+
+If the aux runners were created in the wrong order (g_a_1 at #5, g_s_1 at #6),
+g_s_1 would land on core 2 — the same core as g_s — giving zero speedup.  This
+was exactly what was observed empirically (73.8 ms with two threaded g_s runners).
+The fix is to create `g_s_1` **before** `g_a_1` in `run_benchmark()`.
 
 ---
 
@@ -441,7 +477,11 @@ power.
 | `decompress` | EB → h_s → GC → g_s | Decode-only latency (from cached bitstream) |
 | `dpu_only` | g_a, h_a, h_s, g_s | Isolate DPU latency, no entropy coding |
 | `entropy_only` | EB.compress, EB.decompress, GC.compress, GC.decompress | Isolate CPU entropy coding |
-| `full_parallel` | All (compress + decompress) | Like `full` but g_a and g_s run on two DPU cores simultaneously |
+
+All scenarios that invoke `g_a` process real and imag channels in **parallel by
+default** via `ThreadPoolExecutor(2)` (`run_dual()` helper).  Pass `--no-parallel`
+to disable and obtain a sequential baseline (output saved as
+`benchmark_fpga_<scenario>_sequential.json`).
 
 ### 5.3 Deployment to Board
 
@@ -551,7 +591,7 @@ python3 benchmark_fpga.py \
 - Handles INT8 quantization (input: `× 2^fix_point`) and dequantization
   (output: `× 2^(-fix_point)`) automatically
 - `run()` — synchronous, single-call convenience method (calls `execute_async` + `wait` internally)
-- `submit()` / `collect()` — split asynchronous interface; `submit()` dispatches a job and returns a `DPUJob` handle immediately; `collect()` waits and dequantizes. Used by `full_parallel`.
+- `submit()` / `collect()` — split asynchronous interface; `submit()` dispatches a job and returns a `DPUJob` handle immediately; `collect()` waits and dequantizes. **Note**: `execute_async` blocks the calling thread in this VART build (it does not return until the DPU job completes), so `submit()`/`collect()` provides no async benefit. Real parallelism is achieved via `ThreadPoolExecutor` in `run_dual()` — the GIL is released during the C-level hardware wait, allowing two threads to genuinely overlap on separate DPU cores.
 
 #### DPUJob
 
@@ -700,11 +740,12 @@ The following metrics can be computed from the benchmark output:
 1. **Python overhead**: Using Python `time.perf_counter()` includes the Python
    function call overhead (~µs per call). For sub-ms operations (h_a, h_s), this
    overhead is non-trivial. Consider using `vaitrace` for DPU-level timing.
-2. **Single-threaded DPU (default)**: Most scenarios use 1 thread on 1 DPU core. The
-   board has 3 DPU cores; the `full_parallel` scenario creates two runners for g_a
-   and g_s to dispatch real and imag calls simultaneously, reducing those steps to
-   ~1× single-call latency. h_a and h_s are not parallelisable within a single
-   inference (each has a data dependency on its predecessor).
+2. **Parallel g_a and g_s via thread ordering**: All scenarios dispatch both g_a and
+   g_s real/imag calls in parallel via `ThreadPoolExecutor(2)`.  VART assigns runners
+   to DPU cores **statically at creation time** (round-robin).  The runner creation
+   order in `run_benchmark()` ensures g_s_1 and g_a_1 each land on a different core
+   from their primary counterpart — see §3.3.  Pass `--no-parallel` to benchmark the
+   fully sequential baseline.
 3. **Entropy coding is sequential**: The C++ rANS entropy coding (via `ans` module)
    runs on the ARM A53, which is relatively slow. This may dominate total latency.
 
