@@ -90,6 +90,8 @@ _ETA_S: dict[str, dict[str, int]] = {
 
 @dataclass
 class ScenarioResult:
+    """Data class representing the result of a single benchmark scenario on one platform."""
+
     platform: str  # "gpu" | "cpu" | "fpga"
     scenario: str
     status: str = "pending"  # "ok" | "failed" | "skipped"
@@ -120,6 +122,7 @@ def _scale_eta(
 
 
 def _hdr(msg: str) -> None:
+    """Print a header message with surrounding lines for emphasis."""
     print(f"\n{'=' * 66}")
     print(f"  {msg}")
     print(f"{'=' * 66}")
@@ -287,15 +290,17 @@ def phase_fpga_run(
     power: bool,
     power_hz: float,
     idle_baseline: float,
+    parallel: bool = True,
 ) -> list[ScenarioResult]:
     """SSH into ZCU102 and run benchmark_fpga.py for every FPGA scenario."""
     results: list[ScenarioResult] = []
     remote_dir = f"{FPGA_BASE_DIR}/active_model"
     scale = (iters + warmup) / 120.0
+    mode_label = "parallel ‖" if parallel else "sequential"
 
     for scenario in FPGA_SCENARIOS:
         est_s = _ETA_S["fpga"].get(scenario, 35) * scale + (idle_baseline if power else 0.0)
-        print(f"\n  → FPGA  '{scenario}'  (est. {_hms(est_s)})")
+        print(f"\n  → FPGA  '{scenario}'  [{mode_label}]  (est. {_hms(est_s)})")
 
         cmd_parts = [
             f"export PYTHONPATH=$PYTHONPATH:{FPGA_BASE_DIR} &&",
@@ -311,6 +316,8 @@ def phase_fpga_run(
             str(iters),
             "--collect-hw-meta",
         ]
+        if not parallel:
+            cmd_parts.append("--no-parallel")
         if power:
             cmd_parts += ["--power", "--power-hz", str(int(power_hz))]
         if idle_baseline > 0 and power:
@@ -320,10 +327,12 @@ def phase_fpga_run(
         proc = _run(["ssh", FPGA_HOST, " ".join(cmd_parts)])
         wall = time.monotonic() - t0
 
+        # Scenario label in results: "full_sequential" for --no-parallel runs
+        result_scenario = scenario if parallel else f"{scenario}_sequential"
         results.append(
             ScenarioResult(
                 "fpga",
-                scenario,
+                result_scenario,
                 "ok" if proc.returncode == 0 else "failed",
                 wall,
             )
@@ -355,6 +364,7 @@ def print_summary(
     results: list[ScenarioResult],
     total_start: float,
 ) -> None:
+    """Print a summary of all benchmark results, including latency if available."""
     _hdr(f"BENCHMARK COMPLETE — {model_name}")
 
     by_platform: dict[str, list[ScenarioResult]] = {}
@@ -401,6 +411,7 @@ def print_summary(
 
 
 def main() -> None:
+    """Parse arguments, run all phases, and print summary."""
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -454,7 +465,17 @@ def main() -> None:
     g2 = parser.add_argument_group("platform / phase skips")
     g2.add_argument("--no-gpu", action="store_true", help="Skip GPU benchmark.")
     g2.add_argument("--no-cpu", action="store_true", help="Skip CPU benchmark.")
-    g2.add_argument("--no-fpga", action="store_true", help="Skip FPGA benchmark.")
+    g2.add_argument("--no-fpga", action="store_true", help="Skip all FPGA benchmarks.")
+    g2.add_argument(
+        "--no-fpga-parallel",
+        action="store_true",
+        help="Skip FPGA parallel (real‖imag threaded) runs. --no-fpga overrides this.",
+    )
+    g2.add_argument(
+        "--no-fpga-sequential",
+        action="store_true",
+        help="Skip FPGA sequential (--no-parallel) runs. --no-fpga overrides this.",
+    )
     g2.add_argument(
         "--skip-transfer",
         action="store_true",
@@ -486,7 +507,10 @@ def main() -> None:
 
     # ---- ETA estimates ----
     do_gpu_cpu = not (args.no_gpu and args.no_cpu)
-    do_fpga = not args.no_fpga
+    run_fpga_parallel = not args.no_fpga and not args.no_fpga_parallel
+    run_fpga_sequential = not args.no_fpga and not args.no_fpga_sequential
+    do_fpga = run_fpga_parallel or run_fpga_sequential
+    n_fpga_runs = int(run_fpga_parallel) + int(run_fpga_sequential)
 
     gpu_eta = (
         ""
@@ -502,12 +526,18 @@ def main() -> None:
             "cpu", GPU_SCENARIOS, args.iters, args.warmup, args.power, args.idle_baseline
         )
     )
+    # Multiply ETA by number of FPGA runs (parallel and/or sequential)
     fpga_eta = (
-        ""
-        if args.no_fpga
-        else _scale_eta(
-            "fpga", FPGA_SCENARIOS, args.iters, args.warmup, args.power, args.idle_baseline
+        _scale_eta(
+            "fpga",
+            FPGA_SCENARIOS * n_fpga_runs,
+            args.iters,
+            args.warmup,
+            args.power,
+            args.idle_baseline,
         )
+        if do_fpga
+        else ""
     )
 
     combined_gpu_cpu = (
@@ -531,11 +561,14 @@ def main() -> None:
         else ""
     )
 
-    platforms = [
-        p
-        for p, skip in [("GPU", args.no_gpu), ("CPU", args.no_cpu), ("FPGA", args.no_fpga)]
-        if not skip
-    ]
+    platforms = [p for p, skip in [("GPU", args.no_gpu), ("CPU", args.no_cpu)] if not skip]
+    if do_fpga:
+        fpga_mode = (
+            "par‖+seq"
+            if run_fpga_parallel and run_fpga_sequential
+            else "parallel ‖" if run_fpga_parallel else "sequential"
+        )
+        platforms.append(f"FPGA [{fpga_mode}]")
 
     # ---- Print run plan ----
     print(f"\n{'#' * 66}")
@@ -589,17 +622,34 @@ def main() -> None:
         phase_fpga_setup(model_dir, args.skip_transfer)
 
         # ============================================================
-        # Phase 3 — FPGA benchmarks
+        # Phase 3a — FPGA parallel benchmarks
         # ============================================================
-        _hdr(f"Phase 3 — FPGA benchmark  ({len(FPGA_SCENARIOS)} scenarios, est. {fpga_eta})")
-        r = phase_fpga_run(
-            warmup=args.warmup,
-            iters=args.iters,
-            power=args.power,
-            power_hz=args.power_hz_fpga,
-            idle_baseline=args.idle_baseline,
-        )
-        all_results.extend(r)
+        if run_fpga_parallel:
+            _hdr(f"Phase 3a — FPGA benchmark  (parallel ‖, {len(FPGA_SCENARIOS)} scenarios)")
+            r = phase_fpga_run(
+                warmup=args.warmup,
+                iters=args.iters,
+                power=args.power,
+                power_hz=args.power_hz_fpga,
+                idle_baseline=args.idle_baseline,
+                parallel=True,
+            )
+            all_results.extend(r)
+
+        # ============================================================
+        # Phase 3b — FPGA sequential benchmarks
+        # ============================================================
+        if run_fpga_sequential:
+            _hdr(f"Phase 3b — FPGA benchmark  (sequential, {len(FPGA_SCENARIOS)} scenarios)")
+            r = phase_fpga_run(
+                warmup=args.warmup,
+                iters=args.iters,
+                power=args.power,
+                power_hz=args.power_hz_fpga,
+                idle_baseline=args.idle_baseline,
+                parallel=False,
+            )
+            all_results.extend(r)
 
         # ============================================================
         # Phase 4 — Fetch results
