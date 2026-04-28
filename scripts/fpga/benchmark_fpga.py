@@ -9,7 +9,7 @@ Scenarios
   full         : Compress + Decompress (g_a -> h_a -> EB -> h_s -> GC -> g_s)
   compress     : Encode only          (g_a -> h_a -> EB.compress -> GC.compress)
   decompress   : Decode only          (EB.decompress -> h_s -> GC.decompress -> g_s)
-  dpu_only     : All four DPU subgraphs back-to-back, no entropy coding
+  nn_only      : All four DPU subgraphs back-to-back, no entropy coding
   entropy_only : Entropy coding round-trip only (EB + GC compress/decompress)
 
 By default all scenarios that call g_a or g_s process real and imag channels
@@ -64,7 +64,7 @@ IMAGE_SIZE = 256
 C_MAIN = 128
 C_HYPER = C_MAIN * 2
 
-SCENARIOS = ["full", "compress", "decompress", "dpu_only", "entropy_only"]
+SCENARIOS = ["full", "compress", "decompress", "nn_only", "entropy_only"]
 
 # When True (default), g_a and g_s subgraphs run real and imag channels in
 # parallel via Python threads.  execute_async releases the Python GIL while
@@ -72,6 +72,11 @@ SCENARIOS = ["full", "compress", "decompress", "dpu_only", "entropy_only"]
 # ≥2 physical cores are available.
 # Set to False via --no-parallel for a sequential single-core baseline.
 _PARALLEL: bool = True
+
+# Persistent thread pool shared across all run_dual() calls.
+# Created once in run_benchmark() when _PARALLEL is True and shut down after
+# the benchmark loop, so thread lifecycle cost does not pollute timer intervals.
+_EXECUTOR: ThreadPoolExecutor | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -545,12 +550,16 @@ def run_dual(
 
     Falls back to sequential calls on ``runner_main`` when ``_PARALLEL`` is
     False (``--no-parallel``) or when ``runner_aux`` is None.
+
+    Uses the module-level ``_EXECUTOR`` (a persistent ``ThreadPoolExecutor``
+    created once in ``run_benchmark()`` before the warmup loop).  This avoids
+    thread spawn/teardown overhead on every call, which previously appeared as
+    a spurious +10 ms inflation of the *next* timer interval (``dpu_h_a``).
     """
-    if _PARALLEL and runner_aux is not None:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_a = pool.submit(runner_main.run, data_a)
-            fut_b = pool.submit(runner_aux.run, data_b)
-            return fut_a.result(), fut_b.result()
+    if _PARALLEL and runner_aux is not None and _EXECUTOR is not None:
+        fut_a = _EXECUTOR.submit(runner_main.run, data_a)
+        fut_b = _EXECUTOR.submit(runner_aux.run, data_b)
+        return fut_a.result(), fut_b.result()
     return runner_main.run(data_a), runner_main.run(data_b)
 
 
@@ -706,7 +715,7 @@ def run_scenario_decompress(
     return z_bytes + y_bytes
 
 
-def run_scenario_dpu_only(
+def run_scenario_nn_only(
     real: np.ndarray,
     imag: np.ndarray,
     runners: dict[str, DPUSubgraphRunner],
@@ -726,7 +735,7 @@ def run_scenario_dpu_only(
     z = runners["h_a"].run(y_abs)
 
     timer.mark("dpu_h_s")
-    # For dpu_only we bypass entropy and feed z directly to h_s
+    # For nn_only we bypass entropy and feed z directly to h_s
     # (this is not physically meaningful but isolates DPU latency).
     scales = runners["h_s"].run(z)
 
@@ -959,6 +968,12 @@ def run_benchmark(
             )
     print(f"Parallel : {'ON (threaded real‖imag)' if _PARALLEL else 'OFF (sequential)'}")
 
+    # ---- Persistent thread pool ----
+    # Created once here (warm threads) so run_dual() avoids per-call spawn/teardown
+    # overhead that would otherwise pollute adjacent timer intervals.
+    global _EXECUTOR
+    _EXECUTOR = ThreadPoolExecutor(max_workers=2) if _PARALLEL else None
+
     # ---- Prepare input ----
     if data_path is not None and data_path.exists():
         noisy = load_real_patch(data_path, index=0)
@@ -974,7 +989,7 @@ def run_benchmark(
         "full": run_scenario_full,
         "compress": run_scenario_compress,
         "decompress": run_scenario_decompress,
-        "dpu_only": run_scenario_dpu_only,
+        "nn_only": run_scenario_nn_only,
         "entropy_only": run_scenario_entropy_only,
     }
     scenario_fn = scenario_fn_map[scenario]
@@ -1059,6 +1074,10 @@ def run_benchmark(
         power_sampler.stop()
     if pmbus_sampler is not None:
         pmbus_sampler.stop()
+
+    if _EXECUTOR is not None:
+        _EXECUTOR.shutdown(wait=True)
+        _EXECUTOR = None
 
     wall_total = wall_end - wall_start
 

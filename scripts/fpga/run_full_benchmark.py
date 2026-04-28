@@ -69,7 +69,7 @@ BENCHMARK_FPGA_SCRIPT = Path(__file__).resolve().parent / "benchmark_fpga.py"
 # GPU/CPU benchmark scenarios (from benchmark_gpu.py)
 GPU_SCENARIOS: list[str] = ["full", "compress", "decompress", "nn_only", "entropy_only"]
 # FPGA benchmark scenarios (from benchmark_fpga.py)
-FPGA_SCENARIOS: list[str] = ["full", "compress", "decompress", "dpu_only", "entropy_only"]
+FPGA_SCENARIOS: list[str] = ["full", "compress", "decompress", "nn_only", "entropy_only"]
 
 # Rough wall-time estimates per scenario (seconds, 100 iters + 20 warmup baseline).
 # Used only for ETA display — not authoritative.
@@ -78,7 +78,7 @@ FPGA_SCENARIOS: list[str] = ["full", "compress", "decompress", "dpu_only", "entr
 _ETA_S: dict[str, dict[str, int]] = {
     "gpu": {"full": 35, "compress": 25, "decompress": 30, "nn_only": 5, "entropy_only": 35},
     "cpu": {"full": 55, "compress": 38, "decompress": 42, "nn_only": 25, "entropy_only": 35},
-    "fpga": {"full": 55, "compress": 30, "decompress": 32, "dpu_only": 24, "entropy_only": 38},
+    "fpga": {"full": 55, "compress": 30, "decompress": 32, "nn_only": 24, "entropy_only": 38},
     # Note: all FPGA scenarios now run real‖imag in parallel by default (--no-parallel for baseline)
 }
 

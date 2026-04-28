@@ -475,11 +475,14 @@ power.
 | `full` | All (compress + decompress) | End-to-end latency for one tile |
 | `compress` | g_a → h_a → EB → h_s → GC | Encode-only latency |
 | `decompress` | EB → h_s → GC → g_s | Decode-only latency (from cached bitstream) |
-| `dpu_only` | g_a, h_a, h_s, g_s | Isolate DPU latency, no entropy coding |
+| `nn_only` | g_a, h_a, h_s, g_s | Isolate DPU latency, no entropy coding |
 | `entropy_only` | EB.compress, EB.decompress, GC.compress, GC.decompress | Isolate CPU entropy coding |
 
 All scenarios that invoke `g_a` process real and imag channels in **parallel by
-default** via `ThreadPoolExecutor(2)` (`run_dual()` helper).  Pass `--no-parallel`
+default** via a persistent `ThreadPoolExecutor(2)` (`run_dual()` helper).
+The pool is created **once** in `run_benchmark()` before the warmup loop and shut
+down after all iterations, eliminating per-call thread spawn/teardown overhead that
+would otherwise pollute adjacent timer intervals (see §8.2).  Pass `--no-parallel`
 to disable and obtain a sequential baseline (output saved as
 `benchmark_fpga_<scenario>_sequential.json`).
 
@@ -523,10 +526,10 @@ python3 benchmark_fpga.py \
     --scenario compress \
     --warmup 20 --iters 100 --power
 
-# DPU-only for isolating DPU latency → results/benchmark_fpga_dpu_only.json
+# DPU-only for isolating DPU latency → results/benchmark_fpga_nn_only.json
 python3 benchmark_fpga.py \
     --xmodel ResidualScaleHyperpriorDPUWrapper_pt.xmodel \
-    --scenario dpu_only \
+    --scenario nn_only \
     --iters 200
 
 # Entropy-only for CPU-bound analysis → results/benchmark_fpga_entropy_only.json
@@ -746,7 +749,14 @@ The following metrics can be computed from the benchmark output:
    order in `run_benchmark()` ensures g_s_1 and g_a_1 each land on a different core
    from their primary counterpart — see §3.3.  Pass `--no-parallel` to benchmark the
    fully sequential baseline.
-3. **Entropy coding is sequential**: The C++ rANS entropy coding (via `ans` module)
+3. **Persistent `ThreadPoolExecutor` (timing accuracy)**: An earlier implementation
+   created a new `ThreadPoolExecutor` inside every `run_dual()` call.  The
+   `shutdown(wait=True)` teardown on ARM A53 costs 1–5 ms and was absorbed by the
+   immediately following `timer.mark()` interval (`dpu_h_a`), causing a spurious
+   +10 ms inflation and a compensating −14 ms on `dpu_h_s` (CPU frequency
+   governor warming).  The pool is now created **once** before the benchmark loop
+   and destroyed after — thread lifecycle cost no longer appears in any step timer.
+4. **Entropy coding is sequential**: The C++ rANS entropy coding (via `ans` module)
    runs on the ARM A53, which is relatively slow. This may dominate total latency.
 
 ### 8.3 Comparison Fairness (GPU vs FPGA)
@@ -804,7 +814,7 @@ results/benchmark/<run_name>/benchmark_fpga_<scenario>.json
 | `nn_only` | g_a, h_a, h_s, g_s | Isolate NN latency, no entropy coding |
 | `entropy_only` | EB + GC (compress + decompress) | Isolate CPU entropy coding |
 
-The `nn_only` scenario is analogous to `dpu_only` on the FPGA.
+The `nn_only` scenario is the same on all platforms (FPGA, GPU, CPU).
 
 ### 9.4 Step Labels & Prefixing Convention
 
@@ -1082,7 +1092,7 @@ results/benchmark/ResSHyp-relu_s1_L1000_pt/
 ├── benchmark_fpga_full.json
 ├── benchmark_fpga_compress.json
 ├── benchmark_fpga_decompress.json
-├── benchmark_fpga_dpu_only.json
+├── benchmark_fpga_nn_only.json
 ├── benchmark_fpga_entropy_only.json
 └── benchmark_fpga_full_parallel.json
 ```
@@ -1120,8 +1130,8 @@ classified by filename pattern:
 | `benchmark_cpu_<scenario>.json` | CPU (x86) |
 | `benchmark_fpga_<scenario>.json` | FPGA (ZCU102) |
 
-**Scenario canonicalisation**: FPGA's `dpu_only` is mapped to `nn_only` for uniform
-cross-platform comparison.
+**Scenario canonicalisation**: All platforms now use `nn_only` for the NN-only
+(no entropy) scenario. No renaming is required at load time.
 
 **Step label canonicalisation**: Per-step breakdown labels are renamed from
 platform-specific prefixes (`gpu_`, `dpu_`) to a canonical `nn_` prefix, enabling
