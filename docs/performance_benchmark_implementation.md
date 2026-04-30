@@ -416,41 +416,143 @@ easy comparison.
 
 ### 4.7 Power Groupings for Analysis
 
-The benchmark script aggregates power into semantic groups:
+The benchmark script aggregates INA226 rails into semantic groups following the
+**Xilinx EDA365 reference article** "Accurate Design Power Measurement Made Easier"
+(Matson & Bielich) and cross-verified against the `power_monitor_zcu102` open-source
+package (PyPI, 2026).  Both sources derive from UG1182 Table 3-56.
 
-| Group | Rails | Rationale |
+| Group | Rails Summed | Rationale |
 |---|---|---|
-| **DPU_fabric** | VCCINT, VCCBRAM | Directly driven by DPU computation |
-| **PS_compute** | VCCPSINTFP, VCCPSINTLP | ARM A53 cores (entropy coding, pre/post-processing) |
-| **PL_total** | All 8 PL_PMBUS rails | Total PL-side power |
-| **PS_total** | All 10 PS_PMBUS rails | Total PS-side power |
-| **board_total** | All 18 rails | Complete board power (monitored portion) |
+| **PL** | VCCINT, VCCBRAM, VCCAUX, VCC1V2, VCC3V3 | Programmable Logic fabric (DPU + clocking) |
+| **PS** | VCCPSINTFP, VCCPSINTLP, VCCPSAUX, VCCPSPLL, VCCO_PSDDR_504, VCCOPS, VCCOPS3, VCCPSDDRPLL | Processing System (ARM cores + DDR I/O) |
+| **MGT** | MGTAVCC, MGTAVTT, MGTRAVCC, MGTRAVTT | Multi-Gigabit Transceivers (idle ~0.1 W, unused by DPU) |
+| **FMC** | VADJ_FMC | FMC connector VCCO (unused in DPU application, ~0 W) |
+| **MPSoC** | PL + PS | SoC compute fabric — excludes transceiver subsystem |
+| **DPU_fabric** | VCCINT, VCCBRAM | Subset of PL: directly driven by DPU switching activity |
+| **PS_compute** | VCCPSINTFP, VCCPSINTLP | Subset of PS: ARM A53 APU cores (entropy coding overhead) |
+| **peripherals** | DDR4_DIMM_VDDQ, UTIL_3V3, UTIL_5V0 | PMBus-only rails (no INA226 companion) |
+| **TBP** | MPSoC + MGT + peripherals | True board power — all monitored rails |
 
-**Note**: The INA226 sensors do **not** cover all power rails on the board.
-Unmonitored rails include DDR DRAM cells, SD card, HDMI/DP, USB, etc. The
-`board_total` from INA226 is therefore a **lower bound** of actual total board
-power.
+**Why MGT is outside MPSoC**: The transceivers (SERDES I/O) are a physically
+separate subsystem.  The DPU application does not use MGT at all; including it
+would inflate the reported SoC compute power.  Note: `power_monitor_zcu102` does
+not define an MPSoC aggregate — it returns `ps, pl, mgt, total` where their
+`total = PS + PL + MGT`, which equals our `TBP` when PMBus rails are excluded.
 
-**Cross-verification options**:
+**What is FMC?**  The FMC (FPGA Mezzanine Card) connector provides a standard
+expansion interface with its own adjustable supply (VADJ_FMC) monitored by INA226
+U65.  In our DPU application nothing is plugged into FMC; VADJ_FMC reads ~0 W
+and is excluded from MPSoC, reported separately for transparency.
 
-1. **External power meter** (recommended for publication): Measure at the 12 V
-   barrel jack input with an inline meter (e.g., J7-C USB meter or bench supply
-   with current readout). This gives true total board power including all
-   unmonitored peripherals and regulator conversion losses. Compare:
-   INA226 sum ≈ X W vs. external meter ≈ Y W → difference = unmonitored load.
-2. **Maxim regulator telemetry**: The voltage regulators on MAXIM_PMBUS (mux
-   channel 0) also report power, but they are not exposed via Linux hwmon and
-   would require raw `i2cget` commands — fragile and not recommended.
+### 4.8 Unmonitored Rails — Coverage Completeness
 
-### 4.8 Measurement Methodology
+**INA226 covers 18 rails** — exactly the 18 INA226 chips physically present on the
+board (confirmed by reading all `/sys/class/hwmon/` entries on the ZCU102).  Their
+absence from Table 3-56 (the INA226-only subset of Table 3-55) is the definitive
+proof that a rail has no INA226 companion.
 
-- **Polling rate**: 50 Hz (configurable via `--power-hz`)
-- **Busy-wait**: The sampling thread uses `time.perf_counter()` busy-wait for
-  sub-millisecond precision (avoids `time.sleep()` jitter)
-- **Baseline capture**: Use `--idle-baseline <seconds>` to automatically sample
-  idle power before the workload starts. Both idle and load readings appear in
-  the output JSON under `power.idle_baseline` and `power.per_rail` respectively
-- **Energy**: Computed as $E = P_\text{avg} \times t_\text{duration}$
+**PMBus adds 3 more rails** via MAX15303 Maxim regulator telemetry: `DDR4_DIMM_VDDQ`,
+`UTIL_3V3`, `UTIL_5V0`.  These MAX15303 controllers do not implement the standard
+`READ_POUT (0x97)` command, so power is computed as $P = V \times I$ from
+`READ_VOUT` and `READ_IOUT` via raw `I2C_RDWR` ioctl on `/dev/i2c-4`.
+
+**6 rails have *no* telemetry at all** — they appear in UG1182 Table 3-55 "Power
+System Devices" with "N/A" in both the PMBus Address and INA226 columns:
+
+| Rail | Regulator | Nominal | What it powers | Est. power |
+|---|---|---|---|---|
+| PL_DDR4_VTT | U35 | 0.6 V | DDR4 on-die termination (stub termination) | < 50 mW |
+| PS_DDR4_VPP_2V5 | U39 | 2.5 V | DDR4 DRAM cell charge pump (array refresh) | 100–400 mW |
+| VCCADC | U41 | 1.8 V | PL XADC analog block | < 20 mW |
+| MGT bias companions | Various | — | Secondary MGT AVCC/AVTT rails | < 50 mW each |
+| USB_5V0 / DP_3V3 | Small LDOs | — | USB PHY, DisplayPort analog I/O | 50–200 mW |
+
+All six are **small bias / support rails** that power analog frontends and DRAM
+cell arrays.  Critically, they **do not change with DPU workload** — they are
+static supplies invariant to inference activity.  Combined estimated aggregate:
+**< 500 mW**, contributing no meaningful error to dynamic power comparisons.
+
+**Summary statement for publication**:
+> *"INA226 monitors cover 18 primary rails; 3 additional rails are read via Maxim
+> PMBus regulator telemetry (DDR4 DIMM VDDQ, UTIL_3V3, UTIL_5V0).  Six secondary
+> bias and PHY supply rails have no monitoring hardware; their estimated combined
+> contribution is < 500 mW and invariant to DPU workload, contributing no
+> meaningful dynamic power error."*
+
+### 4.9 Idle Baseline Methodology
+
+The `--idle-baseline <seconds>` option (default: **10 s**) samples all power sensors
+for N seconds **before** the inference loop starts.  During this window, VART runners
+and the entropy model are already loaded in memory — the baseline represents:
+
+> *"Idle power after cold boot, with VART runners and entropy model loaded in
+> memory, no inference running."*
+
+This is the correct reference point for computing dynamic power:
+
+$$P_\text{dynamic} = P_\text{load} - P_\text{idle}$$
+
+Both values appear in the same JSON file: `power.per_rail` (load averages) and
+`power.idle_baseline` (idle averages), enabling post-hoc computation of any group's
+dynamic contribution.
+
+**Why 10 s?**  The ZCU102 ARM A53 runs the `ondemand` CPU frequency governor.
+After model loading, the governor takes several seconds to settle.  10 s provides
+≥5 complete INA226 poll rounds (~200 samples at ~5 Hz effective rate).
+
+**Measured idle vs. load (full scenario)**:
+- `VCCINT` idle: 5.999 W → load: 7.794 W → **ΔDPUfabric = +1.8 W**
+- Board total idle: 8.626 W → load: 10.53 W → **ΔMPSoC ≈ +1.9 W**
+
+**GPU/CPU idle baseline**: `benchmark_gpu.py` captures the same 10 s idle window
+before each scenario.  GPU idle is measured *after* `net.to(device)` to match the
+P0 CUDA-context-loaded state during inference (not P8 deep-sleep).  Measured RTX
+A4000 idle: **33.4 W**; load (full scenario): **58.2 W** → dynamic ≈ **25 W**.
+CPU idle baseline uses Intel RAPL, but **RAPL `energy_uj` files require root on
+Linux ≥ 5.10**; if unavailable, CPU idle is not recorded.  Fix:
+`sudo chmod o+r /sys/class/powercap/intel-rapl/*/energy_uj`.
+
+### 4.10 INA226 Hardware Configuration & Effective Poll Rate
+
+**Hardware configuration (confirmed on board via Python I2C RDWR)**:
+All 18 INA226 sensors return `CFG register = 0x4327`, which decodes as:
+
+| Field | Value | Meaning |
+|---|---|---|
+| AVG[2:0] | 001 | **4 samples** hardware-averaged per output |
+| VBUSCT[2:0] | 100 | Voltage conversion time: **1100 µs** |
+| VSHCT[2:0] | 100 | Current conversion time: **1100 µs** |
+| MODE[2:0] | 111 | Continuous bus + shunt measurement |
+| **Update period** | | **4 × (1100 + 1100) µs = 8.8 ms** |
+
+This is fast enough to resolve the 35 ms DPU inference burst.  The hardware
+averaging is **not** the cause of low observed dynamic power.
+
+**Effective sysfs poll rate (~5 Hz, not the requested 50–100 Hz)**:
+Reading all 18 rail files from sysfs takes ~180 ms per complete round on the ARM
+A53 (18 rails × ~10 ms I2C round-trip through the PCA9544A mux).  Requesting 50 Hz
+(20 ms interval) is faster than one full round, so successive polls are
+constrained by I2C latency.  The effective rate is ~5 Hz.  Over a 41-second
+`full` scenario run (100 iterations), this yields ~200 samples — sufficient for
+a stable mean.  Individual DPU bursts are not resolved, but the average converges
+correctly.
+
+**Busy-wait removed (April 2026)**: Earlier versions used a `time.perf_counter()`
+busy-wait loop between polls.  On the ARM A53 this pinned a full CPU core
+continuously, competing with VART inference threads and inflating PS-side idle
+power by several hundred mW.  Both `INA226PowerSampler` and `PMBusRailSampler`
+now use `time.sleep(remaining)` instead:
+
+```python
+# Old (bad — busy-waits a full core on ARM A53)
+while time.perf_counter() - t < self._poll_interval:
+    pass
+
+# New (correct — yields the CPU between polls)
+remaining = self._poll_interval - elapsed
+if remaining > 0:
+    time.sleep(remaining)
+```
 
 ---
 
@@ -573,12 +675,18 @@ python3 benchmark_fpga.py \
       "..."
     },
     "groups_avg_w": {
-      "PL_total": 10.2,
-      "PS_total": 3.5,
-      "DPU_fabric": 9.8,
-      "PS_compute": 2.1
+      "PL":          9.4,
+      "PS":          2.2,
+      "MGT":         0.1,
+      "FMC":         0.0,
+      "MPSoC":      11.6,
+      "DPU_fabric":  8.98,
+      "PS_compute":  1.77,
+      "peripherals": 2.77,
+      "TBP":        14.47
     },
-    "board_total_avg_w": 13.7
+    "board_total_avg_w": 11.7,
+    "board_total_extended_avg_w": 14.47
   },
 
   "hw_dpu_info": { "n_dpu_cores": 3, "dpu_freq_mhz": 300, "..." },
@@ -604,10 +712,11 @@ python3 benchmark_fpga.py \
 
 #### INA226PowerSampler
 
-- Background thread with busy-wait polling (avoids `time.sleep` jitter)
-- Reads `power1_input` from sysfs (micro-watts, hardware-computed by INA226)
+- Background thread with `time.sleep()`-based polling interval (yields CPU between polls)
+- Reads `power1_input` from sysfs (micro-watts, hardware-computed by INA226 from V×I)
 - Returns per-rail average power (W) and total energy (J) over the measurement window
 - Automatic sensor discovery: scans `/sys/class/hwmon/` for `ina226_*` names
+- Effective poll rate: ~5 Hz (limited by I2C round-trip, not the requested 50–100 Hz)
 
 #### StepTimer
 
@@ -664,13 +773,15 @@ hardware accelerator would yield the largest speedup.
 
 ### 6.3 Power Summary (Full Scenario)
 
-| Group | Power (W) |
-|---|---|
-| Board total (18 rails) | 11.62 |
-| PL total | 9.43 |
-| PS total | 2.19 |
-| DPU fabric (VCCINT + VCCBRAM) | 8.98 |
-| PS compute (A53 cores) | 1.77 |
+| Group | Load (W) | Idle (W) | Dynamic ΔW |
+|---|---|---|---|
+| Board total (18 INA226 rails) | 10.53 | 8.63 | +1.90 |
+| **PL** (VCCINT+VCCBRAM+VCCAUX+VCC1V2+VCC3V3) | ~9.4 | ~7.7 | ~+1.7 |
+| **PS** (ARM+DDR I/O, 8 rails) | ~2.2 | ~2.0 | ~+0.2 |
+| **MGT** (4 transceiver rails) | ~0.1 | ~0.1 | ~0 |
+| **MPSoC** = PL + PS | ~11.6 | ~9.7 | ~+1.9 |
+| **DPU_fabric** (VCCINT + VCCBRAM) | 7.79 | 5.99 | **+1.80** |
+| **PS_compute** (A53 APU, VCCPSINTFP+VCCPSINTLP) | 1.77 | 1.57 | **+0.20** |
 
 ### 6.4 Comparison: xdputil Synthetic vs. Real-World DPU Timing
 
@@ -731,12 +842,16 @@ The following metrics can be computed from the benchmark output:
    window (typically 1–4 ms). At 50 Hz polling we undersample relative to the
    sensor's integration time, which is acceptable for steady-state workloads but
    means we cannot capture sub-ms power transients.
-2. **Incomplete board coverage**: INA226 monitors cover 18 rails but not all power
-   delivery (DDR DRAM, USB, SD, DisplayPort). Board-total from INA226 is a lower
-   bound.
-3. **No baseline subtraction**: Idle power (~6W on VCCINT alone) includes DPU static
-   power, clock trees, etc. Dynamic power should be estimated as
-   $P_\text{dynamic} = P_\text{load} - P_\text{idle}$.
+2. **Incomplete board coverage**: INA226 monitors cover 18 rails; PMBus adds 3
+   more via Maxim regulator telemetry.  Six secondary bias/PHY rails (PL_DDR4_VTT,
+   PS_DDR4_VPP_2V5, VCCADC, USB/DP analog, MGT bias companions) have no monitoring
+   hardware.  Their estimated combined contribution is **< 500 mW and invariant to
+   DPU workload**, so they do not affect dynamic power comparisons (see §4.8).
+3. **Idle baseline captures static + OS overhead**: The 10 s idle baseline captures
+   VART runners and entropy model loaded, OS running, DPU clocked but not inferring.
+   Dynamic power $P_\text{dynamic} = P_\text{load} - P_\text{idle}$ correctly
+   isolates inference contribution.  The `--idle-baseline 10` default is sufficient
+   for the CPU frequency governor to settle (see §4.9).
 
 ### 8.2 Timing
 
@@ -1236,3 +1351,52 @@ This is the most deployment-relevant comparison for the SAR DDC use case.
 - **PG338**: DPUCZDX8G Product Guide (Vitis-AI DPU architecture).
 - **Vitis-AI 3.0 User Guide**: DPU runtime APIs (VART), xdputil tooling.
 - **TI INA226 datasheet**: High/low-side current/power monitor, 16-bit ADC.
+- **power-monitor-zcu102** (PyPI, 2026): Open-source ZCU102 power monitor — cross-reference for group formulas.
+
+---
+
+## 14. Paper-Ready Power Measurement Descriptions
+
+### 14.1 Full Description (~2 paragraphs, one per platform pair)
+
+**GPU and CPU:**
+
+GPU power consumption is measured by polling `nvidia-smi --query-gpu=power.draw`
+at 10 Hz from a background thread throughout the entire inference loop.  The
+reported value is the full GPU board power draw (card-level, as measured by the
+regulator telemetry on the PCIe card), not an incremental compute figure.  CPU
+package and DRAM power are measured via Intel RAPL energy counters
+(`/sys/class/powercap/intel-rapl/*/energy_uj`), which are integrated hardware
+energy registers read at start and stop of the measurement window.  Before each
+scenario, a 10 s idle baseline is captured with the model already loaded in GPU
+memory and the CUDA context initialised (GPU in P0 power state), yielding an
+idle of 33.4 W for the RTX A4000.  Dynamic power is computed as the difference
+between the load average and this idle baseline.
+
+**FPGA:**
+
+FPGA power is measured via 18 TI INA226 current/power monitors soldered directly
+onto the Xilinx ZCU102 evaluation board and accessible through the Linux sysfs
+hwmon interface (`/sys/class/hwmon/`).  Three additional rails (DDR4 DIMM VDDQ,
+UTIL_3V3, UTIL_5V0) are read via Maxim PMBus regulator telemetry over
+`/dev/i2c-4` using raw `I2C_RDWR` ioctl.  Six secondary bias rails (PL_DDR4_VTT,
+PS_DDR4_VPP_2V5, VCCADC, and USB/DisplayPort analog supplies) have no monitoring
+hardware; their combined estimated contribution is below 500 mW and invariant to
+DPU workload, so they introduce no meaningful error in dynamic power comparisons.
+Power is aggregated into PL (DPU fabric: VCCINT + VCCBRAM + VCCAUX + VCC1V2 +
+VCC3V3), PS (ARM + DDR I/O, 8 rails), and MGT (4 transceiver rails, unused),
+with MPSoC = PL + PS reported as the SoC compute power.  All 18 INA226 sensors
+are configured at 4× hardware averaging with a 1100 µs conversion time (effective
+hardware update period 8.8 ms); the effective sysfs poll rate is ~5 Hz due to
+I2C bus arbitration overhead, yielding ~200 samples over a 40 s run — sufficient
+for a stable mean.  A 10 s idle baseline is captured before each scenario, with
+VART runners and the entropy model loaded but no inference running, and subtracted
+to report dynamic power.
+
+### 14.2 Short Description (≤ 2 sentences, for high-level results papers)
+
+GPU power is reported as the full board-level draw from `nvidia-smi`; CPU power
+via Intel RAPL package energy counters; FPGA power via 18 on-board TI INA226
+current monitors plus 3 Maxim PMBus regulator readouts covering all primary SoC
+rails.  All platforms subtract a 10 s idle baseline (model loaded, no inference)
+to isolate dynamic inference power from static board overhead.

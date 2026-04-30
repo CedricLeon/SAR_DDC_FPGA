@@ -144,6 +144,85 @@ In particular, each .cos file present in `data/TSX_cos_files/` is open, images a
 
 We use Vitis AI [7] for the FPGA deployment. See [Vitis-AI_journey.md](Vitis-AI_journey.md) for details about my struggles.
 
+### Benchmarking
+
+Performance benchmarks measure latency, throughput, and power consumption across
+GPU (RTX A4000), host CPU (x86), and FPGA (Xilinx ZCU102).  All results are stored
+as JSON in `results/benchmark/<model_name>/` and analysed in
+`notebooks/benchmark_analysis.ipynb`.
+
+#### Prerequisites
+
+- A compiled FPGA model in `results/fpga/active_model/` (run `deploy.py` first).
+- ZCU102 accessible via `ssh ZCU102` (passwordless SSH configured, see
+  `docs/Vitis-AI_journey.md`).
+- For GPU power: `nvidia-smi` available.  For CPU RAPL power: run as root or
+  `sudo chmod o+r /sys/class/powercap/intel-rapl/*/energy_uj`.
+- **For meaningful power results**: cold-reboot the ZCU102 before each run.
+
+#### Full benchmark (recommended)
+
+```bash
+python scripts/fpga/run_full_benchmark.py \
+    --model-dir results/fpga/active_model/ \
+    --warmup 20 --iters 100 \
+    --power --idle-baseline 10 \
+    --power-hz-gpu 10 --power-hz-fpga 50
+```
+
+Runs all 5 scenarios (`full`, `compress`, `decompress`, `nn_only`, `entropy_only`)
+on GPU + CPU (host) + FPGA (ZCU102 via SSH), with a 10 s idle power baseline before
+each scenario.  Estimated runtime: ~14 min.
+
+```bash
+# GPU + CPU only (no board required)
+python scripts/fpga/run_full_benchmark.py --model-dir results/fpga/active_model/ --no-fpga
+
+# FPGA only (model already on board, skip transfer)
+python scripts/fpga/run_full_benchmark.py \
+    --model-dir results/fpga/active_model/ --no-gpu --no-cpu --skip-transfer
+```
+
+#### Protocol for reproducible results
+
+1. **Cold-reboot the ZCU102** — ensures no residual DPU/VART state from previous runs.
+2. **Wait ~60 s** after PetaLinux boot before starting the benchmark.
+3. **Close GPU workloads** on the host (`nvidia-smi` should show 0 MiB compute usage).
+4. Run the command above — idle baselines are captured automatically per scenario.
+5. For publication: **repeat 3×** (reboot between runs) and report mean ± std.
+
+#### Interpreting results
+
+Key fields in each JSON file:
+
+| Field | Meaning |
+| --- | --- |
+| `latency_total_mean_ms` | Per-tile end-to-end wall time |
+| `latency_dpu_total_mean_ms` / `latency_gpu_total_mean_ms` | Hardware accelerator time only |
+| `latency_cpu_total_mean_ms` | CPU-side entropy coding + pre/postprocessing |
+| `power.groups_avg_w.DPU_fabric` | VCCINT+VCCBRAM (DPU switching power) on FPGA |
+| `power.groups_avg_w.PS_compute` | ARM A53 APU power (entropy coding) on FPGA |
+| `power.groups_avg_w.MPSoC` | PL + PS total SoC power on FPGA |
+| `power.idle_board_total_avg_w` | Idle baseline for dynamic power subtraction |
+
+**Dynamic power** = `power.groups_avg_w.X` − `power.idle_groups_avg_w.X` (post-hoc from JSON).
+
+> **Key finding**: CPU-side Gaussian Conditional entropy coding (C++ rANS) accounts
+> for ~60 % of total latency on FPGA.  Use the `entropy_only` scenario to isolate it
+> and `nn_only` to isolate pure DPU inference.
+
+#### Power measurement scope
+
+| Platform | Instrument | Scope | Unmonitored |
+| --- | --- | --- | --- |
+| **GPU** | `nvidia-smi` | Full GPU board power | Host CPU, memory, motherboard |
+| **CPU** | Intel RAPL | CPU package + DRAM | Motherboard, fans, storage |
+| **FPGA** | 18× TI INA226 + 3× Maxim PMBus | PL, PS, MGT + DDR4/UTIL rails | 6 secondary bias rails (< 500 mW, workload-invariant) |
+
+See `docs/performance_benchmark_implementation.md` §4 for the complete technical
+reference, including INA226 register configuration, I2C bus topology, rail-to-sensor
+mapping, and paper-ready measurement descriptions (§14).
+
 #### References
 
 - [1] Joel Amao-Oliva, Nils Foix-Colonier, Francescopaolo Sica. (2024). Joint compression and despeckling by SAR representation learning. ISPRS Journal of Photogrammetry and Remote Sensing.

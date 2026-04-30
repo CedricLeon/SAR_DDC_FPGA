@@ -442,7 +442,7 @@ def main() -> None:
     g.add_argument(
         "--idle-baseline",
         type=float,
-        default=0.0,
+        default=10.0,
         metavar="SECONDS",
         help=(
             "Capture idle power for N seconds before each scenario (requires --power). "

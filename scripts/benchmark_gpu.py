@@ -1013,7 +1013,7 @@ def run_benchmark_on_device(
     n_iters: int,
     measure_power: bool,
     power_poll_hz: float,
-    idle_baseline_s: float = 0.0,
+    idle_baseline_s: float = 10.0,
 ) -> dict[str, Any]:
     """Run the benchmark on a single device and return the results dict."""
     is_gpu = device.type == "cuda"
@@ -1228,7 +1228,7 @@ def main() -> None:
     parser.add_argument(
         "--idle-baseline",
         type=float,
-        default=0.0,
+        default=10.0,
         metavar="SECONDS",
         help="Capture idle power for N seconds before benchmarking (requires --power).",
     )

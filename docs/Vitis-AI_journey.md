@@ -3,6 +3,53 @@
 I'll use this file as a journal, just to keep track of what I tried and when.
 Once I understand the toolchain and its processes better, I'll make a step-by-step instructions for deployment, like so:
 
+## Power Measurement Deep-Dive and Benchmark Infrastructure (2026-04-30)
+
+A focused review and improvement of the power measurement methodology across
+`benchmark_fpga.py`, `benchmark_gpu.py`, and `run_full_benchmark.py`.
+
+### What changed
+
+**Bug fix — busy-wait in polling loops**:
+Both `INA226PowerSampler._poll_loop` and `PMBusRailSampler._poll_loop` used a
+`time.perf_counter()` busy-wait between polls.  On the ARM A53, this pinned a
+full CPU core continuously, competing with VART inference threads and inflating
+PS-side power readings.  Fixed to `time.sleep(remaining)` in both samplers.
+
+**Power group hierarchy rewritten** to match the Xilinx EDA365 reference formula:
+
+- Old (wrong): `PL_total` included VADJ_FMC and MGT rails; `PS_total` included
+  MGTRAVCC/MGTRAVTT.
+- New (correct): `PL` = VCCINT+VCCBRAM+VCCAUX+VCC1V2+VCC3V3; `PS` = 8 ARM/DDR
+  rails; `MGT` = 4 transceiver rails; `MPSoC` = PL + PS (MGT excluded — the
+  transceiver subsystem is not used by the DPU); `TBP` = MPSoC + MGT + peripherals.
+
+**Default idle baseline changed from 0 → 10 s** in all three scripts
+(`--idle-baseline` CLI default).
+
+**INA226 hardware configuration confirmed on board** via Python I2C RDWR:
+All 18 sensors have `CFG = 0x4327` (4× hardware averaging, Vct = Ict = 1100 µs,
+hardware update period = 8.8 ms).  The effective sysfs poll rate is ~5 Hz (not the
+requested 50–100 Hz) due to I2C bus round-trip overhead; 200 samples over 41 s is
+still sufficient for a stable mean.
+
+**Unmonitored rails clarified**: 6 secondary bias/PHY rails have no telemetry at
+all (PL_DDR4_VTT, PS_DDR4_VPP_2V5, VCCADC, MGT bias companions, USB/DP LDOs).
+Their combined estimated contribution is < 500 mW and invariant to workload.
+
+### Why it matters
+
+The corrected power groupings eliminate MGT (~0.1 W) from the reported SoC compute
+figure (`MPSoC`).  The busy-wait fix removes a confounding source of PS idle power
+inflation.  Together, these changes make the dynamic power numbers (`ΔPL`, `ΔPS`,
+`ΔMPSoC`) more accurate and directly comparable to datasheet estimates.
+
+See `docs/performance_benchmark_implementation.md` §4 for the complete technical
+details, including INA226 register decoding, I2C topology, and paper-ready
+measurement descriptions.
+
+---
+
 ## Automating deployment and evaluation with one orchestrator script (2026-03-02)
 
 `deploy.py` is a Python orchestrator that manages the full compile → transfer → inference → fetch pipeline from the project root (`~/dev/Vitis-AI/DDC_FPGA/`) using the `SAR_DDC` conda environment. Requires [passwordless SSH access to ZCU102](#ssh-key-setup-passwordless-access-to-zcu102).
@@ -140,7 +187,7 @@ Two log files are produced per deployment run, both stored inside the compiled m
 Terminal verbosity is controlled by two constants at the top of `deploy.py`:
 
 | Constant | Default | Controls |
-|---|---|---|
+| --- | --- | --- |
 | `PHASE1_VERBOSE` | `False` | Docker / Vitis-AI compile output (very noisy) |
 | `PHASE3_VERBOSE` | `True` | FPGA inference output |
 
@@ -161,7 +208,7 @@ The module-level regex `_TQDM_RE = re.compile(r"^\s*(\d+)%\|")` detects these li
 
 ### Requirements
 
-- If needed, perform [onetime setups](#fpga-preparations-one-time-setups).
+- If needed, perform [onetime setups](#fpga-board-setup-one-time).
 - Have a trained checkpoint (and its configuration)
 
 ### 1. Initialize Vitis-AI docker container

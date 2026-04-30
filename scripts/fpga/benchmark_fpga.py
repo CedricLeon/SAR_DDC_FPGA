@@ -126,9 +126,10 @@ class INA226PowerSampler:
             for rail, path in self._rail_map.items():
                 self._samples[rail].append(self._read_power_uw(path))
             self._timestamps.append(t)
-            # Busy-wait for higher precision than time.sleep allows
-            while time.perf_counter() - t < self._poll_interval:
-                pass
+            elapsed = time.perf_counter() - t
+            remaining = self._poll_interval - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
 
     def start(self) -> None:
         """Start the background polling thread."""
@@ -211,32 +212,45 @@ ZCU102_SENSOR_MAP: dict[str, str] = {
 }
 
 # Semantic groupings for power analysis reporting.
-# DPU workload power is dominated by VCCINT + VCCBRAM (PL fabric + BRAM).
+#
+# Formulas follow the Xilinx EDA365 reference article "Accurate Design Power Measurement Made Easier" (Matson & Bielich)
+# and the power_monitor_zcu102 open-source package, both of which derive groupings from UG1182 Table 3-56.
+#
+#   PL  = VCCINT + VCCBRAM + VCCAUX + VCC1V2 + VCC3V3
+#   PS  = VCCPSINTFP + VCCPSINTLP + VCCPSAUX + VCCPSPLL +
+#         VCCO_PSDDR_504 + VCCOPS + VCCOPS3 + VCCPSDDRPLL
+#   MGT = MGTAVCC + MGTAVTT + MGTRAVCC + MGTRAVTT   (DPU does not use MGT)
+#   MPSoC = PL + PS          (SoC compute fabric only; MGT is a separate transceiver subsystem)
+#   TBP   = MPSoC + MGT + peripherals (PMBus rails: DDR4_DIMM_VDDQ + UTIL_3V3 + UTIL_5V0)
+#
+# NOTE: VADJ_FMC is excluded from PL — it powers the FMC connector slot which is unused in the DPU application.  It is reported separately for transparency.
 POWER_GROUPS: dict[str, list[str]] = {
-    "PL_total": [
+    "PL": [
         "VCCINT",
         "VCCBRAM",
         "VCCAUX",
         "VCC1V2",
         "VCC3V3",
-        "VADJ_FMC",
-        "MGTAVCC",
-        "MGTAVTT",
     ],
-    "PS_total": [
+    "PS": [
         "VCCPSINTFP",
         "VCCPSINTLP",
         "VCCPSAUX",
         "VCCPSPLL",
-        "MGTRAVCC",
-        "MGTRAVTT",
         "VCCO_PSDDR_504",
         "VCCOPS",
         "VCCOPS3",
         "VCCPSDDRPLL",
     ],
-    "DPU_fabric": ["VCCINT", "VCCBRAM"],  # Directly driven by DPU activity
-    "PS_compute": ["VCCPSINTFP", "VCCPSINTLP"],  # ARM A53 (entropy coding)
+    "MGT": [
+        "MGTAVCC",
+        "MGTAVTT",
+        "MGTRAVCC",
+        "MGTRAVTT",
+    ],
+    "FMC": ["VADJ_FMC"],  # FMC connector — unused in DPU app, reported separately
+    "DPU_fabric": ["VCCINT", "VCCBRAM"],  # Directly driven by DPU switching activity
+    "PS_compute": ["VCCPSINTFP", "VCCPSINTLP"],  # ARM A53 APU + RPU (entropy coding)
     "peripherals": ["DDR4_DIMM_VDDQ", "UTIL_3V3", "UTIL_5V0"],  # PMBus rails (not in INA226)
 }
 
@@ -379,8 +393,10 @@ class PMBusRailSampler:
                         p = 0.0
                     self._samples[rail].append(p)
                 self._timestamps.append(t)
-                while time.perf_counter() - t < self._poll_interval:
-                    pass
+                elapsed = time.perf_counter() - t
+                remaining = self._poll_interval - elapsed
+                if remaining > 0:
+                    time.sleep(remaining)
         finally:
             os.close(fd)
 
@@ -913,7 +929,7 @@ def run_benchmark(
     data_path: Path | None,
     measure_power: bool,
     power_poll_hz: float,
-    idle_baseline_s: float = 0.0,
+    idle_baseline_s: float = 10.0,
 ) -> dict[str, Any]:
     """Run the benchmark and return a results dictionary."""
     print(f"Scenario : {scenario}")
@@ -1122,16 +1138,23 @@ def run_benchmark(
         per_rail = power_sampler.results()
         power_data: dict[str, Any] = {"per_rail": per_rail}
 
-        # Aggregate by semantic group (INA226 rails only for PL/PS groups)
+        # Aggregate by semantic group (INA226 rails only; peripherals handled via PMBus).
+        # Groups follow the Xilinx EDA365 reference formula: PL, PS, MGT, FMC.
         groups_agg: dict[str, float] = {}
         for group_name, group_rails in POWER_GROUPS.items():
             if group_name == "peripherals":
                 continue  # handled separately via PMBus
             total_w = sum(per_rail[r]["avg_power_w"] for r in group_rails if r in per_rail)
             groups_agg[group_name] = round(total_w, 4)
+
+        # MPSoC = PL + PS (SoC compute fabric; MGT is a separate transceiver subsystem)
+        groups_agg["MPSoC"] = round(
+            groups_agg.get("PL", 0.0) + groups_agg.get("PS", 0.0),
+            4,
+        )
         power_data["groups_avg_w"] = groups_agg
 
-        # Board total (INA226 rails)
+        # Board total (all INA226 rails, including FMC)
         board_total_w = sum(v["avg_power_w"] for v in per_rail.values())
         power_data["board_total_avg_w"] = round(board_total_w, 4)
 
@@ -1141,8 +1164,12 @@ def run_benchmark(
             power_data["pmbus_rails"] = pmbus_rail_results
             pmbus_total_w = sum(v["avg_power_w"] for v in pmbus_rail_results.values())
             power_data["board_total_extended_avg_w"] = round(board_total_w + pmbus_total_w, 4)
-            # Add peripherals group to groups_avg_w
+            # TBP = MPSoC + MGT + peripherals  (matches power_monitor_zcu102 "total" + PMBus)
             groups_agg["peripherals"] = round(pmbus_total_w, 4)
+            groups_agg["TBP"] = round(
+                groups_agg.get("MPSoC", 0.0) + groups_agg.get("MGT", 0.0) + pmbus_total_w,
+                4,
+            )
 
         # Idle baseline (if captured)
         if idle_baseline_results is not None:
@@ -1200,7 +1227,7 @@ def main() -> None:
     parser.add_argument(
         "--idle-baseline",
         type=float,
-        default=0.0,
+        default=10.0,
         metavar="SECONDS",
         help="Capture idle power baseline for N seconds before benchmarking (requires --power).",
     )
