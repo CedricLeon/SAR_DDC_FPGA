@@ -45,6 +45,7 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
         nb_channels_main: int = 128,
         activation: str = "gdn",
         no_output_padding: bool = True,
+        no_residual_blocks: bool = False,
         export_dpu: bool = False,
     ):
         """Initialize the ResidualScaleHyperpriorPatched model.
@@ -62,14 +63,22 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
             nb_channels_main (int): Number of channels for main path (default: 128)
             activation (str): Activation function to use. 'gdn', 'relu', 'gdn1', etc. (default: 'gdn')
             no_output_padding (bool): If True, modifies ConvTranspose2d kernels size to not use output padding as it is not supported by Vitis-AI DPU (default: True)
+            no_residual_blocks (bool): If True, remove all ResidualBlocks from g_a and g_s (default: False)
             export_dpu (bool): If True, use DPU-patched layers for inference/export (default: False)
         """
         super().__init__()
         N = nb_channels_main
         M = 2 * N  # Number of channels for hyperprior
         self.export_dpu: bool = export_dpu
+        self.no_residual_blocks: bool = no_residual_blocks
         self.activation: str = activation
         self.DEBUG_MODE: bool = False  # Big ugly parameter for shape logging during inference
+
+        def _maybe_residual(channels: int) -> nn.Module:
+            """Return a ResidualBlock or Identity depending on no_residual_blocks."""
+            if no_residual_blocks:
+                return nn.Identity()
+            return ResidualBlock(channels, activation, use_patched_gdn=export_dpu)
 
         if export_dpu and not no_output_padding:
             raise ValueError(
@@ -93,17 +102,17 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
             nn.Sequential(
                 nn.Conv2d(1, N, kernel_size=5, stride=2, padding=2),
                 make_activation(activation, N, inverse=False, use_patched_gdn=export_dpu),
-                ResidualBlock(N, activation, use_patched_gdn=export_dpu),
+                _maybe_residual(N),
             ),
             nn.Sequential(
                 nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2),
                 make_activation(activation, N, inverse=False, use_patched_gdn=export_dpu),
-                ResidualBlock(N, activation, use_patched_gdn=export_dpu),
+                _maybe_residual(N),
             ),
             nn.Sequential(
                 nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2),
                 make_activation(activation, N, inverse=False, use_patched_gdn=export_dpu),
-                ResidualBlock(N, activation, use_patched_gdn=export_dpu),
+                _maybe_residual(N),
             ),
             nn.Conv2d(N, N, kernel_size=5, stride=2, padding=2),
         )
@@ -120,7 +129,7 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
                     output_padding=convT_out_pad,
                 ),
                 make_activation(activation, N, inverse=True, use_patched_gdn=export_dpu),
-                ResidualBlock(N, activation, use_patched_gdn=export_dpu),
+                _maybe_residual(N),
             ),
             nn.Sequential(
                 nn.ConvTranspose2d(
@@ -132,7 +141,7 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
                     output_padding=convT_out_pad,
                 ),
                 make_activation(activation, N, inverse=True, use_patched_gdn=export_dpu),
-                ResidualBlock(N, activation, use_patched_gdn=export_dpu),
+                _maybe_residual(N),
             ),
             nn.Sequential(
                 nn.ConvTranspose2d(
@@ -144,7 +153,7 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
                     output_padding=convT_out_pad,
                 ),
                 make_activation(activation, N, inverse=True, use_patched_gdn=export_dpu),
-                ResidualBlock(N, activation, use_patched_gdn=export_dpu),
+                _maybe_residual(N),
             ),
             nn.ConvTranspose2d(
                 N,
