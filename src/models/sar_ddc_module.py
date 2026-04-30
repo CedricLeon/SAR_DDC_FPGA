@@ -196,8 +196,29 @@ class SARDDCModule(lightning.LightningModule):
         out_enc = self.net.compress(x)
         out_dec = self.net.decompress(out_enc["strings"], out_enc["shape"])
 
-        # Use decompressed output for reconstruction metrics to be as close to FPGA as possible
-        output["x_hat"] = out_dec
+        # Use decompressed output for reconstruction metrics to be as close to FPGA as possible.
+        # Sanitize x_hat: high-lambda GDN models can produce NaN (from GDN(inf)=inf/inf when large
+        # latents overflow inside g_s) as well as finite out-of-range values.
+        # nan_to_num replaces NaN/±inf first, then clamp enforces [0,1].
+        x_hat_raw = out_dec
+        if False:
+            has_nan = torch.isnan(x_hat_raw).any().item()
+            has_inf = not torch.isfinite(x_hat_raw).all().item()
+            is_out_of_range = bool(
+                (x_hat_raw[torch.isfinite(x_hat_raw)].numel() > 0)
+                and (
+                    x_hat_raw[torch.isfinite(x_hat_raw)].max() > 1.0
+                    or x_hat_raw[torch.isfinite(x_hat_raw)].min() < 0.0
+                )
+            )
+            if has_nan or has_inf or is_out_of_range:
+                print(
+                    f"[test_step] batch_idx={batch_idx}: x_hat abnormal "
+                    f"(nan={has_nan}, inf={has_inf}, out_of_range={is_out_of_range}). Sanitizing."
+                )
+        output["x_hat"] = torch.nan_to_num(x_hat_raw, nan=0.0, posinf=1.0, neginf=0.0).clamp(
+            0.0, 1.0
+        )
 
         # Compute normal losses with Noise2Noise approach
         criterion = self.criterion(output, target=input)
