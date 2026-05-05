@@ -12,7 +12,7 @@
 ### 1.1 Board Overview
 
 | Component | Specification |
-|---|---|
+| --- | --- |
 | **SoC** | Zynq UltraScale+ XCZU9EG-2FFVB1156 |
 | **CPU** | 4× ARM Cortex-A53 (ARMv8-A, ~200 BogoMIPS per core) |
 | **DPU IP** | DPUCZDX8G v4.1 — ISA1 B4096 |
@@ -36,6 +36,34 @@ $$
 For convolutions, the DPU performs multiply-accumulate operations, so each "OP"
 represents one MAC on INT8 data.
 
+A single-core DPU B4096 uses (from [the DPU doc](https://docs.amd.com/r/en-US/pg338-dpu/Resource-Utilization)):
+
+- 52161 LUTs
+- 98249, Registers (aka, FFs)
+- 255 BRAMs (or 68 UltraRAMs if available)
+- 710 DSPs.
+
+The XCZU9EG has (from user guide table 1.1 and [GitHub list Xilinx FPGAs](https://github.com/erinadreno/list_of_Xilinx_FPGAs#zynq-ultrascale-family)):
+
+- 34260 CLBs (Configurable Logic Blocks)
+- 274080 LUTs (computed as 8xCLBs)
+- 599550 Logic cells ==Is it equivalent to Configurable Logic Cells (CLB)?==
+- 548160 FF/Registers
+- 8.8Mb Max. distributed RAM (on-chip RAM using LUTs)
+- 32.1Mb Total block RAM (912 blocks * 35kb)
+- 2520 DSP slices.
+
+I couldn't find any info about the resource utilization of a 3-cores DPU B4096, so I will consider the core resources consumption is additive, i.e., three times the resource consumption of a single core. It's probably an underestimate because new shared components like AXI interconnect or clocks add an overhead.
+Anyhow, we get:
+
+- 156483 / 274080 = 57.1% LUTs
+- 294747 / 548160 = 53.8% FF/Registers
+- 765 / 912 = 83.9% blocks BRAMs (26.9 / 32.1 Mb)
+- 2130 / 2520 = 84.5% DSPs
+
+
+See [section 3.1](#31-xdputil-benchmark-results).
+
 ---
 
 ## 2. Model Architecture Analysis
@@ -46,7 +74,7 @@ The model is a hyper-autoencoder based on the Scale Hyperprior (Ballé et al., 2
 with residual blocks and ReLU activations (GDN replaced for DPU compatibility).
 
 | Parameter | Value |
-|---|---|
+| --- | --- |
 | **N** (main channels) | 128 |
 | **M** (hyper channels) | 256 |
 | **Input** | 256 × 256 × 1 (per-channel, real/imag processed separately) |
@@ -58,7 +86,7 @@ with residual blocks and ReLU activations (GDN replaced for DPU compatibility).
 The model is split into 4 DPU subgraphs + CPU-based entropy coding:
 
 | Subgraph | Role | Input Shape (NHWC) | Output Shape (NHWC) | Params (CONST bytes) | Workload (OPs) |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | **g_a** | Encoder | 1×256×256×1 | 1×16×16×128 | 3,731,456 | 39,754,825,728 |
 | **h_a** | Hyper-encoder | 1×16×16×256 | 1×2×2×256 | 4,927,488 | 275,272,704 |
 | **h_s** | Hyper-decoder | 1×2×2×256 | 1×16×16×256 | 3,158,016 | 176,246,784 |
@@ -80,7 +108,7 @@ $$
 $$
 
 | Subgraph | Typical Spatial Dims | Effect on OPs |
-|---|---|---|
+| --- | --- | --- |
 | g_a | 256×256 → 128×128 → 64×64 → 32×32 → 16×16 | Large feature maps → **high OPs** |
 | h_a | 16×16 → 8×8 → 4×4 → 2×2 | Tiny feature maps → **low OPs** |
 | h_s | 2×2 → 4×4 → 8×8 → 16×16 | Tiny feature maps → **low OPs** |
@@ -95,7 +123,7 @@ having many wide 5×5 kernels with 256 channels, but those kernels operate on ju
 
 For one 256×256 tile, the full compress+decompress pipeline executes:
 
-```
+```text
 [DPU] g_a(real)       → y_real   [1,16,16,128]
 [DPU] g_a(imag)       → y_imag   [1,16,16,128]
 [CPU] concat + abs    → y        [1,16,16,256], y_abs [1,16,16,256]
@@ -120,7 +148,7 @@ For one 256×256 tile, the full compress+decompress pipeline executes:
 board. It interfaces directly with the DPU hardware and compiled `.xmodel` files.
 
 | Subcommand | What It Does |
-|---|---|
+| --- | --- |
 | `xdputil query` | Reads DPU hardware registers: number of cores, architecture (B4096), clock frequency (300 MHz), fingerprint, Vitis-AI version. |
 | `xdputil xmodel <model> -l` | **Static analysis** of a compiled `.xmodel`. Lists all subgraphs with their workload (OPs), memory regions (weights/workspace/IO sizes), tensor shapes, and fixed-point positions. No inference runs. |
 | `xdputil benchmark <model> -i <idx>` | **Synthetic throughput benchmark** on one subgraph. Feeds random data to the DPU as fast as possible for ~15 s and reports peak FPS. Measures pure DPU throughput with zero CPU overhead. |
@@ -153,7 +181,7 @@ from this JSON output.
 Single-thread, 15-second runs using `xdputil benchmark <xmodel> -i <index>`:
 
 | Subgraph | DPU Index | Workload (OPs) | Peak FPS | Implied Latency (ms) | Computational Throughput |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | g_a | 10 | 39,754,825,728 | 27.8 | 35.97 | 1.105 TOPS |
 | h_a | 6 | 275,272,704 | 1,225 | 0.82 | 0.337 GOPS |
 | h_s | 4 | 176,246,784 | 1,375 | 0.73 | 0.242 GOPS |
@@ -189,7 +217,7 @@ cores (see §3.3).  Confirmed measurements for g_a; g_s results pending re-test 
 the corrected creation order:
 
 | Step | Sequential | Parallel | Speedup |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `g_a` (real ‖ imag) | 74.0 ms | 39.0 ms | **1.9× ✓** |
 | `g_s` (real ‖ imag) | 73.6 ms | TBD | TBD |
 
@@ -200,7 +228,7 @@ Use `--no-parallel` to measure the sequential baseline.
 From `xdputil xmodel <xmodel> -l`:
 
 | Subgraph | CONST (weights) | WORKSPACE | INPUT | OUTPUT |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | g_a | 3,731,456 B (3.56 MB) | 6,291,456 B (6.00 MB) | 66,320 B | 32,768 B |
 | h_a | 4,927,488 B (4.70 MB) | 20,480 B | 65,536 B | 1,024 B |
 | h_s | 3,158,016 B (3.01 MB) | 20,480 B | 1,024 B | 65,536 B |
@@ -221,7 +249,7 @@ topological sort (from `xdputil xmodel -l`) gives DPU subgraphs in index order:
 h_s (4) → h_a (6) → g_s (8) → g_a (10).  With 3 physical B4096 cores:
 
 | Creation # | Runner | Core (round-robin) |
-|---|---|---|
+| --- | --- | --- |
 | 1 | h_s | **0** |
 | 2 | h_a | **1** |
 | 3 | g_s | **2** |
@@ -254,7 +282,7 @@ board's power lines. The chip digitises these measurements with a 16-bit ADC
 and makes them available over the I2C bus, which Linux exposes as files in
 `/sys/class/hwmon/`. Reading the file gives the instantaneous measurement:
 
-```
+```bash
 cat /sys/class/hwmon/hwmon10/power1_input   # → 5968000 (µW = 5.968 W)
 ```
 
@@ -273,7 +301,7 @@ in the schematic (e.g., `VCCINT`, `VCCBRAM`).
 **Why rails matter for us:**
 
 | Rail | Nominal Voltage | What It Powers | Why We Care |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **VCCINT** | 0.85 V | PL (programmable logic) core — **this is the DPU fabric** | Main indicator of DPU computation power |
 | **VCCBRAM** | 0.85 V | Block RAM inside the PL | DPU uses BRAM for weights & activations |
 | **VCCAUX** | 1.80 V | PL auxiliary / clocking circuits | Minor, mostly static |
@@ -360,7 +388,7 @@ sysfs "ina226_u79" → (Table 3-22) U79 on PL_PMBUS @ 0x40
 #### PL_PMBUS (I2C mux channel 2) — PL / DPU side
 
 | INA226 Chip | I2C Addr | Rail | Regulator | Rail Voltage | Description |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | **U79** | 0x40 | **VCCINT** | U47 (MAX15301) | 0.85 V | **PL core — DPU fabric** |
 | U81 | 0x41 | VCCBRAM | U7 (MAX15303) | 0.85 V | PL Block RAM |
 | U80 | 0x42 | VCCAUX | U6 (MAX15303) | 1.80 V | PL auxiliary |
@@ -373,7 +401,7 @@ sysfs "ina226_u79" → (Table 3-22) U79 on PL_PMBUS @ 0x40
 #### PS_PMBUS (I2C mux channel 1) — PS / ARM side
 
 | INA226 Chip | I2C Addr | Rail | Regulator | Rail Voltage | Description |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | **U76** | 0x40 | **VCCPSINTFP** | U46 (MAX15301) | 0.85 V | **PS full-power (A53 CPUs)** |
 | **U77** | 0x41 | **VCCPSINTLP** | U4 (MAX15303) | 0.85 V | PS low-power (RPU) |
 | U78 | 0x42 | VCCPSAUX | U3 (MAX8869E) | 1.81 V | PS auxiliary |
@@ -390,7 +418,7 @@ sysfs "ina226_u79" → (Table 3-22) U79 on PL_PMBUS @ 0x40
 Captured via SSH from sysfs while no inference was running:
 
 | Sensor | Rail | Power (mW) | Current (mA) | V_bus (mV) | Notes |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | u79 | VCCINT | 5,968 | 7,037 | 846 | PL core — DPU idle |
 | u76 | VCCPSINTFP | 1,125 | 1,326 | 848 | PS APU — ARM cores |
 | u77 | VCCPSINTLP | 637 | 755 | 848 | PS RPU |
@@ -422,7 +450,7 @@ The benchmark script aggregates INA226 rails into semantic groups following the
 package (PyPI, 2026).  Both sources derive from UG1182 Table 3-56.
 
 | Group | Rails Summed | Rationale |
-|---|---|---|
+| --- | --- | --- |
 | **PL** | VCCINT, VCCBRAM, VCCAUX, VCC1V2, VCC3V3 | Programmable Logic fabric (DPU + clocking) |
 | **PS** | VCCPSINTFP, VCCPSINTLP, VCCPSAUX, VCCPSPLL, VCCO_PSDDR_504, VCCOPS, VCCOPS3, VCCPSDDRPLL | Processing System (ARM cores + DDR I/O) |
 | **MGT** | MGTAVCC, MGTAVTT, MGTRAVCC, MGTRAVTT | Multi-Gigabit Transceivers (idle ~0.1 W, unused by DPU) |
@@ -460,7 +488,7 @@ proof that a rail has no INA226 companion.
 System Devices" with "N/A" in both the PMBus Address and INA226 columns:
 
 | Rail | Regulator | Nominal | What it powers | Est. power |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | PL_DDR4_VTT | U35 | 0.6 V | DDR4 on-die termination (stub termination) | < 50 mW |
 | PS_DDR4_VPP_2V5 | U39 | 2.5 V | DDR4 DRAM cell charge pump (array refresh) | 100–400 mW |
 | VCCADC | U41 | 1.8 V | PL XADC analog block | < 20 mW |
@@ -501,6 +529,7 @@ After model loading, the governor takes several seconds to settle.  10 s provide
 ≥5 complete INA226 poll rounds (~200 samples at ~5 Hz effective rate).
 
 **Measured idle vs. load (full scenario)**:
+
 - `VCCINT` idle: 5.999 W → load: 7.794 W → **ΔDPUfabric = +1.8 W**
 - Board total idle: 8.626 W → load: 10.53 W → **ΔMPSoC ≈ +1.9 W**
 
@@ -518,7 +547,7 @@ Linux ≥ 5.10**; if unavailable, CPU idle is not recorded.  Fix:
 All 18 INA226 sensors return `CFG register = 0x4327`, which decodes as:
 
 | Field | Value | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | AVG[2:0] | 001 | **4 samples** hardware-averaged per output |
 | VBUSCT[2:0] | 100 | Voltage conversion time: **1100 µs** |
 | VSHCT[2:0] | 100 | Current conversion time: **1100 µs** |
@@ -573,7 +602,7 @@ if remaining > 0:
 ### 5.2 Scenarios
 
 | Scenario | Steps Timed | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `full` | All (compress + decompress) | End-to-end latency for one tile |
 | `compress` | g_a → h_a → EB → h_s → GC | Encode-only latency |
 | `decompress` | EB → h_s → GC → g_s | Decode-only latency (from cached bitstream) |
@@ -594,7 +623,7 @@ The benchmark script is automatically included in the deploy pipeline
 (`deploy.py` Phase 1 copies it into the compiled model directory). After
 `deploy.py --phase transfer`, it will be at:
 
-```
+```bash
 /home/root/SAR_DDC/active_model/benchmark_fpga.py
 ```
 
@@ -736,7 +765,7 @@ $$
 $$
 
 | Subgraph | Workload (GOPs) | FPS | Throughput (TOPS) | DPU Utilization (%) |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | g_a | 39.75 | 27.8 | 1.105 | 89.9% |
 | h_a | 0.275 | 1,225 | 0.000337 | 0.03% |
 | h_s | 0.176 | 1,375 | 0.000242 | 0.02% |
@@ -751,7 +780,7 @@ Actual measurements from `benchmark_fpga.py --scenario full` with 100 iterations
 on the ZCU102 (random input data, single thread):
 
 | Step | Device | Latency (ms) | Std (ms) | % of Total |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | g_a (real + imag) | DPU | 79.56 | 0.10 | 18.7% |
 | concat + abs | CPU | 1.16 | 0.05 | 0.3% |
 | h_a | DPU | 2.16 | 0.04 | 0.5% |
@@ -774,7 +803,7 @@ hardware accelerator would yield the largest speedup.
 ### 6.3 Power Summary (Full Scenario)
 
 | Group | Load (W) | Idle (W) | Dynamic ΔW |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Board total (18 INA226 rails) | 10.53 | 8.63 | +1.90 |
 | **PL** (VCCINT+VCCBRAM+VCCAUX+VCC1V2+VCC3V3) | ~9.4 | ~7.7 | ~+1.7 |
 | **PS** (ARM+DDR I/O, 8 rails) | ~2.2 | ~2.0 | ~+0.2 |
@@ -788,7 +817,7 @@ hardware accelerator would yield the largest speedup.
 The `dpu_g_a` step times both g_a calls (real + imag) under one mark:
 
 | Subgraph | xdputil Synthetic (ms) | Real-World per Call (ms) | Overhead |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | g_a | 36.0 | ~39.8 (79.6 / 2) | +10.6% |
 | h_a | 0.8 | 2.2 | +175% |
 | h_s | 0.7 | 2.0 | +186% |
@@ -913,7 +942,7 @@ Skip either with:
 
 Each device produces its own JSON file:
 
-```
+```bash
 results/benchmark/<run_name>/benchmark_gpu_<scenario>.json
 results/benchmark/<run_name>/benchmark_cpu_<scenario>.json
 results/benchmark/<run_name>/benchmark_fpga_<scenario>.json
@@ -922,7 +951,7 @@ results/benchmark/<run_name>/benchmark_fpga_<scenario>.json
 ### 9.3 Scenarios
 
 | Scenario | Steps Timed | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `full` | All (compress + decompress) | End-to-end latency for one tile |
 | `compress` | g_a → h_a → EB → h_s → GC | Encode-only latency |
 | `decompress` | EB → h_s → GC → g_s | Decode-only latency (from cached bitstream) |
@@ -934,7 +963,7 @@ The `nn_only` scenario is the same on all platforms (FPGA, GPU, CPU).
 ### 9.4 Step Labels & Prefixing Convention
 
 | Prefix | Meaning | When used |
-|---|---|---|
+| --- | --- | --- |
 | `gpu_` | NN subgraph running on GPU | GPU measurement mode |
 | `nn_` | NN subgraph running on CPU | CPU measurement mode |
 | `cpu_` | CPU-side operation (entropy coding, concat, split) | Both modes |
@@ -944,7 +973,7 @@ This allows automatic aggregation (e.g., sum all `gpu_*` steps for total GPU NN 
 ### 9.5 Timing Methodology
 
 | Device | Method | Precision |
-|---|---|---|
+| --- | --- | --- |
 | **GPU** (wall-clock) | `time.perf_counter()` with `torch.cuda.synchronize()` | ~µs |
 | **GPU** (CUDA events) | `torch.cuda.Event(enable_timing=True)` | ~µs, no CPU-side jitter |
 | **CPU** | `time.perf_counter()` | ~µs |
@@ -956,7 +985,7 @@ for NN sub-graph comparisons as they exclude Python/CPU overhead.
 ### 9.6 Power Measurement
 
 | Source | Metric | How |
-|---|---|---|
+| --- | --- | --- |
 | **GPU** | Board-level GPU draw | `nvidia-smi --query-gpu=power.draw` polled at `--power-hz` (default 10 Hz) in a background thread |
 | **CPU** | Package + DRAM power | Intel RAPL via `/sys/class/powercap/intel-rapl/` — energy counter delta between start/stop |
 
@@ -1095,7 +1124,7 @@ When `--ckpt` is used, it defaults to `results/benchmark/<run_timestamp>/`.
 #### 9.9.1 What to compare
 
 | Metric | Fair comparison? | Notes |
-|---|---|---|
+| --- | --- | --- |
 | **NN latency** (gpu/dpu/nn steps) | ✅ Comparable | Different devices executing the same subgraphs |
 | **Entropy latency** (cpu_ steps) | ⚠️ Be careful | GPU benchmark runs entropy on x86; FPGA on ARM A53. The x86 is vastly faster |
 | **Total latency** | ✅ Comparable | Apples-to-apples if batch=1 |
@@ -1127,7 +1156,7 @@ When `--ckpt` is used, it defaults to `results/benchmark/<run_timestamp>/`.
 For a publication, present results as:
 
 | | FPGA (ZCU102) | GPU (RTX A4000) | CPU (host) |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **NN latency** (ms) | 167 | ? | ? |
 | **Entropy latency** (ms) | 258 | ? | ? |
 | **Total latency** (ms) | 425 | ? | ? |
@@ -1165,7 +1194,7 @@ The orchestrator script runs the complete benchmark suite for one compiled model
 all three platforms in four phases:
 
 | Phase | Description | Location |
-|---|---|---|
+| --- | --- | --- |
 | **1 — GPU + CPU** | `benchmark_gpu.py` × 5 scenarios | Host (this machine) |
 | **2 — FPGA setup** | Copy `benchmark_fpga.py` + `scp` model → ZCU102 | Host → ZCU102 |
 | **3 — FPGA run** | `benchmark_fpga.py` × 5 scenarios via SSH | ZCU102 |
@@ -1192,7 +1221,7 @@ python scripts/fpga/run_full_benchmark.py \
 
 All results are stored in `results/benchmark/<model_name>/`:
 
-```
+```text
 results/benchmark/ResSHyp-relu_s1_L1000_pt/
 ├── benchmark_gpu_full.json
 ├── benchmark_gpu_compress.json
@@ -1215,7 +1244,7 @@ results/benchmark/ResSHyp-relu_s1_L1000_pt/
 ### 11.3 Estimated Runtime
 
 | Component | No power | `--power --idle-baseline 10` |
-|---|---|---|
+| --- | --- | --- |
 | GPU + CPU (5 scenarios) | ~5 min | ~8 min |
 | FPGA (6 scenarios) | ~5 min | ~6 min |
 | Transfer (scp) | ~1 min | ~1 min |
@@ -1240,7 +1269,7 @@ All `benchmark_*.json` files in `results/benchmark/<model_name>/` are loaded and
 classified by filename pattern:
 
 | Pattern | Platform |
-|---|---|
+| --- | --- |
 | `benchmark_gpu_<scenario>.json` | GPU (CUDA) |
 | `benchmark_cpu_<scenario>.json` | CPU (x86) |
 | `benchmark_fpga_<scenario>.json` | FPGA (ZCU102) |
@@ -1272,7 +1301,7 @@ $$t_\text{CPU}^{(\text{steps})} = \sum_{s \in \texttt{cpu\_*}} s.\texttt{mean\_s
 Power is aggregated differently per platform due to different measurement instruments:
 
 | Platform | `power_total_w` | `power_nn_w` | `power_cpu_w` |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **GPU** | `nvidia-smi` + RAPL total | `nvidia-smi` avg | RAPL total |
 | **CPU** | RAPL total | — | RAPL total |
 | **FPGA** | `board_total_avg_w` (INA226) | `groups.DPU_fabric` | `groups.PS_compute` |
@@ -1298,7 +1327,7 @@ $$\text{Throughput}\;[\text{patches/s}] = \frac{N_\text{iters}}{t_\text{wall}\;[
 ### 12.4 Notebook Sections
 
 | § | Title | Visualisation | Key insight |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 1 | Setup | — | Set `BENCHMARK_DIR` to target model |
 | 2 | Load & merge | Print summary | Verify completeness, spot anomalies |
 | 3 | Overview table | Styled DataFrame | Quick scan of all metrics |

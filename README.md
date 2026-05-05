@@ -12,7 +12,7 @@
 Yes, that's a lot of acronyms. But now you know why it's called SAR_DDC_FPGA.
 This project implements the solution presented by Amao-Oliva et al. [1] available at [sciencedirect.com](https://www.sciencedirect.com/science/article/pii/S0924271624004866) on FPGA.
 
-### TODOs
+## TODOs
 
 *I'll use this section as a TODO list, including ideas for future projects.*
 
@@ -22,22 +22,22 @@ This project implements the solution presented by Amao-Oliva et al. [1] availabl
 
 ### Long-term Experiments/Upgrades
 
-**About SAR_DDC**
+#### About SAR_DDC
 
 - [ ] Maybe there is a way to avoid the concatenation and average latent representations before hyperprior
 - [ ] `compressai` seems to have `ResidualBlockWithStride` and `ResidualBlockUpsample` that are probably used in other architectures. Maybe check if they perform better than our manual ones.
 
-**About FPGA deployment**
+#### About FPGA deployment
 
 - [ ] vaiq_pytorch should allow hardware-aware and partial quantization, see the [doc](https://docs.amd.com/r/en-US/ug1414-vitis-ai/Hardware-Aware-Quantization-Strategy). Alternatively, one can configure the quantization quite a bit with a JSON file, see the [doc](https://docs.amd.com/r/en-US/ug1414-vitis-ai/Quantization-Strategy-Configuration?tocId=rGCaO9QY6VvNbAJV7l9i7Q)
 - [ ] Try the `fast_finetuning` option, or if still bad, the QAT
 
-### Method
+## Method
 
 The pipeline relies on Pytorch Ligthning on [Compressai](https://github.com/InterDigitalInc/CompressAI) [2] to implement Hyper-autoencoders solutions based on Johannes Ballé's work [3-5].
 In addition, the despeckling task is inspired from MERLIN's self-supervised training pipeline [6].
 
-#### MERLIN Theory
+### MERLIN Theory
 
 **The big picture (mostly written by ChatGPT)**:
 Dalsasso et al. introduce MERLIN, a fully self-supervised strategy for training deep despeckling networks directly on single-look complex (SLC) SAR images. By exploiting Goodman’s speckle model—which shows that the real and imaginary components of an SLC pixel are two independent, Gaussian-distributed realizations with variance proportional to the local reflectivity $r$—they train a U-Net to predict pixel-wise variance maps (i.e., the effective “blurred” reflectivity $r$) from one component (say, the real part) and evaluate the loss on the other component (the imaginary part).
@@ -146,21 +146,16 @@ We use Vitis AI [7] for the FPGA deployment. See [Vitis-AI_journey.md](Vitis-AI_
 
 ### Benchmarking
 
-Performance benchmarks measure latency, throughput, and power consumption across
-GPU (RTX A4000), host CPU (x86), and FPGA (Xilinx ZCU102).  All results are stored
-as JSON in `results/benchmark/<model_name>/` and analysed in
-`notebooks/benchmark_analysis.ipynb`.
+Performance benchmarks measure latency, throughput, and power consumption across GPU (RTX A4000), host CPU (x86), and FPGA (Xilinx ZCU102).  All results are stored as JSON in `results/benchmark/<model_name>/` and analysed in `notebooks/benchmark_analysis.ipynb`.
 
 #### Prerequisites
 
 - A compiled FPGA model in `results/fpga/active_model/` (run `deploy.py` first).
-- ZCU102 accessible via `ssh ZCU102` (passwordless SSH configured, see
-  `docs/Vitis-AI_journey.md`).
-- For GPU power: `nvidia-smi` available.  For CPU RAPL power: run as root or
-  `sudo chmod o+r /sys/class/powercap/intel-rapl/*/energy_uj`.
+- ZCU102 accessible via `ssh ZCU102` (passwordless SSH configured, see `docs/Vitis-AI_journey.md`).
+- For GPU power: `nvidia-smi` available.  For CPU RAPL power: run as root or `sudo chmod o+r /sys/class/powercap/intel-rapl/*/energy_uj`.
 - **For meaningful power results**: cold-reboot the ZCU102 before each run.
 
-#### Full benchmark (recommended)
+#### Full benchmark
 
 ```bash
 python scripts/fpga/run_full_benchmark.py \
@@ -170,9 +165,7 @@ python scripts/fpga/run_full_benchmark.py \
     --power-hz-gpu 10 --power-hz-fpga 50
 ```
 
-Runs all 5 scenarios (`full`, `compress`, `decompress`, `nn_only`, `entropy_only`)
-on GPU + CPU (host) + FPGA (ZCU102 via SSH), with a 10 s idle power baseline before
-each scenario.  Estimated runtime: ~14 min.
+Runs all 5 scenarios (`full`, `compress`, `decompress`, `nn_only`, `entropy_only`) on GPU + CPU (host) + FPGA (ZCU102 via SSH), with a 10 s idle power baseline before each scenario. *Estimated runtime: ~15 min.*
 
 ```bash
 # GPU + CPU only (no board required)
@@ -219,9 +212,7 @@ Key fields in each JSON file:
 | **CPU** | Intel RAPL | CPU package + DRAM | Motherboard, fans, storage |
 | **FPGA** | 18× TI INA226 + 3× Maxim PMBus | PL, PS, MGT + DDR4/UTIL rails | 6 secondary bias rails (< 500 mW, workload-invariant) |
 
-See `docs/performance_benchmark_implementation.md` §4 for the complete technical
-reference, including INA226 register configuration, I2C bus topology, rail-to-sensor
-mapping, and paper-ready measurement descriptions (§14).
+See `docs/performance_benchmark_implementation.md` §4 for the complete technical reference, including INA226 register configuration, I2C bus topology, rail-to-sensor mapping, and paper-ready measurement descriptions (§14).
 
 #### References
 
@@ -237,7 +228,7 @@ mapping, and paper-ready measurement descriptions (§14).
 
 Consider we start from the repository root (`<something>/DDC_FPGA`).
 
-#### Miscalleneous scripts
+### Miscalleneous scripts
 
 **Compute dataset statistics**
 By default statistics for the intensity and the amplitude in log-scale (natural log with an epsilon of $1e-2$) are computed. Modify the file to compute more.
