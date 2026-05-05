@@ -265,7 +265,10 @@ def _make_compiled_model_name(cfg: Any) -> str:
     net = cfg.model.net
     target = _get(net, "_target_", "")
     if "ResidualScaleHyperprior" in target:
-        model = "ResSHyp"
+        if _get(net, "no_residual_blocks", False):
+            model = "SHyp"
+        else:
+            model = "ResSHyp"
     elif "Merlin" in target:
         model = "Merlin"
     else:

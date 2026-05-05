@@ -73,7 +73,9 @@ FILTERS_CONFIG: List[Tuple] = [
     # Default: only DPU-compatible architectures (relu activation, no output_padding issue)
     ("model.net.activation", "==", "relu"),
     ("model.net.no_output_padding", "==", True),
+    ("model.net.no_residual_blocks", "==", True),
     ("seed", "in", [0, 1, 2, 3, 4, 5]),
+    ("model.criterion.lmbda", "in", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]),
 ]
 
 # ============================================================
