@@ -1,13 +1,9 @@
 # Synthetic Aperture Radar (SAR) Despeckling and Data Compression (DDC) on Field Programmable Gate Arrays (FPGA)
 
-<div align="center">
-
-<a href="https://pytorch.org/get-started/locally/"><img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-ee4c2c?logo=pytorch&logoColor=white"></a>
-<a href="https://pytorchlightning.ai/"><img alt="Lightning" src="https://img.shields.io/badge/-Lightning-792ee5?logo=pytorchlightning&logoColor=white"></a>
-<a href="https://hydra.cc/"><img alt="Config: Hydra" src="https://img.shields.io/badge/Config-Hydra-89b8cd"></a>
-<a href="https://github.com/ashleve/lightning-hydra-template"><img alt="Template" src="https://img.shields.io/badge/-Lightning--Hydra--Template-017F2F?style=flat&logo=github&labelColor=gray"></a><br>
-
-</div>
+[![PyTorch](https://img.shields.io/badge/PyTorch-ee4c2c?logo=pytorch&logoColor=white)](https://pytorch.org/get-started/locally/)
+[![Lightning](https://img.shields.io/badge/-Lightning-792ee5?logo=pytorchlightning&logoColor=white)](https://pytorchlightning.ai/)
+[![Config: Hydra](https://img.shields.io/badge/Config-Hydra-89b8cd)](https://hydra.cc/)
+[![Template](https://img.shields.io/badge/-Lightning--Hydra--Template-017F2F?style=flat&logo=github&labelColor=gray)](https://github.com/ashleve/lightning-hydra-template)
 
 Yes, that's a lot of acronyms. But now you know why it's called SAR_DDC_FPGA.
 This project implements the solution presented by Amao-Oliva et al. [1] available at [sciencedirect.com](https://www.sciencedirect.com/science/article/pii/S0924271624004866) on FPGA.
@@ -16,7 +12,12 @@ This project implements the solution presented by Amao-Oliva et al. [1] availabl
 
 *I'll use this section as a TODO list, including ideas for future projects.*
 
-- [ ] "NWML" warning, see [NVML is the NVIDIA Management Library and is used on NVIDIA GPUs](https://discuss.pytorch.org/t/cant-initialize-nvml-error-with-rvc-project/194206)
+### Small things to check/investigate
+
+- [ ] EPD values > 1 in [RD-curve_ablation.ipynb python cell 11](notebooks/RD-curve_ablation.ipynb). EPD max value is supposed to be 1, how is that possible? I don't remember having that problem before re-evaluating all the old runs.
+
+### Small things to add/fix
+
 - [ ] Add in README that the syntax is Python 3.8 compatible because it is used by the Vitis-AI container and we can't bump it. (It mostly implies using `Option[]` and `Union[]` from `typing` instead of `|`)
 - [ ] Use [rootutils](https://github.com/ashleve/rootutils) better, for example using `find_root()` instead of `setup_root(Path(__file__).resolve().parent.parent` ...
 
