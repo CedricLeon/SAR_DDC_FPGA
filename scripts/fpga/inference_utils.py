@@ -150,7 +150,7 @@ class DPUSubgraphRunner:
 
 
 def identify_subgraphs(
-    graph: xir.Graph, meta_path: Path, verbose: bool = True
+    graph: xir.Graph, meta_path: Path, verbose: bool = True, model_name: str = ""
 ) -> Dict[str, xir.Subgraph]:
     """Identify which xir.Subgraph corresponds to g_a, h_a, h_s, g_s using meta.json.
 
@@ -160,11 +160,14 @@ def identify_subgraphs(
         The deserialized xmodel graph.
     meta_path : Path
         Path to the ``meta.json`` file produced by the Vitis-AI compiler.
+    model_name : str, optional
+        The model name from the build manifest (e.g. ``"ResSHyp-relu_s0_L100_pt"``).
+        When ``"SHyp"`` is present, h_a and h_s are also required for validation.
 
     Returns
     -------
     dict
-        Mapping ``{"g_a": subgraph, "h_a": ..., "h_s": ..., "g_s": ...}``.
+        Mapping ``{"g_a": subgraph, ...}`` — keys depend on topology.
     """
     if not meta_path.exists():
         raise FileNotFoundError(
@@ -198,7 +201,12 @@ def identify_subgraphs(
                 print(f"[identify_subgraphs] Mapped {role} -> {sg.get_name()}")
 
     # Validate
-    required_keys = ["g_a", "h_a", "h_s", "g_s"]
+    # Validate: g_a and g_s are required by all supported topologies;
+    # h_a/h_s are required only for ScaleHyperprior models.
+    if "SHyp" in model_name:
+        required_keys = ["g_a", "h_a", "h_s", "g_s"]
+    else:
+        required_keys = ["g_a", "g_s"]
     missing_keys = [k for k in required_keys if k not in mapping]
     if missing_keys:
         print(f"[identify_subgraphs] ERROR: Missing subgraphs: {missing_keys}")

@@ -36,7 +36,11 @@ project_root = Path(__file__).resolve().parent.parent.parent
 os.environ["PROJECT_ROOT"] = str(project_root)
 sys.path.append(str(project_root))
 from src.models.components.dpu_wrapper import (  # noqa: E402
+    FactorizedPriorDPUWrapper,
     ResidualScaleHyperpriorDPUWrapper,
+)
+from src.models.components.res_factorized_prior_dpu import (  # noqa: E402
+    ResidualFactorizedPriorPatched,
 )
 from src.models.components.res_scale_hyperprior_dpu import (  # noqa: E402
     ResidualScaleHyperpriorPatched,
@@ -176,9 +180,9 @@ def load_model(
     """Instantiate and load weights into (full_float_model, dpu_wrapper).
 
     Returns:
-        full_model: ResidualScaleHyperpriorPatched with loaded weights (used for
-                    generating split-graph intermediates during calibration).
-        model:      ResidualScaleHyperpriorDPUWrapper wrapping full_model (quantized).
+        full_model: ResidualScaleHyperpriorPatched or ResidualFactorizedPriorPatched
+                    with loaded weights (used for generating split-graph intermediates).
+        model:      Matching DPU wrapper (quantized).
     """
     model_path = run_dir / "checkpoints" / "last.ckpt"
     # We cannot use hydra.utils.instantiate() (no lightning in container).
@@ -205,9 +209,23 @@ def load_model(
 
         print("Wrapping in ResidualScaleHyperpriorDPUWrapper...")
         model = ResidualScaleHyperpriorDPUWrapper(full_model)
+    elif model_name == "ResidualFactorizedPriorPatched":
+        model_params["export_dpu"] = True
+        print(f"Instantiating ResidualFactorizedPriorPatched with params: {model_params}")
+        full_model = ResidualFactorizedPriorPatched(**model_params).to(device)
 
-    elif model_name == "ResidualSimpleAE":
-        raise NotImplementedError("ResidualSimpleAE is no longer supported for DPU export.")
+        checkpoint = torch.load(model_path)
+        if "state_dict" in checkpoint:  # Lightning checkpoint format
+            state_dict = {k.replace("net.", "", 1): v for k, v in checkpoint["state_dict"].items()}
+            full_model.load_state_dict(state_dict, strict=False)
+        else:
+            full_model.load_state_dict(checkpoint, strict=False)
+
+        for param in full_model.parameters():
+            param.requires_grad = False
+
+        print("Wrapping in FactorizedPriorDPUWrapper...")
+        model = FactorizedPriorDPUWrapper(full_model)
     else:
         raise ValueError(f"Unrecognised model: {model_name}")
 
@@ -220,22 +238,20 @@ def load_model(
 # ============================================================
 
 
-def evaluate(
+def evaluate_hyperprior(
     quant_model: torch.nn.Module,
     val_loader: DataLoader,
     loss_fn: torch.nn.Module,
-    float_model: Optional[torch.nn.Module],
+    float_model: torch.nn.Module,
     device: torch.device,
 ) -> float:
-    """Evaluate the (quantized) model on the validation set.
+    """Evaluate the (quantized) ResidualScaleHyperprior model on the validation set.
 
-    Uses the split-graph strategy: float_model generates the four intermediate
-    tensors (x_real, abs_y, z_hat, y_hat) that the quantized DPU wrapper expects.
+    Uses the 4-input split-graph strategy: float_model generates
+    (x_real, abs_y, z_hat, y_hat) that the quantized DPU wrapper expects.
     A meaningful loss cannot be computed in split mode, so 0.0 is always returned.
     """
     quant_model = quant_model.to(device)
-    if float_model is None:
-        raise ValueError("float_model must be provided for split-graph evaluation.")
     float_model = float_model.to(device)
     float_model.eval()
 
@@ -283,9 +299,43 @@ def evaluate(
     return loss_total / nb_images
 
 
-# ============================================================
-# VITIS-AI
-# ============================================================
+def evaluate_factorized(
+    quant_model: torch.nn.Module,
+    val_loader: DataLoader,
+    loss_fn: torch.nn.Module,
+    float_model: torch.nn.Module,
+    device: torch.device,
+) -> float:
+    """Evaluate the (quantized) ResidualFactorizedPrior model on the validation set.
+
+    Uses the 2-input split-graph strategy: float_model generates (x_real, y_real)
+    that the quantized FactorizedPriorDPUWrapper expects.
+    A meaningful loss cannot be computed in split mode, so 0.0 is always returned.
+    """
+    quant_model = quant_model.to(device)
+    float_model = float_model.to(device)
+    float_model.eval()
+
+    nb_images = 0
+    loss_total = 0.0
+
+    with torch.no_grad():
+        for _, data in tqdm(enumerate(val_loader), total=len(val_loader)):
+            inputs = data.to(device).float()
+
+            # Prepare single-channel slice (matches FactorizedPriorDPUWrapper Mode 2)
+            x_real = inputs[:, :1, :, :]
+
+            # Generate intermediate: g_a output as y passthrough (no entropy in trace)
+            y_real = float_model.g_a(x_real)
+
+            # Run quantized model with 2 inputs (split mode)
+            _ = quant_model(x_real, y_real)
+
+            loss_total += 0.0
+            nb_images += inputs.size(0)
+
+    return loss_total / nb_images
 
 
 def calibrate(quantizer) -> None:
@@ -360,14 +410,29 @@ def main() -> None:
     full_model, model = load_model(Path(args.run_dir), args.hydra_conf, device)
     model.eval()
 
-    # ---- Dummy inputs for the split-graph (4 tensors) ----
-    # x: [B, 1, H, W]   abs_y: [B, M, H/16, W/16]
-    # z_hat: [B, M, H/128, W/128]   y_hat: [B, N, H/16, W/16]
-    x_dumb = torch.randn(args.batch_size, 1, 256, 256).to(device)
-    abs_y_dumb = torch.randn(args.batch_size, 256, 16, 16).to(device)
-    z_hat_dumb = torch.randn(args.batch_size, 256, 2, 2).to(device)
-    y_hat_dumb = torch.randn(args.batch_size, 128, 16, 16).to(device)
-    dummy_inputs = (x_dumb, abs_y_dumb, z_hat_dumb, y_hat_dumb)
+    # ---- Dummy inputs and evaluate function (model-type-aware) ----
+    H = 256
+    ds = full_model.main_downsampling_factor  # 16 for both model families
+    N = full_model.nb_channels_main
+    M = 2 * N
+    x_dumb = torch.randn(args.batch_size, 1, H, H).to(device)
+    if isinstance(full_model, ResidualFactorizedPriorPatched):
+        # FactorizedPrior: 2-input split (g_a | g_s)
+        # y_hat: [B, N, H/ds, H/ds]
+        y_hat_dumb = torch.randn(args.batch_size, N, H // ds, H // ds).to(device)
+        dummy_inputs = (x_dumb, y_hat_dumb)
+        eval_fn = evaluate_factorized
+    else:
+        # ResidualScaleHyperprior: 4-input split (g_a | h_a | h_s | g_s)
+        # abs_y: [B, M, H/ds, H/ds]   z_hat: [B, M, H/ds/hyper_ds, H/ds/hyper_ds]   y_hat: [B, N, H/ds, H/ds]
+        hyper_ds = full_model.hyper_downsampling_factor  # 8
+        abs_y_dumb = torch.randn(args.batch_size, M, H // ds, H // ds).to(device)
+        z_hat_dumb = torch.randn(args.batch_size, M, H // ds // hyper_ds, H // ds // hyper_ds).to(
+            device
+        )
+        y_hat_dumb = torch.randn(args.batch_size, N, H // ds, H // ds).to(device)
+        dummy_inputs = (x_dumb, abs_y_dumb, z_hat_dumb, y_hat_dumb)
+        eval_fn = evaluate_hyperprior
 
     # ---- Float mode: evaluate or inspect ----
     if args.quant_mode == "float":
@@ -416,15 +481,13 @@ def main() -> None:
             args.data_dir, subset_len=50, batch_size=args.batch_size, split="train"
         )
         if args.quant_mode == "calib":
-            quantizer.fast_finetune(
-                evaluate, (quant_model, ft_loader, loss_fn, full_model, device)
-            )
+            quantizer.fast_finetune(eval_fn, (quant_model, ft_loader, loss_fn, full_model, device))
         elif args.quant_mode == "test":
             quantizer.load_ft_param()
 
     # ---- Evaluate ----
     print(f"Evaluating model in '{args.quant_mode}' mode...")
-    loss_gen = evaluate(quant_model, val_loader, loss_fn, full_model, device)
+    loss_gen = eval_fn(quant_model, val_loader, loss_fn, full_model, device)
     print(f"Loss after evaluation: {loss_gen}")
 
     # ---- Export ----

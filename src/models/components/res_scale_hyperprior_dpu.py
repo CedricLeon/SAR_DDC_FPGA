@@ -68,6 +68,7 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
         super().__init__()
         N = nb_channels_main
         M = 2 * N  # Number of channels for hyperprior
+        self.nb_channels_main: int = N
         self.export_dpu: bool = export_dpu
         self.no_residual_blocks: bool = no_residual_blocks
         self.activation: str = activation

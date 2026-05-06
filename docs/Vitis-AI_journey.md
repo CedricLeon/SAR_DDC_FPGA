@@ -756,23 +756,23 @@ out2 = ResidualScaleHyperpriorDPUWrapper(m2).eval()(x); print('ResSHyp regressio
 #### Step 3 — Deploy + Quantization entry points *(🤖, needs Step 2)*
 
 - [x] **`deploy.py::_make_compiled_model_name`** *(👤, done in Step 0)*
-- [ ] **`deploy.py::_export_entropy_params`** — use `hydra.utils.instantiate` to load the right model class; conditionally skip `gc_*` arrays when `not hasattr(model, 'gaussian_conditional')`
-- [ ] **`deploy.py::DPU_WRAPPER_NAME`** — derive from model type (`ResidualScaleHyperpriorDPUWrapper` vs `FactorizedPriorDPUWrapper`)
-- [ ] **`model_quant.py::load_model`** — add `elif model_name == "ResidualFactorizedPriorPatched"` branch using `FactorizedPriorDPUWrapper` and 2-tensor dummy inputs `(x_dumb, y_hat_dumb)`
+- [x] **`deploy.py::_export_entropy_params`** — dispatches on `_target_`; saves only EB keys for ResFP, adds GC keys only for ResSHyp (uses `isinstance(model, ResidualScaleHyperpriorPatched)` — no `has_gc` flag)
+- [x] **`deploy.py::DPU_WRAPPER_NAME`** — removed constant; replaced with `_get_dpu_wrapper_name(cfg)` helper; `phase_compile` loads config **once** and propagates `cfg` to all helpers
+- [x] **`model_quant.py::load_model`** — added `elif "ResidualFactorizedPriorPatched"` branch wrapping with `FactorizedPriorDPUWrapper`
+- [x] **`model_quant.py::evaluate`** — split into `evaluate_hyperprior` (4-input) and `evaluate_factorized` (2-input); `main()` dispatches via `eval_fn`
+- [x] **`model_quant.py` dummy inputs** — shapes derived from model properties (`full_model.nb_channels_main`, `full_model.main_downsampling_factor`, `full_model.hyper_downsampling_factor`) instead of hardcoded values
+- [x] **`res_factorized_prior_dpu.py` / `res_scale_hyperprior_dpu.py`** — added `self.nb_channels_main: int = N` attribute to both `__init__` methods
 
-**Commit:** `feat(fpga): add FactorizedPriorPatched dispatch in deploy.py and model_quant.py`
+Bonus — also fixed in this step (needed for safe entropy_params.npz loading):
 
----
+- [x] **`inference_hybrid.py`** — gate `GaussianConditional` on `"gc_scale_table" in data`; rename `process_single_tile` → `process_single_tile_SHyp`, add `process_single_tile_FP`; extract `_prepare_tile_input` / `_collect_tile_output` shared helpers; derive `model_name` from manifest and dispatch with `"SHyp" in model_name`
+- [x] **`inference_utils.py::identify_subgraphs`** — accepts `model_name: str = ""`; `required_keys` is `["g_a","g_s"]` (FP) or `["g_a","h_a","h_s","g_s"]` (SHyp)
 
-#### Step 4 — FPGA Inference pipeline *(🤖, needs Step 3; board required for full test)*
-
-- [ ] **`inference_utils.py::identify_subgraphs`** — make `required_keys` a parameter; default `["g_a","h_a","h_s","g_s"]`, pass `["g_a","g_s"]` for FactorizedPrior
-- [ ] **`inference_hybrid.py::run_hybrid_inference`** — gate `GaussianConditional` instantiation on `"gc_scale_table" in data`
-- [ ] **`inference_hybrid.py`** — add `process_single_tile_factorized(noisy, runners, eb)`: `g_a → EB.compress → EB.decompress → g_s`; dispatch on `"h_a" not in runners`
-
-**Commit:** `feat(fpga): add FactorizedPrior hybrid inference pipeline`
+**Commit:** `feat(fpga): add FactorizedPriorPatched dispatch in deploy.py, model_quant.py, inference_hybrid.py`
 
 ---
+
+#### Step 4 — FPGA Inference pipeline *(✅ covered in Step 3 bonus)*
 
 #### Step 5 — GPU / FPGA Benchmarks *(🤖, needs Step 1 checkpoint)*
 

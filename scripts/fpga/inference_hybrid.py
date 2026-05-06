@@ -98,27 +98,45 @@ def load_npy_test_set(
     return noisy, ground_truths
 
 
-def process_single_tile(
+def _prepare_tile_input(noisy: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Normalise a raw complex tile and return NCHW real/imag tensors.
+
+    Args:
+        noisy: [256, 256, 2] Raw Complex amplitude
+
+    Returns:
+        noisy_real, noisy_imag: each [1, 1, 256, 256] NCHW float32
+    """
+    noisy_sq = np.square(noisy)
+    noisy_logI = np.log(noisy_sq + EPS)
+    noisy_logI_norm = (noisy_logI - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
+    noisy_real = noisy_logI_norm[:, :, 0][np.newaxis, np.newaxis, :, :]
+    noisy_imag = noisy_logI_norm[:, :, 1][np.newaxis, np.newaxis, :, :]
+    return noisy_real, noisy_imag
+
+
+def _collect_tile_output(recon_real: np.ndarray, recon_imag: np.ndarray) -> np.ndarray:
+    """Convert g_s NHWC outputs to a single [256, 256, 2] reconstruction array."""
+    return np.stack((recon_real[0, :, :, 0], recon_imag[0, :, :, 0]), axis=-1)
+
+
+def process_single_tile_SHyp(
     noisy: np.ndarray,  # [256, 256, 2] Raw Complex
     runners: Dict[str, DPUSubgraphRunner],
     eb: EntropyBottleneck,
     gc: GaussianConditional,
     verbose: bool = False,
 ) -> Tuple[np.ndarray, int]:
-    """Run full inference on a single 256x256 tile.
+    """Run full inference (ScaleHyperprior) on a single 256x256 tile.
+
+    g_a -> h_a -> EB -> h_s -> GC -> g_s.
 
     Returns:
         recon_norm_logI (np.ndarray): [256, 256, 2] (Normalized Log Intensity)
         num_bytes (int): Total bytes used to compress this tile
     """
     # --- Step 0. Prepare Input (CPU) ---
-    # SARDDCModule performs normalization on input, so we need to do it manually when feeding the model directly.
-    noisy_sq = np.square(noisy)
-    noisy_logI = np.log(noisy_sq + EPS)
-    noisy_logI_norm = (noisy_logI - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
-    # g_a expects [1, 1, 256, 256] (NCHW)
-    noisy_real = noisy_logI_norm[:, :, 0][np.newaxis, np.newaxis, :, :]
-    noisy_imag = noisy_logI_norm[:, :, 1][np.newaxis, np.newaxis, :, :]
+    noisy_real, noisy_imag = _prepare_tile_input(noisy)
     if verbose:
         print_tensor_stats("   - Noisy Real Input", noisy_real)
         print_tensor_stats("   - Noisy Imag Input", noisy_imag)
@@ -181,10 +199,7 @@ def process_single_tile(
     recon_imag = runners["g_s"].run(y_hat_imag)
 
     # --- Step 8: Reconstruct & Denormalize (CPU) ---
-    # g_s output is typically NHWC (1, 256, 256, 1) on DPU
-    recon_real = recon_real[0, :, :, 0]
-    recon_imag = recon_imag[0, :, :, 0]
-    recon = np.stack((recon_real, recon_imag), axis=-1)  # -> [256, 256, 2]
+    recon = _collect_tile_output(recon_real, recon_imag)  # -> [256, 256, 2]
 
     total_bytes = z_bytes + y_bytes
     if verbose:
@@ -223,6 +238,61 @@ def _save_patch_stats(
     log(f"Patch stats saved ({n} patches) \u2192 {save_path}")
 
 
+def process_single_tile_FP(
+    noisy: np.ndarray,  # [256, 256, 2] Raw Complex
+    runners: Dict[str, DPUSubgraphRunner],
+    eb: EntropyBottleneck,
+    verbose: bool = False,
+) -> Tuple[np.ndarray, int]:
+    """Run full inference (FactorizedPrior) on a single 256x256 tile.
+
+    No hyperprior path: g_a -> EB compress/decompress -> g_s.
+
+    Returns:
+        recon_norm_logI (np.ndarray): [256, 256, 2] (Normalized Log Intensity)
+        num_bytes (int): Total bytes used to compress this tile
+    """
+    # --- Step 0. Prepare Input (CPU) ---
+    noisy_real, noisy_imag = _prepare_tile_input(noisy)
+
+    # --- Step 1: Main Encoder (DPU g_a) ---
+    y_real = runners["g_a"].run(noisy_real)
+    y_imag = runners["g_a"].run(noisy_imag)
+
+    # --- Step 2: Combine (CPU) ---
+    y = np.concatenate((y_real, y_imag), axis=-1)  # [1, H', W', 2*C_MAIN]
+    if verbose:
+        print_tensor_stats("   - Latent y (combined)", y)
+
+    # --- Step 3: Entropy Bottleneck Compress (CPU) ---
+    y_strings = eb.compress(y)
+    y_bytes = sum(len(s) for s in y_strings)
+    if verbose:
+        log(f"   - y_bytes: {y_bytes}")
+
+    # --- Step 4: Entropy Bottleneck Decompress (CPU) ---
+    y_hat = eb.decompress(y_strings, (y.shape[1], y.shape[2]))
+    if verbose:
+        print_tensor_stats("   - Latent y_hat", y_hat)
+
+    # --- Step 5: Split y_hat back to real/imag ---
+    y_hat_real = y_hat[..., :C_MAIN]
+    y_hat_imag = y_hat[..., C_MAIN:]
+
+    # --- Step 6: Main Decoder (DPU g_s) ---
+    recon_real = runners["g_s"].run(y_hat_real)
+    recon_imag = runners["g_s"].run(y_hat_imag)
+
+    # --- Step 7: Reconstruct & Denormalize (CPU) ---
+    recon = _collect_tile_output(recon_real, recon_imag)  # -> [256, 256, 2]
+
+    if verbose:
+        print_tensor_stats("   - Reconstruction", recon)
+        log(f"   - Total Bytes: {y_bytes}")
+
+    return recon, y_bytes
+
+
 def run_hybrid_inference(
     xmodel_path: Path,
     dataset_path: Path,
@@ -248,10 +318,12 @@ def run_hybrid_inference(
     # Store inference metadata in a new manifest inside results
     manifest_path = xmodel_path.parent / "manifest.json"
     model_metadata = {"evaluated_at": timestamp}
+    model_name = ""
     if manifest_path.exists():
         with open(manifest_path) as f:
             build_manifest = json.load(f)
-            model_metadata["model_run_name"] = build_manifest.get("model_name", "Unknown")
+            model_name = build_manifest.get("model_name", "")
+            model_metadata["model_run_name"] = model_name or "Unknown"
             model_metadata["model_compiled_at"] = build_manifest.get("compiled_at", "Unknown")
     with open(output_dir / "inference_meta.json", "w") as f:
         json.dump(model_metadata, f, indent=4)
@@ -263,7 +335,9 @@ def run_hybrid_inference(
     entropy_params_path = xmodel_path.parent / "entropy_params.npz"
     log(f"Loading graph from {xmodel_path}...")
     graph = xir.Graph.deserialize(str(xmodel_path))
-    subgraph_map = identify_subgraphs(graph, xmodel_path.parent / "meta.json")
+    subgraph_map = identify_subgraphs(
+        graph, xmodel_path.parent / "meta.json", model_name=model_name
+    )
     log(f"Loading Entropy Models (Real/Interface) from {entropy_params_path}...")
     data = np.load(entropy_params_path)
     eb_channels = data["eb_cdf_length"].shape[0]
@@ -274,12 +348,14 @@ def run_hybrid_inference(
         offset=data["eb_offset"],
         medians=data["eb_medians"] if "eb_medians" in data else None,
     )
-    gc = GaussianConditional(
-        scale_table=data["gc_scale_table"],
-        quantized_cdf=data["gc_quantized_cdf"],
-        cdf_length=data["gc_cdf_length"],
-        offset=data["gc_offset"],
-    )
+    gc = None
+    if "gc_scale_table" in data:
+        gc = GaussianConditional(
+            scale_table=data["gc_scale_table"],
+            quantized_cdf=data["gc_quantized_cdf"],
+            cdf_length=data["gc_cdf_length"],
+            offset=data["gc_offset"],
+        )
 
     # 2. Create Runners
     log("Creating DPU Runners...")
@@ -325,7 +401,14 @@ def run_hybrid_inference(
         if verbose:
             log(f"\n--- Sample {i} ---")
         # --- Hybrid Inference Call ---
-        recon_norm_logI, num_bytes = process_single_tile(noisy[i], runners, eb, gc, verbose=False)
+        if gc is not None:
+            recon_norm_logI, num_bytes = process_single_tile_SHyp(
+                noisy[i], runners, eb, gc, verbose=False
+            )
+        else:
+            recon_norm_logI, num_bytes = process_single_tile_FP(
+                noisy[i], runners, eb, verbose=False
+            )
 
         dt = time.time() - t0_sample
         if i % 10 == 0:
@@ -449,7 +532,9 @@ def run_hybrid_inference(
         # pipeline. patch_infer_fpga uses a sliding window with snap-to-border coverage,
         # so no explicit padding or post-crop is needed for non-multiple image sizes.
         def _infer_fn(patch_hwc: np.ndarray) -> Tuple[np.ndarray, int]:
-            return process_single_tile(patch_hwc, runners, eb, gc, verbose=False)
+            if gc is not None:
+                return process_single_tile_SHyp(patch_hwc, runners, eb, gc, verbose=False)
+            return process_single_tile_FP(patch_hwc, runners, eb, verbose=False)
 
         recon_norm_logI, total_bytes = patch_infer_fpga(
             noisy_tile,
