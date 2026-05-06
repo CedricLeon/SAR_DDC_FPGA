@@ -3,6 +3,140 @@
 I'll use this file as a journal, just to keep track of what I tried and when.
 Once I understand the toolchain and its processes better, I'll make a step-by-step instructions for deployment, like so:
 
+---
+
+## Benchmark Analysis — Figure Polish & Multi-Model Expansion (2026-05-01)
+
+Tracking the cleanup and expansion of `notebooks/benchmark_analysis.ipynb`, creation of a shared
+color system, and design of a new cross-model notebook.
+
+Tasks are ordered for linear execution: color system first (everything else depends on it),
+then power plot fixes, then new notebook.
+
+---
+
+### Step 1 — Color system: create `configs/plots_colors.json` ✅
+
+`configs/plots_colors.json` created. Okabe-Ito base palette, colorblind-safe.
+Explicit semantic keys covering all color use-cases across all three notebooks:
+
+| Key group | Used in |
+| --- | --- |
+| `platforms` | any figure with FPGA/GPU/CPU bars (idle + dynamic variants) |
+| `fpga_power_groups` | §8a FPGA stacked power composition |
+| `gpu_power_domains` | §8b GPU board + CPU RAPL stacked bars |
+| `nn_vs_cpu_domain` | §5b NN-vs-CPU latency split |
+| `latency_steps` | §5 per-step stacked horizontal bars |
+| `architectures` | `hardware_model_comparison.ipynb` |
+| `activations` | `RD-curve_ablation.ipynb` |
+| `output_padding` | `RD-curve_ablation.ipynb` |
+| `metrics` | `compare_gpu_fpga.ipynb` |
+| `compare_gpu_fpga` | `compare_gpu_fpga.ipynb` |
+
+---
+
+### Step 2 — Migrate `benchmark_analysis.ipynb` to shared colors + power plot fixes
+
+All sub-tasks below are part of a single editing pass on `benchmark_analysis.ipynb`:
+
+- [x] **2a · Load colors in config cell (cell 3)** *(agent)*
+  Add `C = json.load(open(ROOT_DIR / "configs" / "plots_colors.json"))` to the config cell.
+  Replace all hard-coded hex literals with `C[group][key]` lookups.
+
+- [x] **2b · §8a — Fix idle line colors, labels, drop MGT bar** *(agent)*
+  - Match idle line colors to their group bar: PL line → `C["fpga_power_groups"]["PL"]`,
+    PL+PS line → `C["fpga_power_groups"]["PS"]`, TBP line → `C["fpga_power_groups"]["TBP_line"]`.
+  - Labels: replace `"← idle TBP  ≈ 11.0 W"` with short black text `"idle TBP"` / `"idle PL"` /
+    `"idle PL+PS"`, smaller font, placed so they don't overlap bars.
+  - Remove MGT as a plotted bar; fold its value into a caption footnote:
+    `"TBP includes ~0.11 W MGT (constant, transceivers unused)."`
+  - Add FMC to TBP: `benchmark_fpga.py` currently excludes VADJ_FMC from TBP; update
+    `_extract_power` to include FMC in TBP sum and update `_FPGA_FMC_RAILS` from dead code
+    to active use. Add footnote documenting measured FMC value.
+
+- [x] **2c · §8b — Redesign GPU power bar as "GPU system" stacked + fix CPU bar** *(agent)*
+  - Merge GPU board (NN domain, blue) + CPU RAPL (entropy/OS domain, orange) into one
+    stacked "GPU system" bar per scenario — directly comparable to FPGA TBP in §8a.
+  - Keep a separate standalone bar for the CPU-only benchmark scenario (CPU platform).
+  - Annotation format: value label inside each sub-bar segment (idle / dynamic),
+    total on top. Replace `"X (+Y)"` format.
+
+- [x] **2d · Drop §8d (DPU_fabric vs PS_compute cell)** *(agent)*
+  Delete cell 22 entirely.
+
+- [ ] **2e · Long plot titles → captions** *(me)*
+  Move verbose in-plot titles/legends to markdown caption cells.
+
+---
+
+### Step 3 — Migrate `RD-curve_ablation.ipynb` to shared colors
+
+- [x] **3 · Color migration** *(agent)*
+  Add `json.load` config cell. Replace `colors = {"with_out_pad": "tab:blue", "no_out_pad": "tab:red"}`
+  and linestyle dict with `C["output_padding"]` and `C["activations"]` lookups.
+
+---
+
+### Step 4 — Migrate `compare_gpu_fpga.ipynb` to shared colors
+
+- [x] **4 · Color migration** *(agent)*
+  Add `json.load` config cell. Replace implicit matplotlib defaults for GPU/FPGA curves
+  with `C["compare_gpu_fpga"]` and `C["metrics"]` lookups.
+
+---
+
+### Step 5 — Create `notebooks/hardware_model_comparison.ipynb`
+
+- [x] **5a · Scaffold notebook** *(agent)*
+  New notebook with config cell, data loader that scans all
+  `results/benchmark/<model_name>/` directories, parses model name into
+  (architecture, lambda, seed, activation) columns, builds unified `df_all` DataFrame.
+
+- [x] **5b · Latency vs lambda plot** *(agent)*
+  Line chart: x = lambda, y = latency (ms), one line per (scenario, platform).
+  Shows entropy-coding lambda-dependence (`full` increases with lambda, `nn_only` flat).
+
+- [x] **5c · Architecture comparison bars** *(agent)*
+  Side-by-side latency/energy bars: ResSHyp vs SHyp per scenario and platform.
+
+- [x] **5d · Hardware cost scatter** *(agent)*
+  x = PSNR (with BPP in parenthesis), y = latency or energy.
+  One point per (architecture, lambda, platform). Design to be refined during implementation.
+
+---
+
+### Notebook scope (stable)
+
+| Notebook | Scope |
+| --- | --- |
+| `benchmark_analysis.ipynb` | Single-model deep-dive: latency, power, energy, throughput |
+| `hardware_model_comparison.ipynb` | Cross-model: latency/energy vs lambda, architecture |
+| `compare_gpu_fpga.ipynb` | Quality delta: GPU vs FPGA reconstruction quality |
+| `RD-curve_ablation.ipynb` | Training ablation: activation functions, output padding |
+
+---
+
+## W&B config vs local Hydra config — known discrepancy (2026-05-01)
+
+When new config keys are added to the model (e.g. `no_residual_blocks`), old runs already
+stored on W&B are missing that key in their W&B config (it reads as `None` via `OmegaConf.select`).
+
+`scripts/fix_wandb_run_names.py --fix-config` backfills the correct value (`False`) into the
+**W&B config** for those runs. However, the corresponding **local `.hydra/config.yaml`** files
+on disk are not updated. This creates a permanent cosmetic discrepancy:
+
+| Source | Key present? | Value |
+| --- | --- | --- |
+| W&B config (after fix) | ✓ explicit | `False` |
+| Local `.hydra/config.yaml` | ✗ absent | (inherits Python default: `False`) |
+
+**This is safe**: `update_wandb_runs.py` and `deploy.py` load model configs from the local
+`.hydra/config.yaml`, not from W&B. Hydra falls back to the Python default (`False`) for absent
+keys, which is identical to the backfilled value. No model will be instantiated differently.
+
+The discrepancy is simply accepted as a cost of retroactively adding config fields. If absolute
+consistency is required in the future, local configs would need to be patched manually.
+
 ## Power Measurement Deep-Dive and Benchmark Infrastructure (2026-04-30)
 
 A focused review and improvement of the power measurement methodology across

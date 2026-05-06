@@ -1,0 +1,85 @@
+{
+  "_comment": "Shared color palette for all SAR-DDC notebooks. Based on Okabe-Ito colorblind-safe palette. Load with: import json; C = json.load(open(ROOT_DIR / 'configs' / 'plots_colors.json'))",
+  "_palette_reference": {
+    "okabe_ito": [
+      "#E69F00",
+      "#56B4E9",
+      "#009E73",
+      "#F0E442",
+      "#0072B2",
+      "#D55E00",
+      "#CC79A7",
+      "#000000"
+    ],
+    "note": "Okabe & Ito (2002), colorblind-safe, print-friendly. See https://jfly.uni-koeln.de/color/"
+  },
+  "platforms": {
+    "fpga_dynamic": "#009E73",
+    "fpga_idle": "#85d4bc",
+    "gpu_dynamic": "#0072B2",
+    "gpu_idle": "#7ab6d9",
+    "cpu_dynamic": "#D55E00",
+    "cpu_idle": "#ebb99a",
+    "_note": "Used in any figure comparing FPGA / GPU / CPU platforms. fpga=green, gpu=blue, cpu=orange — Okabe-Ito base colours."
+  },
+  "fpga_power_groups": {
+    "PL": "#003f5c",
+    "PS": "#2f9e6e",
+    "MGT": "#7fccb0",
+    "peripherals": "#b2dfdb",
+    "TBP_line": "#D55E00",
+    "_note": "Used in §8a stacked FPGA power composition. PL=darkest, PS=mid, MGT+peripherals=pale. TBP idle line is orange/red to pop."
+  },
+  "gpu_power_domains": {
+    "gpu_board_dynamic": "#0072B2",
+    "gpu_board_idle": "#7ab6d9",
+    "cpu_rapl_dynamic": "#D55E00",
+    "cpu_rapl_idle": "#ebb99a",
+    "_note": "Used in §8b GPU+CPU RAPL stacked bars. Mirrors platform colors so readers can connect the two figures."
+  },
+  "nn_vs_cpu_domain": {
+    "nn_dynamic": "#0072B2",
+    "cpu_dynamic": "#D55E00",
+    "_note": "Used in NN-vs-CPU latency split figures (5b). Maps directly to gpu_dynamic / cpu_dynamic from platforms."
+  },
+  "latency_steps": {
+    "nn_g_a": "#003f5c",
+    "nn_h_a": "#0072B2",
+    "nn_h_s": "#56B4E9",
+    "nn_g_s": "#a8d4f0",
+    "cpu_eb_compress": "#8B0000",
+    "cpu_eb_decompress": "#CC4444",
+    "cpu_gc_compress": "#D55E00",
+    "cpu_gc_decompress": "#E69F00",
+    "cpu_concat_abs": "#aab7b8",
+    "cpu_split_y_hat": "#d5dbdb",
+    "_note": "Used in §5 per-step stacked horizontal bars. NN subgraphs: dark→pale blue. CPU entropy: red→orange. CPU data-ops: grey."
+  },
+  "architectures": {
+    "ResSHyp": "#009E73",
+    "SHyp": "#E69F00",
+    "_note": "Used in cross-model comparison figures. ResSHyp (with residuals)=green, SHyp (no residuals)=yellow-orange."
+  },
+  "activations": {
+    "relu": "#009E73",
+    "gdn": "#CC79A7",
+    "_note": "Used in RD-curve ablation figures. relu=green (Okabe), gdn=mauve (Okabe)."
+  },
+  "output_padding": {
+    "with_out_pad": "#0072B2",
+    "no_out_pad": "#D55E00",
+    "_note": "Used in RD-curve ablation figures. Matches GPU/CPU platform colors — easy visual association."
+  },
+  "metrics": {
+    "psnr": "#0072B2",
+    "ssim": "#009E73",
+    "epd": "#E69F00",
+    "error_bars": "#555555",
+    "_note": "Used in compare_gpu_fpga metric-per-line figures (if kept). Three visually distinct Okabe-Ito hues."
+  },
+  "compare_gpu_fpga": {
+    "gpu": "#0072B2",
+    "fpga": "#009E73",
+    "_note": "Used in compare_gpu_fpga quality-delta figures. Same as platforms.gpu_dynamic / fpga_dynamic."
+  }
+}
