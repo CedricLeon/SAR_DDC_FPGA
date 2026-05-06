@@ -587,58 +587,82 @@ def run_scenario_full(
     imag: np.ndarray,
     runners: dict[str, DPUSubgraphRunner],
     eb: EntropyBottleneck,
-    gc: GaussianConditional,
+    gc: GaussianConditional | None,
     timer: StepTimer,
 ) -> int:
     """Full compress + decompress.
 
-    Returns total compressed bytes.
+    Returns total compressed bytes. Supports ScaleHyperprior (gc is not None) and FactorizedPrior
+    (gc is None).
     """
-    timer.mark("preprocess")
+    if gc is not None:
+        # ---- ScaleHyperprior: g_a -> h_a -> EB -> h_s -> GC -> g_s ----
+        timer.mark("preprocess")
 
-    # ---- Encode ----
-    timer.mark("dpu_g_a")
-    y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
+        timer.mark("dpu_g_a")
+        y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
 
-    timer.mark("cpu_concat_abs")
-    y = np.concatenate((y_real, y_imag), axis=-1)
-    y_abs = np.abs(y)
+        timer.mark("cpu_concat_abs")
+        y = np.concatenate((y_real, y_imag), axis=-1)
+        y_abs = np.abs(y)
 
-    timer.mark("dpu_h_a")
-    z = runners["h_a"].run(y_abs)
+        timer.mark("dpu_h_a")
+        z = runners["h_a"].run(y_abs)
 
-    timer.mark("cpu_eb_compress")
-    z_strings = eb.compress(z)
-    z_bytes = sum(len(s) for s in z_strings)
+        timer.mark("cpu_eb_compress")
+        z_strings = eb.compress(z)
+        z_bytes = sum(len(s) for s in z_strings)
 
-    timer.mark("cpu_eb_decompress")
-    z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
+        timer.mark("cpu_eb_decompress")
+        z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
 
-    timer.mark("dpu_h_s")
-    scales = runners["h_s"].run(z_hat)
+        timer.mark("dpu_h_s")
+        scales = runners["h_s"].run(z_hat)
 
-    timer.mark("cpu_gc_compress")
-    means = np.zeros_like(y)
-    y_strings = gc.compress(y, scales, means)
-    y_bytes = sum(len(s) for s in y_strings)
+        timer.mark("cpu_gc_compress")
+        means = np.zeros_like(y)
+        y_strings = gc.compress(y, scales, means)
+        y_bytes = sum(len(s) for s in y_strings)
 
-    # ---- Decode ----
-    timer.mark("cpu_gc_decompress")
-    y_hat = gc.decompress(y_strings, scales, means)
+        timer.mark("cpu_gc_decompress")
+        y_hat = gc.decompress(y_strings, scales, means)
 
-    timer.mark("cpu_split_y_hat")
-    y_hat_real = y_hat[..., :C_MAIN]
-    y_hat_imag = y_hat[..., C_MAIN:]
+        timer.mark("cpu_split_y_hat")
+        y_hat_real = y_hat[..., :C_MAIN]
+        y_hat_imag = y_hat[..., C_MAIN:]
 
-    timer.mark("dpu_g_s")
-    run_dual(runners["g_s"], runners.get("g_s_1"), y_hat_real, y_hat_imag)
+        timer.mark("dpu_g_s")
+        run_dual(runners["g_s"], runners.get("g_s_1"), y_hat_real, y_hat_imag)
 
-    timer.mark("postprocess")
-    # (postprocess placeholder — no denorm needed for timing)
-    timer.mark("_end")
-    timer.commit()
+        timer.mark("postprocess")
+        timer.mark("_end")
+        timer.commit()
+        return z_bytes + y_bytes
 
-    return z_bytes + y_bytes
+    else:
+        # ---- FactorizedPrior: g_a -> EB -> g_s ----
+        timer.mark("preprocess")
+
+        timer.mark("dpu_g_a")
+        y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
+
+        timer.mark("cpu_eb_compress")
+        y = np.concatenate((y_real, y_imag), axis=-1)
+        y_strings = eb.compress(y)
+        y_bytes = sum(len(s) for s in y_strings)
+
+        timer.mark("cpu_eb_decompress")
+        y_hat = eb.decompress(y_strings, (y.shape[1], y.shape[2]))
+        y_hat_real = y_hat[..., :C_MAIN]
+        y_hat_imag = y_hat[..., C_MAIN:]
+
+        timer.mark("dpu_g_s")
+        run_dual(runners["g_s"], runners.get("g_s_1"), y_hat_real, y_hat_imag)
+
+        timer.mark("postprocess")
+        timer.mark("_end")
+        timer.commit()
+        return y_bytes
 
 
 def run_scenario_compress(
@@ -646,43 +670,61 @@ def run_scenario_compress(
     imag: np.ndarray,
     runners: dict[str, DPUSubgraphRunner],
     eb: EntropyBottleneck,
-    gc: GaussianConditional,
+    gc: GaussianConditional | None,
     timer: StepTimer,
 ) -> int:
     """Compress only (encode path).
 
     Returns compressed bytes.
     """
-    timer.mark("preprocess")
+    if gc is not None:
+        # ---- ScaleHyperprior ----
+        timer.mark("preprocess")
 
-    timer.mark("dpu_g_a")
-    y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
+        timer.mark("dpu_g_a")
+        y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
 
-    timer.mark("cpu_concat_abs")
-    y = np.concatenate((y_real, y_imag), axis=-1)
-    y_abs = np.abs(y)
+        timer.mark("cpu_concat_abs")
+        y = np.concatenate((y_real, y_imag), axis=-1)
+        y_abs = np.abs(y)
 
-    timer.mark("dpu_h_a")
-    z = runners["h_a"].run(y_abs)
+        timer.mark("dpu_h_a")
+        z = runners["h_a"].run(y_abs)
 
-    timer.mark("cpu_eb_compress")
-    z_strings = eb.compress(z)
-    z_bytes = sum(len(s) for s in z_strings)
+        timer.mark("cpu_eb_compress")
+        z_strings = eb.compress(z)
+        z_bytes = sum(len(s) for s in z_strings)
 
-    timer.mark("cpu_eb_decompress")
-    z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
+        timer.mark("cpu_eb_decompress")
+        z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
 
-    timer.mark("dpu_h_s")
-    scales = runners["h_s"].run(z_hat)
+        timer.mark("dpu_h_s")
+        scales = runners["h_s"].run(z_hat)
 
-    timer.mark("cpu_gc_compress")
-    means = np.zeros_like(y)
-    y_strings = gc.compress(y, scales, means)
-    y_bytes = sum(len(s) for s in y_strings)
+        timer.mark("cpu_gc_compress")
+        means = np.zeros_like(y)
+        y_strings = gc.compress(y, scales, means)
+        y_bytes = sum(len(s) for s in y_strings)
 
-    timer.mark("_end")
-    timer.commit()
-    return z_bytes + y_bytes
+        timer.mark("_end")
+        timer.commit()
+        return z_bytes + y_bytes
+
+    else:
+        # ---- FactorizedPrior ----
+        timer.mark("preprocess")
+
+        timer.mark("dpu_g_a")
+        y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
+
+        timer.mark("cpu_eb_compress")
+        y = np.concatenate((y_real, y_imag), axis=-1)
+        y_strings = eb.compress(y)
+        y_bytes = sum(len(s) for s in y_strings)
+
+        timer.mark("_end")
+        timer.commit()
+        return y_bytes
 
 
 def run_scenario_decompress(
@@ -690,7 +732,7 @@ def run_scenario_decompress(
     _imag: np.ndarray,
     runners: dict[str, DPUSubgraphRunner],
     eb: EntropyBottleneck,
-    gc: GaussianConditional,
+    gc: GaussianConditional | None,
     timer: StepTimer,
     *,
     cached_strings: dict[str, Any] | None = None,
@@ -702,33 +744,53 @@ def run_scenario_decompress(
     if cached_strings is None:
         raise ValueError("decompress scenario requires cached_strings from a prior compress.")
 
-    z_strings = cached_strings["z_strings"]
-    y_strings = cached_strings["y_strings"]
-    z_shape = cached_strings["z_shape"]
-    scales_shape = cached_strings["scales_shape"]
-    z_bytes = cached_strings["z_bytes"]
-    y_bytes = cached_strings["y_bytes"]
+    if gc is not None:
+        # ---- ScaleHyperprior ----
+        z_strings = cached_strings["z_strings"]
+        y_strings = cached_strings["y_strings"]
+        z_shape = cached_strings["z_shape"]
+        scales_shape = cached_strings["scales_shape"]
+        z_bytes = cached_strings["z_bytes"]
+        y_bytes = cached_strings["y_bytes"]
 
-    timer.mark("cpu_eb_decompress")
-    z_hat = eb.decompress(z_strings, z_shape)
+        timer.mark("cpu_eb_decompress")
+        z_hat = eb.decompress(z_strings, z_shape)
 
-    timer.mark("dpu_h_s")
-    scales = runners["h_s"].run(z_hat)
+        timer.mark("dpu_h_s")
+        scales = runners["h_s"].run(z_hat)
 
-    timer.mark("cpu_gc_decompress")
-    means = np.zeros(scales_shape, dtype=np.float32)
-    y_hat = gc.decompress(y_strings, scales, means)
+        timer.mark("cpu_gc_decompress")
+        means = np.zeros(scales_shape, dtype=np.float32)
+        y_hat = gc.decompress(y_strings, scales, means)
 
-    timer.mark("cpu_split_y_hat")
-    y_hat_real = y_hat[..., :C_MAIN]
-    y_hat_imag = y_hat[..., C_MAIN:]
+        timer.mark("cpu_split_y_hat")
+        y_hat_real = y_hat[..., :C_MAIN]
+        y_hat_imag = y_hat[..., C_MAIN:]
 
-    timer.mark("dpu_g_s")
-    run_dual(runners["g_s"], runners.get("g_s_1"), y_hat_real, y_hat_imag)
+        timer.mark("dpu_g_s")
+        run_dual(runners["g_s"], runners.get("g_s_1"), y_hat_real, y_hat_imag)
 
-    timer.mark("_end")
-    timer.commit()
-    return z_bytes + y_bytes
+        timer.mark("_end")
+        timer.commit()
+        return z_bytes + y_bytes
+
+    else:
+        # ---- FactorizedPrior ----
+        y_strings = cached_strings["y_strings"]
+        y_shape = cached_strings["y_shape"]
+        y_bytes = cached_strings["y_bytes"]
+
+        timer.mark("cpu_eb_decompress")
+        y_hat = eb.decompress(y_strings, y_shape)
+        y_hat_real = y_hat[..., :C_MAIN]
+        y_hat_imag = y_hat[..., C_MAIN:]
+
+        timer.mark("dpu_g_s")
+        run_dual(runners["g_s"], runners.get("g_s_1"), y_hat_real, y_hat_imag)
+
+        timer.mark("_end")
+        timer.commit()
+        return y_bytes
 
 
 def run_scenario_nn_only(
@@ -736,30 +798,38 @@ def run_scenario_nn_only(
     imag: np.ndarray,
     runners: dict[str, DPUSubgraphRunner],
     eb: EntropyBottleneck,
-    gc: GaussianConditional,
+    gc: GaussianConditional | None,
     timer: StepTimer,
 ) -> int:
     """DPU subgraphs only — no entropy coding, no CPU pre/postprocessing."""
-    timer.mark("dpu_g_a")
-    y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
+    if gc is not None:
+        # ---- ScaleHyperprior ----
+        timer.mark("dpu_g_a")
+        y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
 
-    timer.mark("cpu_concat_abs")
-    y = np.concatenate((y_real, y_imag), axis=-1)
-    y_abs = np.abs(y)
+        timer.mark("cpu_concat_abs")
+        y = np.concatenate((y_real, y_imag), axis=-1)
+        y_abs = np.abs(y)
 
-    timer.mark("dpu_h_a")
-    z = runners["h_a"].run(y_abs)
+        timer.mark("dpu_h_a")
+        z = runners["h_a"].run(y_abs)
 
-    timer.mark("dpu_h_s")
-    # For nn_only we bypass entropy and feed z directly to h_s
-    # (this is not physically meaningful but isolates DPU latency).
-    scales = runners["h_s"].run(z)
+        timer.mark("dpu_h_s")
+        # For nn_only we bypass entropy and feed z directly to h_s
+        runners["h_s"].run(z)
 
-    timer.mark("dpu_g_s")
-    # Feed y directly (skip quantise/dequantise through entropy)
-    y_hat_real = y[..., :C_MAIN]
-    y_hat_imag = y[..., C_MAIN:]
-    run_dual(runners["g_s"], runners.get("g_s_1"), y_hat_real, y_hat_imag)
+        timer.mark("dpu_g_s")
+        y_hat_real = y[..., :C_MAIN]
+        y_hat_imag = y[..., C_MAIN:]
+        run_dual(runners["g_s"], runners.get("g_s_1"), y_hat_real, y_hat_imag)
+
+    else:
+        # ---- FactorizedPrior: g_a -> g_s directly ----
+        timer.mark("dpu_g_a")
+        y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
+
+        timer.mark("dpu_g_s")
+        run_dual(runners["g_s"], runners.get("g_s_1"), y_real, y_imag)
 
     timer.mark("_end")
     timer.commit()
@@ -771,38 +841,54 @@ def run_scenario_entropy_only(
     imag: np.ndarray,
     runners: dict[str, DPUSubgraphRunner],
     eb: EntropyBottleneck,
-    gc: GaussianConditional,
+    gc: GaussianConditional | None,
     timer: StepTimer,
 ) -> int:
     """Entropy coding only — produce latents via DPU then time only the CPU coding."""
-    # We need real latents for meaningful entropy coding, so run encoders once (untimed)
+    # Produce latents (untimed) via g_a
     y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
     y = np.concatenate((y_real, y_imag), axis=-1)
-    y_abs = np.abs(y)
-    z = runners["h_a"].run(y_abs)
 
-    # --- Timed section ---
-    timer.mark("cpu_eb_compress")
-    z_strings = eb.compress(z)
-    z_bytes = sum(len(s) for s in z_strings)
+    if gc is not None:
+        # ---- ScaleHyperprior: EB + GC ----
+        y_abs = np.abs(y)
+        z = runners["h_a"].run(y_abs)
 
-    timer.mark("cpu_eb_decompress")
-    z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
+        # --- Timed section ---
+        timer.mark("cpu_eb_compress")
+        z_strings = eb.compress(z)
+        z_bytes = sum(len(s) for s in z_strings)
 
-    # Need scales for GC
-    scales = runners["h_s"].run(z_hat)
+        timer.mark("cpu_eb_decompress")
+        z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
 
-    timer.mark("cpu_gc_compress")
-    means = np.zeros_like(y)
-    y_strings = gc.compress(y, scales, means)
-    y_bytes = sum(len(s) for s in y_strings)
+        # Need scales for GC
+        scales = runners["h_s"].run(z_hat)
 
-    timer.mark("cpu_gc_decompress")
-    _y_hat = gc.decompress(y_strings, scales, means)
+        timer.mark("cpu_gc_compress")
+        means = np.zeros_like(y)
+        y_strings = gc.compress(y, scales, means)
+        y_bytes = sum(len(s) for s in y_strings)
 
-    timer.mark("_end")
-    timer.commit()
-    return z_bytes + y_bytes
+        timer.mark("cpu_gc_decompress")
+        gc.decompress(y_strings, scales, means)
+
+        timer.mark("_end")
+        timer.commit()
+        return z_bytes + y_bytes
+
+    else:
+        # ---- FactorizedPrior: EB only ----
+        timer.mark("cpu_eb_compress")
+        y_strings = eb.compress(y)
+        y_bytes = sum(len(s) for s in y_strings)
+
+        timer.mark("cpu_eb_decompress")
+        eb.decompress(y_strings, (y.shape[1], y.shape[2]))
+
+        timer.mark("_end")
+        timer.commit()
+        return y_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -813,28 +899,41 @@ def _precompress(
     imag: np.ndarray,
     runners: dict[str, DPUSubgraphRunner],
     eb: EntropyBottleneck,
-    gc: GaussianConditional,
+    gc: GaussianConditional | None,
 ) -> dict[str, Any]:
-    """Run a single encode pass and cache everything the decompress scenario needs."""
+    """Run a single encode pass and cache everything the decompress scenario needs.
+
+    Returns different key sets for SHyp (gc is not None) and FP (gc is None);
+    ``run_scenario_decompress`` dispatches accordingly.
+    """
     y_real, y_imag = run_dual(runners["g_a"], runners.get("g_a_1"), real, imag)
     y = np.concatenate((y_real, y_imag), axis=-1)
-    y_abs = np.abs(y)
-    z = runners["h_a"].run(y_abs)
 
-    z_strings = eb.compress(z)
-    z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
-    scales = runners["h_s"].run(z_hat)
-    means = np.zeros_like(y)
-    y_strings = gc.compress(y, scales, means)
-
-    return {
-        "z_strings": z_strings,
-        "y_strings": y_strings,
-        "z_shape": (z.shape[1], z.shape[2]),
-        "scales_shape": scales.shape,
-        "z_bytes": sum(len(s) for s in z_strings),
-        "y_bytes": sum(len(s) for s in y_strings),
-    }
+    if gc is not None:
+        # ---- ScaleHyperprior ----
+        y_abs = np.abs(y)
+        z = runners["h_a"].run(y_abs)
+        z_strings = eb.compress(z)
+        z_hat = eb.decompress(z_strings, (z.shape[1], z.shape[2]))
+        scales = runners["h_s"].run(z_hat)
+        means = np.zeros_like(y)
+        y_strings = gc.compress(y, scales, means)
+        return {
+            "z_strings": z_strings,
+            "y_strings": y_strings,
+            "z_shape": (z.shape[1], z.shape[2]),
+            "scales_shape": scales.shape,
+            "z_bytes": sum(len(s) for s in z_strings),
+            "y_bytes": sum(len(s) for s in y_strings),
+        }
+    else:
+        # ---- FactorizedPrior ----
+        y_strings = eb.compress(y)
+        return {
+            "y_strings": y_strings,
+            "y_shape": (y.shape[1], y.shape[2]),
+            "y_bytes": sum(len(s) for s in y_strings),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -940,7 +1039,17 @@ def run_benchmark(
     # ---- Load model ----
     entropy_path = xmodel_path.parent / "entropy_params.npz"
     graph = xir.Graph.deserialize(str(xmodel_path))
-    sg_map = identify_subgraphs(graph, xmodel_path.parent / "meta.json", verbose=False)
+
+    # Read model_name from manifest (if present) for topology-aware subgraph identification
+    manifest_path = xmodel_path.parent / "manifest.json"
+    model_name = ""
+    if manifest_path.exists():
+        with open(manifest_path) as f:
+            model_name = json.load(f).get("model_name", "")
+
+    sg_map = identify_subgraphs(
+        graph, xmodel_path.parent / "meta.json", verbose=False, model_name=model_name
+    )
 
     data = np.load(entropy_path)
     eb = EntropyBottleneck(
@@ -950,12 +1059,14 @@ def run_benchmark(
         offset=data["eb_offset"],
         medians=data.get("eb_medians"),
     )
-    gc = GaussianConditional(
-        scale_table=data["gc_scale_table"],
-        quantized_cdf=data["gc_quantized_cdf"],
-        cdf_length=data["gc_cdf_length"],
-        offset=data["gc_offset"],
-    )
+    gc: GaussianConditional | None = None
+    if "gc_scale_table" in data:
+        gc = GaussianConditional(
+            scale_table=data["gc_scale_table"],
+            quantized_cdf=data["gc_quantized_cdf"],
+            cdf_length=data["gc_cdf_length"],
+            offset=data["gc_offset"],
+        )
 
     runners: dict[str, DPUSubgraphRunner] = {}
     for key, sg in sg_map.items():

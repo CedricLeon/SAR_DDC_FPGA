@@ -774,14 +774,18 @@ Bonus — also fixed in this step (needed for safe entropy_params.npz loading):
 
 #### Step 4 — FPGA Inference pipeline *(✅ covered in Step 3 bonus)*
 
-#### Step 5 — GPU / FPGA Benchmarks *(🤖, needs Step 1 checkpoint)*
+#### Step 5 — GPU / FPGA Benchmarks *(🤖)*
 
-- [ ] **`benchmark_gpu.py`** — all `run_scenario_*` + `_precompress`: add `hasattr(net, 'h_a')` branch; FP path uses `net.entropy_bottleneck` directly on `y`, skips h_a/h_s/GC
-- [ ] **`benchmark_fpga.py`** — same pattern with `"h_a" in runners` guard
+- [x] **`benchmark_gpu.py`** — all `run_scenario_*` + `_precompress` + `get_model_info`: `hasattr(net, 'h_a')` topology guard; FP path `g_a → EB → g_s`, no h_a/h_s/GC
+- [x] **`benchmark_fpga.py`** — `gc: Optional[GaussianConditional]`; all five scenario functions + `_precompress` have FP branches; `run_benchmark()` reads `model_name` from `manifest.json`, passes to `identify_subgraphs`, loads `gc` only when `"gc_scale_table" in data`
+- [x] **Refactor** — introduced `tmark(label, timer, cuda_timer, device)` (replaces 3-line sync+mark×2 blocks) and `_count_bytes(strings)` (replaces nested sum comprehension); all 5 scenario functions and `_precompress` simplified significantly
 
 ```bash
-python scripts/benchmark_gpu.py --checkpoint <fp_ckpt> --scenario full --n-tiles 2
-python scripts/benchmark_gpu.py --checkpoint <reshyp_ckpt> --scenario full --n-tiles 2  # regression
+python scripts/fpga/run_full_benchmark.py \
+    --model-dir results/fpga/active_model/ \
+    --warmup 20 --iters 100 \
+    --power --idle-baseline 10 \
+    --power-hz-gpu 10 --power-hz-fpga 50
 ```
 
 **Commit:** `feat(benchmark): add FactorizedPrior scenario branching in gpu and fpga benchmarks`
