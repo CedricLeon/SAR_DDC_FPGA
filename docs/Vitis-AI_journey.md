@@ -3,6 +3,187 @@
 I'll use this file as a journal, just to keep track of what I tried and when.
 Once I understand the toolchain and its processes better, I'll make a step-by-step instructions for deployment, like so:
 
+---
+
+## Benchmark Analysis — Figure Polish & Multi-Model Expansion (2026-05-01)
+
+Tracking the cleanup and expansion of `notebooks/benchmark_analysis.ipynb`, creation of a shared
+color system, and design of a new cross-model notebook.
+
+Tasks are ordered for linear execution: color system first (everything else depends on it),
+then power plot fixes, then new notebook.
+
+---
+
+### Step 1 — Color system: create `configs/plots_colors.json` ✅
+
+`configs/plots_colors.json` created. Okabe-Ito base palette, colorblind-safe.
+Explicit semantic keys covering all color use-cases across all three notebooks:
+
+| Key group | Used in |
+| --- | --- |
+| `platforms` | any figure with FPGA/GPU/CPU bars (idle + dynamic variants) |
+| `fpga_power_groups` | §8a FPGA stacked power composition |
+| `gpu_power_domains` | §8b GPU board + CPU RAPL stacked bars |
+| `nn_vs_cpu_domain` | §5b NN-vs-CPU latency split |
+| `latency_steps` | §5 per-step stacked horizontal bars |
+| `architectures` | `hardware_model_comparison.ipynb` |
+| `activations` | `RD-curve_ablation.ipynb` |
+| `output_padding` | `RD-curve_ablation.ipynb` |
+| `metrics` | `compare_gpu_fpga.ipynb` |
+| `compare_gpu_fpga` | `compare_gpu_fpga.ipynb` |
+
+---
+
+### Step 2 — Migrate `benchmark_analysis.ipynb` to shared colors + power plot fixes
+
+All sub-tasks below are part of a single editing pass on `benchmark_analysis.ipynb`:
+
+- [x] **2a · Load colors in config cell (cell 3)** *(agent)*
+  Add `C = json.load(open(ROOT_DIR / "configs" / "plots_colors.json"))` to the config cell.
+  Replace all hard-coded hex literals with `C[group][key]` lookups.
+
+- [x] **2b · §8a — Fix idle line colors, labels, drop MGT bar** *(agent)*
+  - Match idle line colors to their group bar: PL line → `C["fpga_power_groups"]["PL"]`,
+    PL+PS line → `C["fpga_power_groups"]["PS"]`, TBP line → `C["fpga_power_groups"]["TBP_line"]`.
+  - Labels: replace `"← idle TBP  ≈ 11.0 W"` with short black text `"idle TBP"` / `"idle PL"` /
+    `"idle PL+PS"`, smaller font, placed so they don't overlap bars.
+  - Remove MGT as a plotted bar; fold its value into a caption footnote:
+    `"TBP includes ~0.11 W MGT (constant, transceivers unused)."`
+  - Add FMC to TBP: `benchmark_fpga.py` currently excludes VADJ_FMC from TBP; update
+    `_extract_power` to include FMC in TBP sum and update `_FPGA_FMC_RAILS` from dead code
+    to active use. Add footnote documenting measured FMC value.
+
+- [x] **2c · §8b — Redesign GPU power bar as "GPU system" stacked + fix CPU bar** *(agent)*
+  - Merge GPU board (NN domain, blue) + CPU RAPL (entropy/OS domain, orange) into one
+    stacked "GPU system" bar per scenario — directly comparable to FPGA TBP in §8a.
+  - Keep a separate standalone bar for the CPU-only benchmark scenario (CPU platform).
+  - Annotation format: value label inside each sub-bar segment (idle / dynamic),
+    total on top. Replace `"X (+Y)"` format.
+
+- [x] **2d · Drop §8d (DPU_fabric vs PS_compute cell)** *(agent)*
+  Delete cell 22 entirely.
+
+- [ ] **2e · Long plot titles → captions** *(me)*
+  Move verbose in-plot titles/legends to markdown caption cells.
+
+---
+
+### Step 3 — Migrate `RD-curve_ablation.ipynb` to shared colors
+
+- [x] **3 · Color migration** *(agent)*
+  Add `json.load` config cell. Replace `colors = {"with_out_pad": "tab:blue", "no_out_pad": "tab:red"}`
+  and linestyle dict with `C["output_padding"]` and `C["activations"]` lookups.
+
+---
+
+### Step 4 — Migrate `compare_gpu_fpga.ipynb` to shared colors
+
+- [x] **4 · Color migration** *(agent)*
+  Add `json.load` config cell. Replace implicit matplotlib defaults for GPU/FPGA curves
+  with `C["compare_gpu_fpga"]` and `C["metrics"]` lookups.
+
+---
+
+### Step 5 — Create `notebooks/hardware_model_comparison.ipynb`
+
+- [x] **5a · Scaffold notebook** *(agent)*
+  New notebook with config cell, data loader that scans all
+  `results/benchmark/<model_name>/` directories, parses model name into
+  (architecture, lambda, seed, activation) columns, builds unified `df_all` DataFrame.
+
+- [x] **5b · Latency vs lambda plot** *(agent)*
+  Line chart: x = lambda, y = latency (ms), one line per (scenario, platform).
+  Shows entropy-coding lambda-dependence (`full` increases with lambda, `nn_only` flat).
+
+- [x] **5c · Architecture comparison bars** *(agent)*
+  Side-by-side latency/energy bars: ResSHyp vs SHyp per scenario and platform.
+
+- [x] **5d · Hardware cost scatter** *(agent)*
+  x = PSNR (with BPP in parenthesis), y = latency or energy.
+  One point per (architecture, lambda, platform). Design to be refined during implementation.
+
+---
+
+### Notebook scope (stable)
+
+| Notebook | Scope |
+| --- | --- |
+| `benchmark_analysis.ipynb` | Single-model deep-dive: latency, power, energy, throughput |
+| `hardware_model_comparison.ipynb` | Cross-model: latency/energy vs lambda, architecture |
+| `compare_gpu_fpga.ipynb` | Quality delta: GPU vs FPGA reconstruction quality |
+| `RD-curve_ablation.ipynb` | Training ablation: activation functions, output padding |
+
+---
+
+## W&B config vs local Hydra config — known discrepancy (2026-05-01)
+
+When new config keys are added to the model (e.g. `no_residual_blocks`), old runs already
+stored on W&B are missing that key in their W&B config (it reads as `None` via `OmegaConf.select`).
+
+`scripts/fix_wandb_run_names.py --fix-config` backfills the correct value (`False`) into the
+**W&B config** for those runs. However, the corresponding **local `.hydra/config.yaml`** files
+on disk are not updated. This creates a permanent cosmetic discrepancy:
+
+| Source | Key present? | Value |
+| --- | --- | --- |
+| W&B config (after fix) | ✓ explicit | `False` |
+| Local `.hydra/config.yaml` | ✗ absent | (inherits Python default: `False`) |
+
+**This is safe**: `update_wandb_runs.py` and `deploy.py` load model configs from the local
+`.hydra/config.yaml`, not from W&B. Hydra falls back to the Python default (`False`) for absent
+keys, which is identical to the backfilled value. No model will be instantiated differently.
+
+The discrepancy is simply accepted as a cost of retroactively adding config fields. If absolute
+consistency is required in the future, local configs would need to be patched manually.
+
+## Power Measurement Deep-Dive and Benchmark Infrastructure (2026-04-30)
+
+A focused review and improvement of the power measurement methodology across
+`benchmark_fpga.py`, `benchmark_gpu.py`, and `run_full_benchmark.py`.
+
+### What changed
+
+**Bug fix — busy-wait in polling loops**:
+Both `INA226PowerSampler._poll_loop` and `PMBusRailSampler._poll_loop` used a
+`time.perf_counter()` busy-wait between polls.  On the ARM A53, this pinned a
+full CPU core continuously, competing with VART inference threads and inflating
+PS-side power readings.  Fixed to `time.sleep(remaining)` in both samplers.
+
+**Power group hierarchy rewritten** to match the Xilinx EDA365 reference formula:
+
+- Old (wrong): `PL_total` included VADJ_FMC and MGT rails; `PS_total` included
+  MGTRAVCC/MGTRAVTT.
+- New (correct): `PL` = VCCINT+VCCBRAM+VCCAUX+VCC1V2+VCC3V3; `PS` = 8 ARM/DDR
+  rails; `MGT` = 4 transceiver rails; `MPSoC` = PL + PS (MGT excluded — the
+  transceiver subsystem is not used by the DPU); `TBP` = MPSoC + MGT + peripherals.
+
+**Default idle baseline changed from 0 → 10 s** in all three scripts
+(`--idle-baseline` CLI default).
+
+**INA226 hardware configuration confirmed on board** via Python I2C RDWR:
+All 18 sensors have `CFG = 0x4327` (4× hardware averaging, Vct = Ict = 1100 µs,
+hardware update period = 8.8 ms).  The effective sysfs poll rate is ~5 Hz (not the
+requested 50–100 Hz) due to I2C bus round-trip overhead; 200 samples over 41 s is
+still sufficient for a stable mean.
+
+**Unmonitored rails clarified**: 6 secondary bias/PHY rails have no telemetry at
+all (PL_DDR4_VTT, PS_DDR4_VPP_2V5, VCCADC, MGT bias companions, USB/DP LDOs).
+Their combined estimated contribution is < 500 mW and invariant to workload.
+
+### Why it matters
+
+The corrected power groupings eliminate MGT (~0.1 W) from the reported SoC compute
+figure (`MPSoC`).  The busy-wait fix removes a confounding source of PS idle power
+inflation.  Together, these changes make the dynamic power numbers (`ΔPL`, `ΔPS`,
+`ΔMPSoC`) more accurate and directly comparable to datasheet estimates.
+
+See `docs/performance_benchmark_implementation.md` §4 for the complete technical
+details, including INA226 register decoding, I2C topology, and paper-ready
+measurement descriptions.
+
+---
+
 ## Automating deployment and evaluation with one orchestrator script (2026-03-02)
 
 `deploy.py` is a Python orchestrator that manages the full compile → transfer → inference → fetch pipeline from the project root (`~/dev/Vitis-AI/DDC_FPGA/`) using the `SAR_DDC` conda environment. Requires [passwordless SSH access to ZCU102](#ssh-key-setup-passwordless-access-to-zcu102).
@@ -140,7 +321,7 @@ Two log files are produced per deployment run, both stored inside the compiled m
 Terminal verbosity is controlled by two constants at the top of `deploy.py`:
 
 | Constant | Default | Controls |
-|---|---|---|
+| --- | --- | --- |
 | `PHASE1_VERBOSE` | `False` | Docker / Vitis-AI compile output (very noisy) |
 | `PHASE3_VERBOSE` | `True` | FPGA inference output |
 
@@ -161,7 +342,7 @@ The module-level regex `_TQDM_RE = re.compile(r"^\s*(\d+)%\|")` detects these li
 
 ### Requirements
 
-- If needed, perform [onetime setups](#fpga-preparations-one-time-setups).
+- If needed, perform [onetime setups](#fpga-board-setup-one-time).
 - Have a trained checkpoint (and its configuration)
 
 ### 1. Initialize Vitis-AI docker container

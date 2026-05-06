@@ -37,8 +37,10 @@ from inference_utils import (
     AMP_MAX,
     AMP_MIN,
     EPS,
+    DPUSubgraphRunner,
     MetricsTracker,
     display_manifest,
+    identify_subgraphs,
     patch_infer_fpga,
     print_tensor_stats,
 )
@@ -71,144 +73,8 @@ HAMBURG_ENL_ROI: Tuple[int, int, int, int] = (400, 600, 800, 1000)
 
 
 # -----------------------------------------------------------------------------
-# DPU RUNNER HELPER
-# -----------------------------------------------------------------------------
-class DPUSubgraphRunner:
-    """Helper to wrap a single DPU subgraph runner."""
-
-    def __init__(self, runner: vart.Runner, subgraph: xir.Subgraph, name: str):
-        self.runner = runner
-        self.name = name
-
-        # ----- IO Shapes -----
-        self.input_tensors = runner.get_input_tensors()
-        self.output_tensors = runner.get_output_tensors()
-        # We assume 1 input and 1 output for simplicity based on our wrapper
-        self.input_shape = tuple(self.input_tensors[0].dims)  # [N, H, W, C]
-        self.output_shape = tuple(self.output_tensors[0].dims)  # [N, H, W, C]
-        # Get fixed-point scales for conversion
-        input_fixpos = self.input_tensors[0].get_attr("fix_point")
-        output_fixpos = self.output_tensors[0].get_attr("fix_point")
-        self.input_scale = 2.0**input_fixpos
-        self.output_scale = 2.0 ** (-output_fixpos)
-
-        print(
-            f"[{name}] In: {self.input_shape} (scale={self.input_scale}), Out: {self.output_shape} (scale={self.output_scale})"
-        )
-
-    def run(self, input_data: np.ndarray) -> np.ndarray:
-        """Run inference on a batch of data.
-
-        input_data: Float numpy array matching input shape (NCHW or NHWC).
-        """
-        # Note: VART expects NHWC but PyTorch is NCHW.
-        # expected_dims = len(self.input_shape)
-        # if expected_dims == 4:
-        #     # Heuristic check for NCHW vs NHWC
-        #     # DPU usually HWC.
-        #     if input_data.shape != self.input_shape:
-        #         # Try simple transpose (N, H, W, C) from (N, C, H, W)
-        #         # assuming input_data is NCHW
-        #         input_data = input_data.transpose(0, 2, 3, 1)
-
-        # 1. Quantize Input (Float -> Int8)
-        input_int8 = float_to_DPU_int(input_data, self.input_scale)
-
-        # 2. Prepare Buffers
-        # VART needs input/output buffers with exact shape from DPU, order="C" ensures data is laid out in row-major order (unlike Fortran order)
-        input_buffer = np.ascontiguousarray(input_int8)
-        output_buffer = np.empty(self.output_shape, dtype=np.int8, order="C")
-
-        # 3. Execute (job_id is returned)
-        job_id = self.runner.execute_async([input_buffer], [output_buffer])
-        self.runner.wait(job_id)
-
-        # 4. Dequantize Output (Int8 -> Float)
-        output_float = DPU_int_to_float(output_buffer, self.output_scale)
-
-        # # 5. Transpose back to NCHW if needed
-        # if expected_dims == 4:
-        #     # (N, H, W, C) -> (N, C, H, W)
-        #     output_float = output_float.transpose(0, 3, 1, 2)
-
-        return output_float
-
-
-def float_to_DPU_int(data_float: np.ndarray, input_scale: float) -> np.ndarray:
-    """Convert float data to DPU fixed-point INT8 using the given scale."""
-    return (data_float * input_scale).astype(np.int8)
-
-
-def DPU_int_to_float(data_int: np.ndarray, scale: float) -> np.ndarray:
-    """Convert DPU fixed-point INT8 data back to float using the given scale."""
-    return data_int.astype(np.float32) * scale
-
-
-# -----------------------------------------------------------------------------
 # MAIN ORCHESTRATOR
 # -----------------------------------------------------------------------------
-
-
-def identify_subgraphs(graph: xir.Graph, meta_path: Path) -> Dict[str, xir.Subgraph]:
-    """Uses meta.json to identify which subgraph corresponds to g_a, h_a, h_s, g_s."""
-    mapping = {}
-
-    # 1. Try to load meta.json for precise name mapping
-    meta_path = xmodel_path.parent / "meta.json"
-    if not meta_path.exists():
-        raise FileNotFoundError(
-            f"Meta file not found at {meta_path}. Cannot identify subgraphs without it."
-        )
-    with open(meta_path) as f:
-        meta = json.load(f)
-
-    kernels = meta.get("kernel", [])
-    log(f"Loading subgraph mapping from meta.json: found {len(kernels)} kernels.")
-
-    # Map based on substrings in the kernel name
-    name_to_role = {}
-    for k_name in kernels:
-        if "g_a" in k_name:
-            name_to_role[k_name] = "g_a"
-        elif "g_s" in k_name:
-            name_to_role[k_name] = "g_s"
-        elif "h_a" in k_name:
-            name_to_role[k_name] = "h_a"
-        elif "h_s" in k_name:
-            name_to_role[k_name] = "h_s"
-        else:
-            log(f"WARNING: Unrecognized kernel name in meta.json: {k_name}")
-
-    # Find the actual subgraphs in the graph object
-    root = graph.get_root_subgraph()
-    for sg in root.toposort_child_subgraph():
-        if sg.get_name() in name_to_role:
-            role = name_to_role[sg.get_name()]
-            mapping[role] = sg
-            log(f"Mapped {role} -> {sg.get_name()} (via meta.json)")
-
-    # Ensure validity of the graph mapping
-    required_keys = ["g_a", "h_a", "h_s", "g_s"]
-    missing_keys = [k for k in required_keys if k not in mapping]
-    if missing_keys:
-        log(f"ERROR: Could not find subgraphs for: {missing_keys}")
-        log(f"Found mapped subgraphs: {list(mapping.keys())}")
-
-        log("\n--- Debug: All DPU Subgraphs ---")
-        root = graph.get_root_subgraph()
-        for sg in root.toposort_child_subgraph():
-            if sg.has_attr("device") and sg.get_attr("device") == "DPU":
-                inputs = list(sg.get_input_tensors())
-                outputs = list(sg.get_output_tensors())
-                in_shape = tuple(inputs[0].dims) if inputs else "None"
-                out_shape = tuple(outputs[0].dims) if outputs else "None"
-                log(f"Subgraph: {sg.get_name()}")
-                log(f"  Input:  {in_shape}")
-                log(f"  Output: {out_shape}")
-        log("--------------------------------\n")
-        raise ValueError("Could not identify all required subgraphs in the model.")
-
-    return mapping
 
 
 def load_npy_test_set(

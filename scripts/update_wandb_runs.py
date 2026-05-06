@@ -51,8 +51,8 @@ FILTERS_CONFIG = [
     ("seed", "in", [0, 1, 2, 3, 4, 5]),  # exclude seed=42 (manual test run)
     # Restrict to DPU-deployable architecture to match FPGA comparison set.
     # Comment these two lines out to re-evaluate all architectures.
-    ("model.net.activation", "==", "relu"),
-    ("model.net.no_output_padding", "==", True),
+    # ("model.net.activation", "==", "relu"),
+    # ("model.net.no_output_padding", "==", True),
     # ("retested_on", "is_none", None),
     # ("retested_on", "is_none_or_older_than", datetime(2026, 2, 12, 23, 59, 0)),
     # ("retested_on", "is_after", datetime(2026, 2, 11, 10, 0, 0)),
@@ -228,7 +228,7 @@ def evaluate_model_captured(
         hdf5_dir=hydra_cfg.data.get("hdf5_dir", None),
         batch_size=hydra_cfg.data.get("batch_size", 1),
         num_workers=hydra_cfg.data.get("num_workers", 0),
-        skip_full_test=True,
+        skip_full_test=False,
     )
 
     # Add metrics captured by the callback (e.g. from DictLogger)
@@ -269,6 +269,19 @@ _SHOW_KEYS = [
     # Compression
     "test_sub500/bpp",
     "test_sub500/bpp_bitstream",
+    # Noisy
+    "test/psnr_noisy",
+    "test/enl_recon",
+    "test/ratio_mean",
+    "test/ratio_enl",
+    # Despeckling quality vs references
+    "test/psnr_adam_noc",
+    "test/psnr_merlin",
+    "test/ssim_merlin",
+    "test/epd_merlin",
+    # Compression
+    "test/bpp",
+    "test/bpp_bitstream",
 ]
 
 
@@ -365,10 +378,10 @@ def main():
     print(f"Found {len(runs)} total runs in {ENTITY}/{PROJECT}")
 
     # ----- Filtering -----
-    # Apply FILTERS_CONFIG
     matching_runs = [r for r in runs if run_matches_config_filters(r.config)]
-    # Uncomment the following line to test on a single run (replace ID with a valid one)
-    # matching_runs = [r for r in matching_runs if r.id in ["wpfl8zys"]]
+    # matching_runs = [r for r in matching_runs if r.id in list_of_runs_id_in_the_filter]
+    # One safe + one problematyic run = ['lwks3okq', 'jvsj0ut4']
+    # All 24 runs with NaN problems (GDN + output_padding, for lambdas 50,100,2000,1000 all seeds = ['jvsj0ut4', 'we73n9uj', '5h78ir4k', 'zrw08hbz', 'elp40xh9', 'x4qu6p2x', 'vkd9treb', 'n5gsa2fo', '0rru19sn', '4p4ghwww', 'atv9gmhm', '9tfd1snp', 'ltec20ym', '5tj53usr', 'p9dl5f81', 'f5fs0s9d', 'hg6f3jgu', 'cj2n50np', '5wa47ncm', 'w870mauv', 'ljfcdsty', '0fftmoe3', 'gpesw2xn', 'pn1kgfwh']]
 
     # Filter by creation date using the helper to avoid timezone errors
     # matching_runs = filter_runs_by_creation_date(matching_runs, datetime(2026, 2, 11, 10, 0, 0))

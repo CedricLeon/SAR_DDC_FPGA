@@ -13,6 +13,213 @@ AMP_MAX = 10.742239952087402
 EPS = 1e-2
 AMP_LIN_99 = 545.2018433569272
 
+
+# -----------------------------------------------------------------------------
+# DPU RUNNER HELPER
+# -----------------------------------------------------------------------------
+
+
+def float_to_DPU_int(data_float: np.ndarray, input_scale: float) -> np.ndarray:
+    """Convert float data to DPU fixed-point INT8 using the given scale."""
+    return (data_float * input_scale).astype(np.int8)
+
+
+def DPU_int_to_float(data_int: np.ndarray, scale: float) -> np.ndarray:
+    """Convert DPU fixed-point INT8 data back to float using the given scale."""
+    return data_int.astype(np.float32) * scale
+
+
+class DPUJob:
+    """Handle for a pending asynchronous DPU job.
+
+    Both the input and output buffers must remain alive in Python while the
+    DPU is running, because the DPU reads / writes them directly via DMA.
+    This object holds strong references to both, preventing early GC.
+
+    Do **not** discard a ``DPUJob`` before calling
+    ``DPUSubgraphRunner.collect()`` on it.
+
+    Attributes
+    ----------
+    job_id : int
+        Job identifier returned by ``vart.Runner.execute_async``.
+    input_buffer : np.ndarray
+        INT8 contiguous array being read by the DPU.
+    output_buffer : np.ndarray
+        INT8 array being written by the DPU.
+    """
+
+    def __init__(
+        self,
+        job_id: int,
+        input_buffer: np.ndarray,
+        output_buffer: np.ndarray,
+    ) -> None:
+        self.job_id: int = job_id
+        self.input_buffer: np.ndarray = input_buffer
+        self.output_buffer: np.ndarray = output_buffer
+
+
+class DPUSubgraphRunner:
+    """Helper to wrap a single DPU subgraph runner.
+
+    Handles INT8 quantisation/dequantisation transparently so callers can pass float32 numpy arrays
+    and receive float32 results.
+    """
+
+    def __init__(self, runner: vart.Runner, subgraph: xir.Subgraph, name: str):
+        self.runner = runner
+        self.name = name
+
+        # ----- IO Shapes -----
+        self.input_tensors = runner.get_input_tensors()
+        self.output_tensors = runner.get_output_tensors()
+        # We assume 1 input and 1 output for simplicity based on our wrapper
+        self.input_shape = tuple(self.input_tensors[0].dims)  # [N, H, W, C]
+        self.output_shape = tuple(self.output_tensors[0].dims)  # [N, H, W, C]
+        # Get fixed-point scales for conversion
+        input_fixpos = self.input_tensors[0].get_attr("fix_point")
+        output_fixpos = self.output_tensors[0].get_attr("fix_point")
+        self.input_scale = 2.0**input_fixpos
+        self.output_scale = 2.0 ** (-output_fixpos)
+
+        print(
+            f"[{name}] In: {self.input_shape} (scale={self.input_scale}), "
+            f"Out: {self.output_shape} (scale={self.output_scale})"
+        )
+
+    def run(self, input_data: np.ndarray) -> np.ndarray:
+        """Float-in, float-out inference (quantise -> DPU -> dequantise).
+
+        input_data: Float numpy array matching input shape (NHWC).
+        """
+        # 1. Quantize Input (Float -> Int8)
+        input_int8 = float_to_DPU_int(input_data, self.input_scale)
+
+        # 2. Prepare Buffers
+        # VART needs input/output buffers with exact shape from DPU,
+        # order="C" ensures data is laid out in row-major order.
+        input_buffer = np.ascontiguousarray(input_int8)
+        output_buffer = np.empty(self.output_shape, dtype=np.int8, order="C")
+
+        # 3. Execute (job_id is returned)
+        job_id = self.runner.execute_async([input_buffer], [output_buffer])
+        self.runner.wait(job_id)
+
+        # 4. Dequantize Output (Int8 -> Float)
+        output_float = DPU_int_to_float(output_buffer, self.output_scale)
+        return output_float
+
+    def submit(self, input_data: np.ndarray) -> DPUJob:
+        """Quantize and dispatch to a DPU core *without* blocking.
+
+        Returns a class `DPUJob` that keeps both I/O buffers alive while the
+        DPU runs.  Call meth `collect` on the returned handle to wait for
+        completion and retrieve the float result.
+
+        Use this paired with meth `collect` across two runner instances to
+        exploit multi-core parallelism::
+
+            job_r = runner_core0.submit(real)
+            job_i = runner_core1.submit(imag)   # dispatched to a second DPU core
+            y_real = runner_core0.collect(job_r)
+            y_imag = runner_core1.collect(job_i)
+        """
+        input_int8 = float_to_DPU_int(input_data, self.input_scale)
+        input_buffer = np.ascontiguousarray(input_int8)
+        output_buffer = np.empty(self.output_shape, dtype=np.int8, order="C")
+        job_id = self.runner.execute_async([input_buffer], [output_buffer])
+        return DPUJob(job_id, input_buffer, output_buffer)
+
+    def collect(self, job: DPUJob) -> np.ndarray:
+        """Wait for a dispatched job and return the dequantized float output.
+
+        Parameters
+        ----------
+        job : DPUJob
+            Handle returned by a previous call to meth `submit` on *this*
+            runner.  Do not pass a handle from a different runner instance.
+        """
+        self.runner.wait(job.job_id)
+        return DPU_int_to_float(job.output_buffer, self.output_scale)
+
+
+# -----------------------------------------------------------------------------
+# SUBGRAPH IDENTIFICATION
+# -----------------------------------------------------------------------------
+
+
+def identify_subgraphs(
+    graph: xir.Graph, meta_path: Path, verbose: bool = True
+) -> Dict[str, xir.Subgraph]:
+    """Identify which xir.Subgraph corresponds to g_a, h_a, h_s, g_s using meta.json.
+
+    Parameters
+    ----------
+    graph : xir.Graph
+        The deserialized xmodel graph.
+    meta_path : Path
+        Path to the ``meta.json`` file produced by the Vitis-AI compiler.
+
+    Returns
+    -------
+    dict
+        Mapping ``{"g_a": subgraph, "h_a": ..., "h_s": ..., "g_s": ...}``.
+    """
+    if not meta_path.exists():
+        raise FileNotFoundError(
+            f"Meta file not found at {meta_path}. Cannot identify subgraphs without it."
+        )
+    with open(meta_path) as f:
+        meta = json.load(f)
+
+    kernels = meta.get("kernel", [])
+    if verbose:
+        print(f"[identify_subgraphs] meta.json lists {len(kernels)} kernels.")
+
+    # Map kernel names to roles based on substrings
+    name_to_role: Dict[str, str] = {}
+    for k_name in kernels:
+        for role in ("g_a", "g_s", "h_a", "h_s"):
+            if role in k_name:
+                name_to_role[k_name] = role
+                break
+        else:
+            print(f"[identify_subgraphs] WARNING: Unrecognized kernel name: {k_name}")
+
+    # Find the actual subgraphs in the graph object
+    mapping: Dict[str, xir.Subgraph] = {}
+    root = graph.get_root_subgraph()
+    for sg in root.toposort_child_subgraph():
+        if sg.get_name() in name_to_role:
+            role = name_to_role[sg.get_name()]
+            mapping[role] = sg
+            if verbose:
+                print(f"[identify_subgraphs] Mapped {role} -> {sg.get_name()}")
+
+    # Validate
+    required_keys = ["g_a", "h_a", "h_s", "g_s"]
+    missing_keys = [k for k in required_keys if k not in mapping]
+    if missing_keys:
+        print(f"[identify_subgraphs] ERROR: Missing subgraphs: {missing_keys}")
+        print(f"[identify_subgraphs] Found: {list(mapping.keys())}")
+
+        print("\n--- Debug: All DPU Subgraphs ---")
+        for sg in root.toposort_child_subgraph():
+            if sg.has_attr("device") and sg.get_attr("device") == "DPU":
+                inputs = list(sg.get_input_tensors())
+                outputs = list(sg.get_output_tensors())
+                in_shape = tuple(inputs[0].dims) if inputs else "None"
+                out_shape = tuple(outputs[0].dims) if outputs else "None"
+                print(f"  Subgraph: {sg.get_name()}")
+                print(f"    Input:  {in_shape}")
+                print(f"    Output: {out_shape}")
+        print("--------------------------------\n")
+        raise ValueError("Could not identify all required subgraphs in the model.")
+
+    return mapping
+
+
 # -----------------------------------------------------------------------------
 # LOGGING UTILS
 # -----------------------------------------------------------------------------
@@ -248,72 +455,6 @@ class MetricsTracker:
     def count(self) -> int:
         """Return the number of updates."""
         return self._count
-
-
-# -----------------------------------------------------------------------------
-# VISUALIZATION UTILS
-# -----------------------------------------------------------------------------
-
-
-def visualize_patches(
-    noisy_logI: np.ndarray,
-    recon_logI: np.ndarray,
-    adam_logI: np.ndarray,
-    merlin_logI: np.ndarray,
-    save_path: str,
-    num_patches: int = 5,
-):
-    """Generate and save a 4-row comparison figure.
-
-    If matplotlib is missing, skips visualization. Expects all inputs to be in log-Intensity
-    format.
-    """
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        print("WARNING: Matplotlib not found. Visualization skipped.")
-        print(f"Would have saved to: {save_path}")
-        return
-
-    N = min(num_patches, len(noisy_logI))
-    _, axes = plt.subplots(4, N, figsize=(4 * N, 16))
-    if N == 1:
-        axes = axes.reshape(4, 1)
-
-    for i in range(N):
-        # Clipping
-        noisy_disp = clip(noisy_logI)
-        recon_disp = clip(recon_logI)
-        merlin_disp = clip(merlin_logI)
-        adam_disp = clip(adam_logI)
-
-        # Row 0: Original Noisy (LogI)
-        axes[0, i].imshow(noisy_disp, cmap="gray")
-        axes[0, i].axis("off")
-        if i == 0:
-            axes[0, i].set_title("Noisy Input")
-
-        # Row 1: Reconstruction (LogI)
-        axes[1, i].imshow(recon_disp, cmap="gray")
-        axes[1, i].axis("off")
-        if i == 0:
-            axes[1, i].set_title("Reconstruction")
-
-        # Row 2: ADAM NOC GT (LogI)
-        axes[2, i].imshow(adam_disp, cmap="gray")
-        axes[2, i].axis("off")
-        if i == 0:
-            axes[2, i].set_title("ADAM NOC GT")
-
-        # Row 3: MERLIN GT (LogI)
-        axes[3, i].imshow(merlin_disp, cmap="gray")
-        axes[3, i].axis("off")
-        if i == 0:
-            axes[3, i].set_title("MERLIN GT")
-
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
 
 
 # -----------------------------------------------------------------------------

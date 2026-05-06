@@ -5,6 +5,7 @@ net:
   nb_channels_main: 128  # Number of channels for main transform
   activation: "gdn"   # gdn | relu | gdn1 (GDN Simplified) | identity (no activation)
   no_output_padding: False
+  no_residual_blocks: False  # If True, ResidualBlocks in g_a/g_s are replaced by nn.Identity
   export_dpu: False # Always false, only set when quantizing the network with Vitis-AI
 
 criterion:

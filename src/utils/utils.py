@@ -20,7 +20,10 @@ def make_wandb_run_name(cfg: Dict[str, Any]) -> str:
     """
     model = cfg.model.net.get("_target_", None)
     if "ResidualScaleHyperprior" in model:
-        model = "ResSHyp"
+        if cfg.model.net.get("no_residual_blocks", False):
+            model = "SHyp"
+        else:
+            model = "ResSHyp"
     elif "ResidualSimpleAE" in model:
         model = "ResAE"
     elif "Merlin" in model:

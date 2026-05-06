@@ -1,42 +1,44 @@
 # Synthetic Aperture Radar (SAR) Despeckling and Data Compression (DDC) on Field Programmable Gate Arrays (FPGA)
 
-<div align="center">
+[![PyTorch](https://img.shields.io/badge/PyTorch-ee4c2c?logo=pytorch&logoColor=white)](https://pytorch.org/get-started/locally/)
+[![Lightning](https://img.shields.io/badge/-Lightning-792ee5?logo=pytorchlightning&logoColor=white)](https://pytorchlightning.ai/)
+[![Config: Hydra](https://img.shields.io/badge/Config-Hydra-89b8cd)](https://hydra.cc/)
+[![Template](https://img.shields.io/badge/-Lightning--Hydra--Template-017F2F?style=flat&logo=github&labelColor=gray)](https://github.com/ashleve/lightning-hydra-template)
 
-<a href="https://pytorch.org/get-started/locally/"><img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-ee4c2c?logo=pytorch&logoColor=white"></a>
-<a href="https://pytorchlightning.ai/"><img alt="Lightning" src="https://img.shields.io/badge/-Lightning-792ee5?logo=pytorchlightning&logoColor=white"></a>
-<a href="https://hydra.cc/"><img alt="Config: Hydra" src="https://img.shields.io/badge/Config-Hydra-89b8cd"></a>
-<a href="https://github.com/ashleve/lightning-hydra-template"><img alt="Template" src="https://img.shields.io/badge/-Lightning--Hydra--Template-017F2F?style=flat&logo=github&labelColor=gray"></a><br>
-
-</div>
-
-Yes, that's a lot of acronyms. But now you know why it's called DDC_FPGA.
+Yes, that's a lot of acronyms. But now you know why it's called SAR_DDC_FPGA.
 This project implements the solution presented by Amao-Oliva et al. [1] available at [sciencedirect.com](https://www.sciencedirect.com/science/article/pii/S0924271624004866) on FPGA.
 
-### TODOs
+## TODOs
 
 *I'll use this section as a TODO list, including ideas for future projects.*
 
-- [ ] "NWML" warning, see [NVML is the NVIDIA Management Library and is used on NVIDIA GPUs](https://discuss.pytorch.org/t/cant-initialize-nvml-error-with-rvc-project/194206)
+### Small things to check/investigate
+
+- [ ] EPD values > 1 in [RD-curve_ablation.ipynb python cell 11](notebooks/RD-curve_ablation.ipynb). EPD max value is supposed to be 1, how is that possible? I don't remember having that problem before re-evaluating all the old runs.
+
+### Small things to add/fix
+
 - [ ] Add in README that the syntax is Python 3.8 compatible because it is used by the Vitis-AI container and we can't bump it. (It mostly implies using `Option[]` and `Union[]` from `typing` instead of `|`)
+- [ ] Use [rootutils](https://github.com/ashleve/rootutils) better, for example using `find_root()` instead of `setup_root(Path(__file__).resolve().parent.parent` ...
 
 ### Long-term Experiments/Upgrades
 
-**About SAR_DDC**
+#### About SAR_DDC
 
 - [ ] Maybe there is a way to avoid the concatenation and average latent representations before hyperprior
 - [ ] `compressai` seems to have `ResidualBlockWithStride` and `ResidualBlockUpsample` that are probably used in other architectures. Maybe check if they perform better than our manual ones.
 
-**About FPGA deployment**
+#### About FPGA deployment
 
 - [ ] vaiq_pytorch should allow hardware-aware and partial quantization, see the [doc](https://docs.amd.com/r/en-US/ug1414-vitis-ai/Hardware-Aware-Quantization-Strategy). Alternatively, one can configure the quantization quite a bit with a JSON file, see the [doc](https://docs.amd.com/r/en-US/ug1414-vitis-ai/Quantization-Strategy-Configuration?tocId=rGCaO9QY6VvNbAJV7l9i7Q)
 - [ ] Try the `fast_finetuning` option, or if still bad, the QAT
 
-### Method
+## Method
 
 The pipeline relies on Pytorch Ligthning on [Compressai](https://github.com/InterDigitalInc/CompressAI) [2] to implement Hyper-autoencoders solutions based on Johannes Ballé's work [3-5].
 In addition, the despeckling task is inspired from MERLIN's self-supervised training pipeline [6].
 
-#### MERLIN Theory
+### MERLIN Theory
 
 **The big picture (mostly written by ChatGPT)**:
 Dalsasso et al. introduce MERLIN, a fully self-supervised strategy for training deep despeckling networks directly on single-look complex (SLC) SAR images. By exploiting Goodman’s speckle model—which shows that the real and imaginary components of an SLC pixel are two independent, Gaussian-distributed realizations with variance proportional to the local reflectivity $r$—they train a U-Net to predict pixel-wise variance maps (i.e., the effective “blurred” reflectivity $r$) from one component (say, the real part) and evaluate the loss on the other component (the imaginary part).
@@ -143,6 +145,76 @@ In particular, each .cos file present in `data/TSX_cos_files/` is open, images a
 
 We use Vitis AI [7] for the FPGA deployment. See [Vitis-AI_journey.md](Vitis-AI_journey.md) for details about my struggles.
 
+### Benchmarking
+
+Performance benchmarks measure latency, throughput, and power consumption across GPU (RTX A4000), host CPU (x86), and FPGA (Xilinx ZCU102).  All results are stored as JSON in `results/benchmark/<model_name>/` and analysed in `notebooks/benchmark_analysis.ipynb`.
+
+#### Prerequisites
+
+- A compiled FPGA model in `results/fpga/active_model/` (run `deploy.py` first).
+- ZCU102 accessible via `ssh ZCU102` (passwordless SSH configured, see `docs/Vitis-AI_journey.md`).
+- For GPU power: `nvidia-smi` available.  For CPU RAPL power: run as root or `sudo chmod o+r /sys/class/powercap/intel-rapl/*/energy_uj`.
+- **For meaningful power results**: cold-reboot the ZCU102 before each run.
+
+#### Full benchmark
+
+```bash
+python scripts/fpga/run_full_benchmark.py \
+    --model-dir results/fpga/active_model/ \
+    --warmup 20 --iters 100 \
+    --power --idle-baseline 10 \
+    --power-hz-gpu 10 --power-hz-fpga 50
+```
+
+Runs all 5 scenarios (`full`, `compress`, `decompress`, `nn_only`, `entropy_only`) on GPU + CPU (host) + FPGA (ZCU102 via SSH), with a 10 s idle power baseline before each scenario. *Estimated runtime: ~15 min.*
+
+```bash
+# GPU + CPU only (no board required)
+python scripts/fpga/run_full_benchmark.py --model-dir results/fpga/active_model/ --no-fpga
+
+# FPGA only (model already on board, skip transfer)
+python scripts/fpga/run_full_benchmark.py \
+    --model-dir results/fpga/active_model/ --no-gpu --no-cpu --skip-transfer
+```
+
+#### Protocol for reproducible results
+
+1. **Cold-reboot the ZCU102** — ensures no residual DPU/VART state from previous runs.
+2. **Wait ~60 s** after PetaLinux boot before starting the benchmark.
+3. **Close GPU workloads** on the host (`nvidia-smi` should show 0 MiB compute usage).
+4. Run the command above — idle baselines are captured automatically per scenario.
+5. For publication: **repeat 3×** (reboot between runs) and report mean ± std.
+
+#### Interpreting results
+
+Key fields in each JSON file:
+
+| Field | Meaning |
+| --- | --- |
+| `latency_total_mean_ms` | Per-tile end-to-end wall time |
+| `latency_dpu_total_mean_ms` / `latency_gpu_total_mean_ms` | Hardware accelerator time only |
+| `latency_cpu_total_mean_ms` | CPU-side entropy coding + pre/postprocessing |
+| `power.groups_avg_w.DPU_fabric` | VCCINT+VCCBRAM (DPU switching power) on FPGA |
+| `power.groups_avg_w.PS_compute` | ARM A53 APU power (entropy coding) on FPGA |
+| `power.groups_avg_w.MPSoC` | PL + PS total SoC power on FPGA |
+| `power.idle_board_total_avg_w` | Idle baseline for dynamic power subtraction |
+
+**Dynamic power** = `power.groups_avg_w.X` − `power.idle_groups_avg_w.X` (post-hoc from JSON).
+
+> **Key finding**: CPU-side Gaussian Conditional entropy coding (C++ rANS) accounts
+> for ~60 % of total latency on FPGA.  Use the `entropy_only` scenario to isolate it
+> and `nn_only` to isolate pure DPU inference.
+
+#### Power measurement scope
+
+| Platform | Instrument | Scope | Unmonitored |
+| --- | --- | --- | --- |
+| **GPU** | `nvidia-smi` | Full GPU board power | Host CPU, memory, motherboard |
+| **CPU** | Intel RAPL | CPU package + DRAM | Motherboard, fans, storage |
+| **FPGA** | 18× TI INA226 + 3× Maxim PMBus | PL, PS, MGT + DDR4/UTIL rails | 6 secondary bias rails (< 500 mW, workload-invariant) |
+
+See `docs/performance_benchmark_implementation.md` §4 for the complete technical reference, including INA226 register configuration, I2C bus topology, rail-to-sensor mapping, and paper-ready measurement descriptions (§14).
+
 #### References
 
 - [1] Joel Amao-Oliva, Nils Foix-Colonier, Francescopaolo Sica. (2024). Joint compression and despeckling by SAR representation learning. ISPRS Journal of Photogrammetry and Remote Sensing.
@@ -157,7 +229,7 @@ We use Vitis AI [7] for the FPGA deployment. See [Vitis-AI_journey.md](Vitis-AI_
 
 Consider we start from the repository root (`<something>/DDC_FPGA`).
 
-#### Miscalleneous scripts
+### Miscalleneous scripts
 
 **Compute dataset statistics**
 By default statistics for the intensity and the amplitude in log-scale (natural log with an epsilon of $1e-2$) are computed. Modify the file to compute more.
