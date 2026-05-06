@@ -29,8 +29,11 @@ from pathlib import Path
 from typing import Any, List
 
 import numpy as np
+import rootutils
 import torch
 from omegaconf import DictConfig, OmegaConf
+
+rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.models.components.res_factorized_prior_dpu import (
     ResidualFactorizedPriorPatched,

@@ -49,7 +49,7 @@ logger:
     offline: False
 
 # The task name determines the logs path, by convention use <task>/<dataset>/<model>
-task_name: train/sar_ddc/hyperprior
+task_name: train/sar_ddc/factorizedprior
 tags: ["TSX_SSC", "hyperprior"]
 seed: 42
 
