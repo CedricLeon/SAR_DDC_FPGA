@@ -1,7 +1,6 @@
 """DPU-friendly Residual Scale Hyperprior model.
 
-This mirrors `src/models/components/res_scale_hyperprior.py::ResidualScaleHyperprior` but replaces
-CompressAi DPU-problematic operations by patched versions from `src.models.components.compressai_dpu`.
+This replaces CompressAi DPU-problematic operations by patched versions from `src.models.components.compressai_dpu`.
 """
 
 from __future__ import annotations
@@ -328,7 +327,6 @@ class ResidualScaleHyperpriorPatched(CompressionModel):
                 log_tensor_shape("forward.eval.x_hat", x_hat)
         return {
             "x_hat": x_hat,
-            "y_hat": y_hat,
             "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
         }
 

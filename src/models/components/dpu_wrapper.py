@@ -109,7 +109,6 @@ class ResidualScaleHyperpriorDPUWrapper(nn.Module):
         self.i_batch += 1
         results_dict = {
             "x_hat": x_hat,
-            "y_hat": y_hat,
             "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
         }
         return results_dict
