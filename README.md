@@ -225,11 +225,17 @@ See `docs/performance_benchmark_implementation.md` §4 for the complete technica
 - [6] Dalsasso, E., Denis, L., & Tupin, F. (2022). As if by magic: Self-supervised training of deep despeckling networks with MERLIN. IEEE Transactions on Geoscience and Remote Sensing, 60, 1–13. <https://doi.org/10.1109/TGRS.2021.3128621>
 - [7] AMD Vitis™ AI Software. (2019). AMD. <https://www.amd.com/en/products/software/vitis-ai.html>
 
-## How to use ==@TO UPDATE==
+## Workflows
 
-Consider we start from the repository root (`<something>/DDC_FPGA`).
+***
 
-### Miscalleneous scripts
+Quick reference for all recurring workflows. All commands run from the project root (`DDC_FPGA/`) unless noted.
+Conda environment: `SAR_DDC` for local work; Vitis-AI Docker container (Python 3.8) for FPGA quantization (handled transparently by `deploy.py`).
+
+### 1 · Dataset creation
+
+**Script**: `scripts/dataset/compute_stats.py` and `scripts/dataset/create_dataset.py`
+**When**: To compute normalization constants and to create HDF5 set of `.cos` files for a split definition.
 
 **Compute dataset statistics**
 By default statistics for the intensity and the amplitude in log-scale (natural log with an epsilon of $1e-2$) are computed. Modify the file to compute more.
@@ -239,10 +245,110 @@ cd scripts/dataset
 python compute_stats.py > ../../data/analysis/dataset_stats.log
 ```
 
-**Dataset creation**
-Old already fully-preprocessed dataset `TSX_spatialsplit_dataset_creation.py`
-`preprocess_TSX_images.py` takes images and a 'split file' (stating which image should be part of which split). By the default processing symmetrizes and patchifies, but does not square or normalize the patches. Specifying `--normalize` adds squaring and normalization..
+```bash
+python scripts/dataset/create_dataset.py \
+    --input-dir data/TSX_cos_files/ \
+    --output-dir data/processed_hdf5/ \
+    --split-file data/TSX_cos_files/spatial_splits_5.json \
+    --patch-size 256 \
+    --seed 42
+```
+
+Output follows the naming convention `<split>_<nb_imgs>_<preservation>_<normalization>.hdf5` (see README §Data).
+
+### 2 · Training
+
+**Entry point**: `src/train.py` (Hydra)
+**Config root**: `configs/`, experiment overrides in `configs/experiment/`.
 
 ```bash
-python scripts/dataset/preprocess_TSX_images.py --input-dir data/TSX_cos_files --split-file data/TSX_cos_files/spatial_splits_5.json --output-dir data/processed_hdf5/ --normalize
+# Standard run
+python src/train.py experiment=<experiment_name>
+
+# Debug (fast dev run)
+python src/train.py experiment=<experiment_name> debug=fdr
+
+# Multirun
+python src/train.py experiment=<experiment_name> seed=0,1,2,3,4,5 model.net.lmbda=1,2,5,10,20,50,100,200,500,1000
 ```
+
+Checkpoints land in `logs/train/<task>/<model>/<multi>runs/<date>/<id>/checkpoints/`.
+
+### 3 · FPGA deployment — single run
+
+**Script**: `scripts/fpga/deploy.py`
+**When**: Compile + transfer + infer a single training checkpoint to the ZCU102.
+**Requires**: Vitis-AI Docker container (started automatically), passwordless SSH to ZCU102.
+
+```bash
+# Full pipeline (compile → transfer → infer → fetch)
+python scripts/fpga/deploy.py --run-dir DDC_FPGA/logs/train/sar_ddc/hyperprior/runs/<date>/<id>
+
+# Skip phases selectively
+python scripts/fpga/deploy.py --run-dir <...> \
+    --skip-compile          # skip quantization + xmodel generation
+    --skip-transfer         # skip SCP to board
+    --skip-infer            # skip board inference
+    --skip-fetch            # skip fetching results back
+
+# Optional compile flags
+python scripts/fpga/deploy.py --run-dir <...> \
+    --arch ZCU102           # or Leopard (default: ZCU102)
+    --inspect               # run DPU inspector before calibration
+    --eval-float            # evaluate float model
+    --eval-quant            # evaluate quantized model
+    --fast-finetune         # enable fast finetuning during calibration
+    --image-graph           # generate SVG of compiled xmodel
+    --subset 100            # number of test samples for inference (default: 100)
+```
+
+Results land in `results/fpga/compiled_models/<model_name>/` and are accessible via the `results/fpga/active_model/` symlink.
+
+### 4 · FPGA deployment — batch
+
+**Script**: `scripts/fpga/batch_deploy.py`
+**When**: Compile + deploy a set of W&B runs matching filters defined in `FILTERS_CONFIG`.
+
+```bash
+# Preview matched runs (dry run)
+python scripts/fpga/batch_deploy.py --tag <label> --dry-run
+
+# Deploy all matching runs (skips already-compiled models)
+python scripts/fpga/batch_deploy.py --tag <label>
+
+# Deploy specific run IDs directly (bypasses FILTERS_CONFIG)
+python scripts/fpga/batch_deploy.py --tag <label> --run-ids <id1> <id2>
+
+# Force recompile even if model already exists
+python scripts/fpga/batch_deploy.py --tag <label> --force-recompile
+```
+
+Supports all phase-skip and compile flags from `deploy.py` (`--skip-transfer`, `--arch`, `--eval-float`, etc.).
+Batch log: `results/fpga/batch_deploy/<tag>_<timestamp>.log`.
+
+### 5 · Benchmarking
+
+**Script**: `scripts/fpga/run_full_benchmark.py`
+**When**: Measure latency, throughput, and power across GPU + CPU + FPGA.
+**Requires**: compiled model in `results/fpga/active_model/` (run `deploy.py` first).
+
+```bash
+# Full benchmark — all platforms, with power measurement
+python scripts/fpga/run_full_benchmark.py \
+    --model-dir results/fpga/active_model/ \
+    --warmup 20 --iters 100 \
+    --power --idle-baseline 10 \
+    --power-hz-gpu 10 --power-hz-fpga 50
+
+# GPU + CPU only (no board required)
+python scripts/fpga/run_full_benchmark.py \
+    --model-dir results/fpga/active_model/ --no-fpga
+
+# FPGA only (model already on board)
+python scripts/fpga/run_full_benchmark.py \
+    --model-dir results/fpga/active_model/ \
+    --no-gpu --no-cpu --skip-transfer
+```
+
+Runs 5 scenarios: `full`, `compress`, `decompress`, `nn_only`, `entropy_only`.
+Results: `results/benchmark/<model_name>/` as JSON. Analysis notebook: `notebooks/benchmark_analysis.ipynb`.
