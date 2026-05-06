@@ -269,6 +269,11 @@ def _make_compiled_model_name(cfg: Any) -> str:
             model = "SHyp"
         else:
             model = "ResSHyp"
+    elif "ResidualFactorizedPrior" in target:
+        if _get(net, "no_residual_blocks", False):
+            model = "FP"
+        else:
+            model = "ResFP"
     elif "Merlin" in target:
         model = "Merlin"
     else:
