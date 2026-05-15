@@ -269,7 +269,7 @@ python src/train.py experiment=<experiment_name>
 python src/train.py experiment=<experiment_name> debug=fdr
 
 # Multirun
-python src/train.py experiment=<experiment_name> seed=0,1,2,3,4,5 model.net.lmbda=1,2,5,10,20,50,100,200,500,1000
+python src/train.py -m experiment=<experiment_name> seed=0,1,2,3,4,5 model.net.lmbda=1,2,5,10,20,50,100,200,500,1000
 ```
 
 Checkpoints land in `logs/train/<task>/<model>/<multi>runs/<date>/<id>/checkpoints/`.
