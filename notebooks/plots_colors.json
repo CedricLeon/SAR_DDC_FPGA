@@ -57,8 +57,10 @@
   },
   "architectures": {
     "ResSHyp": "#009E73",
-    "SHyp": "#E69F00",
-    "_note": "Used in cross-model comparison figures. ResSHyp (with residuals)=green, SHyp (no residuals)=yellow-orange."
+    "SHyp":    "#E69F00",
+    "ResFP":   "#0072B2",
+    "FP":      "#CC79A7",
+    "_note": "Used in cross-model comparison figures. ResSHyp=green, SHyp=yellow-orange, ResFP=blue, FP=mauve — all Okabe-Ito."
   },
   "activations": {
     "relu": "#009E73",
