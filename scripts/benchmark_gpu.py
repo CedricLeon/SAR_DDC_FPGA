@@ -500,6 +500,33 @@ def sync(device: torch.device) -> None:
         torch.cuda.synchronize()
 
 
+def _count_bytes(strings: Any) -> int:
+    """Count total bytes from CompressAI compress() output.
+
+    Handles both ``[[bytes, ...], ...]`` (batched) and ``[bytes, ...]`` (flat) layouts.
+    """
+    total = 0
+    for s_list in strings:
+        if isinstance(s_list, (list, tuple)):
+            total += sum(len(s) for s in s_list)
+        else:
+            total += len(s_list)
+    return total
+
+
+def tmark(
+    label: str,
+    timer: StepTimer,
+    cuda_timer: CudaEventTimer | None,
+    device: torch.device,
+) -> None:
+    """Sync device, then stamp both the wall-clock timer and the CUDA event timer."""
+    sync(device)
+    timer.mark(label)
+    if cuda_timer:
+        cuda_timer.mark(label)
+
+
 # ---------------------------------------------------------------------------
 # Scenario runners
 # ---------------------------------------------------------------------------
@@ -514,105 +541,79 @@ def run_scenario_full(
 
     Returns total compressed bytes.
     """
-    is_gpu = device.type == "cuda"
-    prefix = "gpu" if is_gpu else "nn"
+    has_hyper = hasattr(net, "h_a")
+    prefix = "gpu" if device.type == "cuda" else "nn"
+    n = net.nb_channels_main
 
-    sync(device)
-    timer.mark("preprocess")
-    if cuda_timer:
-        cuda_timer.mark("preprocess")
+    tmark("preprocess", timer, cuda_timer, device)
 
-    # ---- Encode ----
     x_real = x[:, :1, :, :]
     x_imag = x[:, 1:, :, :]
 
-    sync(device)
-    timer.mark(f"{prefix}_g_a")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_g_a")
+    tmark(f"{prefix}_g_a", timer, cuda_timer, device)
     y_real = net.g_a(x_real)
     y_imag = net.g_a(x_imag)
 
-    sync(device)
-    timer.mark("cpu_concat_abs")
-    if cuda_timer:
-        cuda_timer.mark("cpu_concat_abs")
-    y = torch.cat((y_real, y_imag), dim=1)
-    y_abs = torch.abs(y)
+    if has_hyper:
+        # ---- ScaleHyperprior: g_a -> h_a -> EB -> h_s -> GC -> g_s ----
+        tmark("cpu_concat_abs", timer, cuda_timer, device)
+        y = torch.cat((y_real, y_imag), dim=1)
+        y_abs = torch.abs(y)
 
-    sync(device)
-    timer.mark(f"{prefix}_h_a")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_h_a")
-    z = net.h_a(y_abs)
+        tmark(f"{prefix}_h_a", timer, cuda_timer, device)
+        z = net.h_a(y_abs)
 
-    sync(device)
-    timer.mark("cpu_eb_compress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_eb_compress")
-    z_strings = net.entropy_bottleneck.compress(z)
-    z_bytes = sum(
-        len(s)
-        for s_list in z_strings
-        for s in (s_list if isinstance(s_list, (list, tuple)) else [s_list])
-    )
+        tmark("cpu_eb_compress", timer, cuda_timer, device)
+        z_strings = net.entropy_bottleneck.compress(z)
+        z_bytes = _count_bytes(z_strings)
 
-    sync(device)
-    timer.mark("cpu_eb_decompress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_eb_decompress")
-    z_hat = net.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
+        tmark("cpu_eb_decompress", timer, cuda_timer, device)
+        z_hat = net.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
 
-    sync(device)
-    timer.mark(f"{prefix}_h_s")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_h_s")
-    scales = net.h_s(z_hat)
+        tmark(f"{prefix}_h_s", timer, cuda_timer, device)
+        scales = net.h_s(z_hat)
 
-    sync(device)
-    timer.mark("cpu_gc_compress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_gc_compress")
-    indexes = net.gaussian_conditional.build_indexes(scales)
-    y_strings = net.gaussian_conditional.compress(y, indexes)
-    y_bytes = sum(
-        len(s)
-        for s_list in y_strings
-        for s in (s_list if isinstance(s_list, (list, tuple)) else [s_list])
-    )
+        tmark("cpu_gc_compress", timer, cuda_timer, device)
+        indexes = net.gaussian_conditional.build_indexes(scales)
+        y_strings = net.gaussian_conditional.compress(y, indexes)
+        y_bytes = _count_bytes(y_strings)
 
-    # ---- Decode ----
-    sync(device)
-    timer.mark("cpu_gc_decompress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_gc_decompress")
-    y_hat = net.gaussian_conditional.decompress(y_strings, indexes)
+        tmark("cpu_gc_decompress", timer, cuda_timer, device)
+        y_hat = net.gaussian_conditional.decompress(y_strings, indexes)
 
-    sync(device)
-    timer.mark("cpu_split_y_hat")
-    if cuda_timer:
-        cuda_timer.mark("cpu_split_y_hat")
-    y_hat_real = y_hat[:, : y_hat.shape[1] // 2, :, :]
-    y_hat_imag = y_hat[:, y_hat.shape[1] // 2 :, :, :]
+        tmark("cpu_split_y_hat", timer, cuda_timer, device)
+        y_hat_real = y_hat[:, :n, :, :]
+        y_hat_imag = y_hat[:, n:, :, :]
 
-    sync(device)
-    timer.mark(f"{prefix}_g_s")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_g_s")
-    _recon_real = net.g_s(y_hat_real)
-    _recon_imag = net.g_s(y_hat_imag)
+        tmark(f"{prefix}_g_s", timer, cuda_timer, device)
+        net.g_s(y_hat_real)
+        net.g_s(y_hat_imag)
 
-    sync(device)
-    timer.mark("postprocess")
-    if cuda_timer:
-        cuda_timer.mark("postprocess")
-    timer.mark("_end")
+        tmark("postprocess", timer, cuda_timer, device)
+        total_bytes = z_bytes + y_bytes
+
+    else:
+        # ---- FactorizedPrior: g_a -> EB -> g_s ----
+        tmark("cpu_eb_compress", timer, cuda_timer, device)
+        y = torch.cat((y_real, y_imag), dim=1)
+        y_strings = net.entropy_bottleneck.compress(y)
+        y_bytes = _count_bytes(y_strings)
+
+        tmark("cpu_eb_decompress", timer, cuda_timer, device)
+        y_hat = net.entropy_bottleneck.decompress(y_strings, y.size()[-2:])
+
+        tmark(f"{prefix}_g_s", timer, cuda_timer, device)
+        net.g_s(y_hat[:, :n, :, :])
+        net.g_s(y_hat[:, n:, :, :])
+
+        tmark("postprocess", timer, cuda_timer, device)
+        total_bytes = y_bytes
+
+    tmark("_end", timer, cuda_timer, device)
     timer.commit()
     if cuda_timer:
-        cuda_timer.mark("_end")
         cuda_timer.commit()
-
-    return z_bytes + y_bytes
+    return total_bytes
 
 
 def run_scenario_compress(
@@ -623,80 +624,55 @@ def run_scenario_compress(
     cuda_timer: CudaEventTimer | None = None,
 ) -> int:
     """Compress only (encode path)."""
-    is_gpu = device.type == "cuda"
-    prefix = "gpu" if is_gpu else "nn"
+    has_hyper = hasattr(net, "h_a")
+    prefix = "gpu" if device.type == "cuda" else "nn"
 
-    sync(device)
-    timer.mark("preprocess")
-    if cuda_timer:
-        cuda_timer.mark("preprocess")
+    tmark("preprocess", timer, cuda_timer, device)
 
     x_real = x[:, :1, :, :]
     x_imag = x[:, 1:, :, :]
 
-    sync(device)
-    timer.mark(f"{prefix}_g_a")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_g_a")
+    tmark(f"{prefix}_g_a", timer, cuda_timer, device)
     y_real = net.g_a(x_real)
     y_imag = net.g_a(x_imag)
 
-    sync(device)
-    timer.mark("cpu_concat_abs")
-    if cuda_timer:
-        cuda_timer.mark("cpu_concat_abs")
-    y = torch.cat((y_real, y_imag), dim=1)
-    y_abs = torch.abs(y)
+    if has_hyper:
+        # ---- ScaleHyperprior: g_a -> h_a -> EB -> h_s -> GC ----
+        tmark("cpu_concat_abs", timer, cuda_timer, device)
+        y = torch.cat((y_real, y_imag), dim=1)
+        y_abs = torch.abs(y)
 
-    sync(device)
-    timer.mark(f"{prefix}_h_a")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_h_a")
-    z = net.h_a(y_abs)
+        tmark(f"{prefix}_h_a", timer, cuda_timer, device)
+        z = net.h_a(y_abs)
 
-    sync(device)
-    timer.mark("cpu_eb_compress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_eb_compress")
-    z_strings = net.entropy_bottleneck.compress(z)
-    z_bytes = sum(
-        len(s)
-        for s_list in z_strings
-        for s in (s_list if isinstance(s_list, (list, tuple)) else [s_list])
-    )
+        tmark("cpu_eb_compress", timer, cuda_timer, device)
+        z_strings = net.entropy_bottleneck.compress(z)
+        z_bytes = _count_bytes(z_strings)
 
-    sync(device)
-    timer.mark("cpu_eb_decompress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_eb_decompress")
-    z_hat = net.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
+        tmark("cpu_eb_decompress", timer, cuda_timer, device)
+        z_hat = net.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
 
-    sync(device)
-    timer.mark(f"{prefix}_h_s")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_h_s")
-    scales = net.h_s(z_hat)
+        tmark(f"{prefix}_h_s", timer, cuda_timer, device)
+        scales = net.h_s(z_hat)
 
-    sync(device)
-    timer.mark("cpu_gc_compress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_gc_compress")
-    indexes = net.gaussian_conditional.build_indexes(scales)
-    y_strings = net.gaussian_conditional.compress(y, indexes)
-    y_bytes = sum(
-        len(s)
-        for s_list in y_strings
-        for s in (s_list if isinstance(s_list, (list, tuple)) else [s_list])
-    )
+        tmark("cpu_gc_compress", timer, cuda_timer, device)
+        indexes = net.gaussian_conditional.build_indexes(scales)
+        y_strings = net.gaussian_conditional.compress(y, indexes)
+        total_bytes = z_bytes + _count_bytes(y_strings)
 
-    sync(device)
-    timer.mark("_end")
+    else:
+        # ---- FactorizedPrior: g_a -> EB ----
+        tmark("cpu_eb_compress", timer, cuda_timer, device)
+        y = torch.cat((y_real, y_imag), dim=1)
+        y_strings = net.entropy_bottleneck.compress(y)
+        total_bytes = _count_bytes(y_strings)
+
+    tmark("_end", timer, cuda_timer, device)
     timer.commit()
     if cuda_timer:
-        cuda_timer.mark("_end")
         cuda_timer.commit()
 
-    return z_bytes + y_bytes
+    return total_bytes
 
 
 def run_scenario_decompress(
@@ -712,57 +688,46 @@ def run_scenario_decompress(
     if cached is None:
         raise ValueError("decompress scenario requires cached data from a prior compress.")
 
-    is_gpu = device.type == "cuda"
-    prefix = "gpu" if is_gpu else "nn"
+    has_hyper = hasattr(net, "h_a")
+    prefix = "gpu" if device.type == "cuda" else "nn"
+    n = net.nb_channels_main
 
-    z_strings = cached["z_strings"]
-    y_strings = cached["y_strings"]
-    z_shape = cached["z_shape"]
-    indexes = cached["indexes"]
-    z_bytes = cached["z_bytes"]
-    y_bytes = cached["y_bytes"]
+    if has_hyper:
+        # ---- ScaleHyperprior: EB -> h_s -> GC -> g_s ----
+        total_bytes = cached["z_bytes"] + cached["y_bytes"]
 
-    sync(device)
-    timer.mark("cpu_eb_decompress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_eb_decompress")
-    z_hat = net.entropy_bottleneck.decompress(z_strings, z_shape)
+        tmark("cpu_eb_decompress", timer, cuda_timer, device)
+        z_hat = net.entropy_bottleneck.decompress(cached["z_strings"], cached["z_shape"])
 
-    sync(device)
-    timer.mark(f"{prefix}_h_s")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_h_s")
-    scales = net.h_s(z_hat)
+        tmark(f"{prefix}_h_s", timer, cuda_timer, device)
+        scales = net.h_s(z_hat)
 
-    sync(device)
-    timer.mark("cpu_gc_decompress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_gc_decompress")
-    indexes_new = net.gaussian_conditional.build_indexes(scales)
-    y_hat = net.gaussian_conditional.decompress(y_strings, indexes_new)
+        tmark("cpu_gc_decompress", timer, cuda_timer, device)
+        indexes = net.gaussian_conditional.build_indexes(scales)
+        y_hat = net.gaussian_conditional.decompress(cached["y_strings"], indexes)
 
-    sync(device)
-    timer.mark("cpu_split_y_hat")
-    if cuda_timer:
-        cuda_timer.mark("cpu_split_y_hat")
-    y_hat_real = y_hat[:, : y_hat.shape[1] // 2, :, :]
-    y_hat_imag = y_hat[:, y_hat.shape[1] // 2 :, :, :]
+        tmark("cpu_split_y_hat", timer, cuda_timer, device)
 
-    sync(device)
-    timer.mark(f"{prefix}_g_s")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_g_s")
-    _recon_real = net.g_s(y_hat_real)
-    _recon_imag = net.g_s(y_hat_imag)
+        tmark(f"{prefix}_g_s", timer, cuda_timer, device)
+        net.g_s(y_hat[:, :n, :, :])
+        net.g_s(y_hat[:, n:, :, :])
 
-    sync(device)
-    timer.mark("_end")
+    else:
+        # ---- FactorizedPrior: EB -> g_s ----
+        total_bytes = cached["y_bytes"]
+
+        tmark("cpu_eb_decompress", timer, cuda_timer, device)
+        y_hat = net.entropy_bottleneck.decompress(cached["y_strings"], cached["y_shape"])
+
+        tmark(f"{prefix}_g_s", timer, cuda_timer, device)
+        net.g_s(y_hat[:, :n, :, :])
+        net.g_s(y_hat[:, n:, :, :])
+
+    tmark("_end", timer, cuda_timer, device)
     timer.commit()
     if cuda_timer:
-        cuda_timer.mark("_end")
         cuda_timer.commit()
-
-    return z_bytes + y_bytes
+    return total_bytes
 
 
 def run_scenario_nn_only(
@@ -773,55 +738,44 @@ def run_scenario_nn_only(
     cuda_timer: CudaEventTimer | None = None,
 ) -> int:
     """NN subgraphs only — no entropy coding."""
-    is_gpu = device.type == "cuda"
-    prefix = "gpu" if is_gpu else "nn"
+    has_hyper = hasattr(net, "h_a")
+    prefix = "gpu" if device.type == "cuda" else "nn"
+    n = net.nb_channels_main
 
     x_real = x[:, :1, :, :]
     x_imag = x[:, 1:, :, :]
 
-    sync(device)
-    timer.mark(f"{prefix}_g_a")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_g_a")
+    tmark(f"{prefix}_g_a", timer, cuda_timer, device)
     y_real = net.g_a(x_real)
     y_imag = net.g_a(x_imag)
 
-    sync(device)
-    timer.mark("cpu_concat_abs")
-    if cuda_timer:
-        cuda_timer.mark("cpu_concat_abs")
-    y = torch.cat((y_real, y_imag), dim=1)
-    y_abs = torch.abs(y)
+    if has_hyper:
+        # ---- ScaleHyperprior: g_a -> h_a -> h_s -> g_s ----
+        tmark("cpu_concat_abs", timer, cuda_timer, device)
+        y = torch.cat((y_real, y_imag), dim=1)
+        y_abs = torch.abs(y)
 
-    sync(device)
-    timer.mark(f"{prefix}_h_a")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_h_a")
-    z = net.h_a(y_abs)
+        tmark(f"{prefix}_h_a", timer, cuda_timer, device)
+        z = net.h_a(y_abs)
 
-    sync(device)
-    timer.mark(f"{prefix}_h_s")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_h_s")
-    # Feed z directly to h_s (bypass entropy)
-    scales = net.h_s(z)
+        # Feed z directly to h_s (bypass entropy — isolates DPU latency)
+        tmark(f"{prefix}_h_s", timer, cuda_timer, device)
+        net.h_s(z)
 
-    sync(device)
-    timer.mark(f"{prefix}_g_s")
-    if cuda_timer:
-        cuda_timer.mark(f"{prefix}_g_s")
-    y_hat_real = y[:, :C_MAIN, :, :]
-    y_hat_imag = y[:, C_MAIN:, :, :]
-    _recon_real = net.g_s(y_hat_real)
-    _recon_imag = net.g_s(y_hat_imag)
+        tmark(f"{prefix}_g_s", timer, cuda_timer, device)
+        net.g_s(y[:, :n, :, :])
+        net.g_s(y[:, n:, :, :])
 
-    sync(device)
-    timer.mark("_end")
+    else:
+        # ---- FactorizedPrior: g_a -> g_s directly ----
+        tmark(f"{prefix}_g_s", timer, cuda_timer, device)
+        net.g_s(y_real)
+        net.g_s(y_imag)
+
+    tmark("_end", timer, cuda_timer, device)
     timer.commit()
     if cuda_timer:
-        cuda_timer.mark("_end")
         cuda_timer.commit()
-
     return 0
 
 
@@ -833,6 +787,7 @@ def run_scenario_entropy_only(
     cuda_timer: CudaEventTimer | None = None,
 ) -> int:
     """Entropy coding only (produce latents via NN, time only CPU coding)."""
+    has_hyper = hasattr(net, "h_a")
     x_real = x[:, :1, :, :]
     x_imag = x[:, 1:, :, :]
 
@@ -841,97 +796,79 @@ def run_scenario_entropy_only(
         y_real = net.g_a(x_real)
         y_imag = net.g_a(x_imag)
         y = torch.cat((y_real, y_imag), dim=1)
-        y_abs = torch.abs(y)
-        z = net.h_a(y_abs)
+        if has_hyper:
+            z = net.h_a(torch.abs(y))
 
-    sync(device)
+    if has_hyper:
+        # ---- ScaleHyperprior timed section: EB + GC ----
+        tmark("cpu_eb_compress", timer, cuda_timer, device)
+        z_strings = net.entropy_bottleneck.compress(z)
+        z_bytes = _count_bytes(z_strings)
 
-    # ---- Timed section ----
-    timer.mark("cpu_eb_compress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_eb_compress")
-    z_strings = net.entropy_bottleneck.compress(z)
-    z_bytes = sum(
-        len(s)
-        for s_list in z_strings
-        for s in (s_list if isinstance(s_list, (list, tuple)) else [s_list])
-    )
+        tmark("cpu_eb_decompress", timer, cuda_timer, device)
+        z_hat = net.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
 
-    sync(device)
-    timer.mark("cpu_eb_decompress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_eb_decompress")
-    z_hat = net.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
+        tmark("cpu_gc_compress", timer, cuda_timer, device)
+        scales = net.h_s(z_hat)
+        indexes = net.gaussian_conditional.build_indexes(scales)
+        y_strings = net.gaussian_conditional.compress(y, indexes)
+        y_bytes = _count_bytes(y_strings)
 
-    sync(device)
-    timer.mark("cpu_gc_compress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_gc_compress")
-    scales = net.h_s(z_hat)
-    indexes = net.gaussian_conditional.build_indexes(scales)
-    y_strings = net.gaussian_conditional.compress(y, indexes)
-    y_bytes = sum(
-        len(s)
-        for s_list in y_strings
-        for s in (s_list if isinstance(s_list, (list, tuple)) else [s_list])
-    )
+        tmark("cpu_gc_decompress", timer, cuda_timer, device)
+        net.gaussian_conditional.decompress(y_strings, indexes)
+        total_bytes = z_bytes + y_bytes
 
-    sync(device)
-    timer.mark("cpu_gc_decompress")
-    if cuda_timer:
-        cuda_timer.mark("cpu_gc_decompress")
-    _y_hat = net.gaussian_conditional.decompress(y_strings, indexes)
+    else:
+        # ---- FactorizedPrior timed section: EB only ----
+        tmark("cpu_eb_compress", timer, cuda_timer, device)
+        y_strings = net.entropy_bottleneck.compress(y)
+        total_bytes = _count_bytes(y_strings)
 
-    sync(device)
-    timer.mark("_end")
+        tmark("cpu_eb_decompress", timer, cuda_timer, device)
+        net.entropy_bottleneck.decompress(y_strings, y.size()[-2:])
+
+    tmark("_end", timer, cuda_timer, device)
     timer.commit()
     if cuda_timer:
-        cuda_timer.mark("_end")
         cuda_timer.commit()
-
-    return z_bytes + y_bytes
+    return total_bytes
 
 
 # ---------------------------------------------------------------------------
 # Pre-compress helper for decompress scenario
 # ---------------------------------------------------------------------------
 def _precompress(x: Tensor, net: torch.nn.Module, device: torch.device) -> dict[str, Any]:
-    """Run a single encode pass and cache bitstreams for the decompress scenario."""
+    """Run a single encode pass and cache bitstreams for the decompress scenario.
+
+    Returns different key sets for SHyp vs FP topologies;
+    ``run_scenario_decompress`` dispatches on ``hasattr(net, 'h_a')`` accordingly.
+    """
     sync(device)
     with torch.inference_mode():
-        x_real = x[:, :1, :, :]
-        x_imag = x[:, 1:, :, :]
-        y_real = net.g_a(x_real)
-        y_imag = net.g_a(x_imag)
-        y = torch.cat((y_real, y_imag), dim=1)
-        y_abs = torch.abs(y)
-        z = net.h_a(y_abs)
+        y = torch.cat([net.g_a(x[:, :1]), net.g_a(x[:, 1:])], dim=1)
 
-        z_strings = net.entropy_bottleneck.compress(z)
-        z_hat = net.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
-        scales = net.h_s(z_hat)
-        indexes = net.gaussian_conditional.build_indexes(scales)
-        y_strings = net.gaussian_conditional.compress(y, indexes)
-
-    z_bytes = sum(
-        len(s)
-        for s_list in z_strings
-        for s in (s_list if isinstance(s_list, (list, tuple)) else [s_list])
-    )
-    y_bytes = sum(
-        len(s)
-        for s_list in y_strings
-        for s in (s_list if isinstance(s_list, (list, tuple)) else [s_list])
-    )
-
-    return {
-        "z_strings": z_strings,
-        "y_strings": y_strings,
-        "z_shape": z.size()[-2:],
-        "indexes": indexes,
-        "z_bytes": z_bytes,
-        "y_bytes": y_bytes,
-    }
+        if hasattr(net, "h_a"):
+            z = net.h_a(torch.abs(y))
+            z_strings = net.entropy_bottleneck.compress(z)
+            z_hat = net.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
+            scales = net.h_s(z_hat)
+            indexes = net.gaussian_conditional.build_indexes(scales)
+            y_strings = net.gaussian_conditional.compress(y, indexes)
+            return {
+                "z_strings": z_strings,
+                "y_strings": y_strings,
+                "z_shape": z.size()[-2:],
+                "indexes": indexes,
+                "z_bytes": _count_bytes(z_strings),
+                "y_bytes": _count_bytes(y_strings),
+            }
+        else:
+            y_strings = net.entropy_bottleneck.compress(y)
+            return {
+                "y_strings": y_strings,
+                "y_shape": y.size()[-2:],
+                "y_bytes": _count_bytes(y_strings),
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -997,8 +934,8 @@ def get_model_info(net: torch.nn.Module) -> dict[str, Any]:
         "trainable_params": sum(p.numel() for p in net.parameters() if p.requires_grad),
         "weights_size_mb": round(total_bytes / (1024**2), 2),
         "activation": getattr(net, "activation", "unknown"),
-        "N": C_MAIN,
-        "M": C_HYPER,
+        "N": getattr(net, "nb_channels_main", C_MAIN),
+        "M": getattr(net, "nb_channels_main", C_MAIN) * 2,
     }
 
 

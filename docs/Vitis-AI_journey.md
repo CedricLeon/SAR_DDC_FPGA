@@ -662,3 +662,142 @@ Because I don't want to create a VSCode server on the FPGA directly and I don't 
 Solution: either replace by an easier Entropy model, even one without parameters. Or copy compressai code over and laboriously work your way in what could be the problem.
 
 @TODO: I could not have a look into the explicit definition of `pytorch_nndct.nn.Module.ConvTranspose2d` but it probably can be find around [this path](/opt/vitis-ai/src/vai_quantizer/vai_q_pytorch/pytorch_binding/pytorch_nndct/nn/modules/conv_transpose.py) in the docker image.
+
+---
+
+## ResidualFactorizedPriorPatched Integration (2026-05-06)
+
+`ResidualFactorizedPriorPatched` (`res_factorized_prior_dpu.py`) is a simpler alternative to `ResidualScaleHyperpriorPatched`: it removes the hyperprior path (`h_a`, `h_s`, `gaussian_conditional`) and uses `EntropyBottleneck` directly on the main latent `y`.
+
+### Architecture diff
+
+| Aspect | `ResidualScaleHyperpriorPatched` | `ResidualFactorizedPriorPatched` |
+| --- | --- | --- |
+| NN subgraphs | `g_a`, `h_a`, `h_s`, `g_s` (4) | `g_a`, `g_s` (2) |
+| Entropy models | `EntropyBottleneck` + `GaussianConditional` | `EntropyBottleneck` only |
+| `forward()` output | `x_hat`, `likelihoods: {y, z}` | `x_hat`, `likelihoods: {y}` |
+| `compress()` output | `strings: [y_strings, z_strings], shape: z.shape[-2:]` | `strings: [y_strings], shape: y.shape[-2:]` |
+| DPU split graph | 4 subgraphs + EB + GC on CPU | 2 subgraphs + EB on CPU |
+
+### Codebase impact
+
+| File / component | Status | Issue |
+| --- | --- | --- |
+| `src/` training pipeline | ✅ OK | `MerlinRDLoss` and `SARDDCModule` are architecture-agnostic; `compress`/`decompress`/`update`/`aux_loss` all implemented |
+| `scripts/update_wandb_runs.py` | ✅ OK | Uses `hydra.utils.instantiate` — never touches `h_a`/`h_s`/`gc` directly |
+| `notebooks/*.ipynb` | ✅ OK | Load from JSON/W&B, metric keys are the same |
+| `deploy.py::_export_entropy_params` | ❌ Crash | Hardcoded `ResidualScaleHyperpriorPatched` instantiation + unconditional `gc.*` access |
+| `deploy.py::DPU_WRAPPER_NAME` | ⚠️ Wrong name | Hardcoded string, needs to be model-derived |
+| `model_quant.py::load_model` | ❌ Crash | `raise ValueError` on unknown model name |
+| `model_quant.py` dummy inputs | ❌ Crash | 4-tensor dummy `(x, abs_y, z_hat, y_hat)` hardcoded for 4-subgraph wrapper |
+| `dpu_wrapper.py` | ❌ Crash | `ResidualScaleHyperpriorDPUWrapper.__init__` accesses `h_a`, `h_s`, `gc` |
+| `inference_hybrid.py` | ❌ Crash | Unconditional `gc_scale_table` load + `runners["h_a"]`/`runners["h_s"]` calls |
+| `inference_utils.py::identify_subgraphs` | ❌ Crash | `required_keys = ["g_a","h_a","h_s","g_s"]` hardcoded — raises `ValueError` for 2-subgraph model |
+| `benchmark_gpu.py::run_scenario_*` | ❌ Crash | Every scenario function calls `net.h_a(...)` and `net.gaussian_conditional.*` |
+| `benchmark_fpga.py::run_scenario_*` | ❌ Crash | Same pattern + `runners["h_a"]`/`runners["h_s"]` |
+
+> **Bonus cleanup:** `ResidualScaleHyperpriorPatched.forward()` returns a `"y_hat"` key that nothing in the codebase reads. Safe to remove for API consistency.
+
+---
+
+### Fix plan
+
+🤖 = agent, 👤 = human. Steps are ordered by dependency: train first, then deploy chain, then benchmarks.
+
+#### Step 0 — Configs + naming ✅
+
+- [x] **`configs/model/res_factorized_prior.yaml`** *(👤)* — new model config targeting `ResidualFactorizedPriorPatched`
+- [x] **`configs/experiment/ADAM-ResFP.yaml`** *(👤)* — experiment override (relu, no_output_padding, etc.)
+- [x] **`from __future__ import annotations` in `res_factorized_prior_dpu.py`** *(👤)* — Python 3.8 compat for Vitis-AI container
+- [x] **`deploy.py::_make_compiled_model_name`** *(👤)* — added `elif "ResidualFactorizedPrior" in target: model = "ResFP"/"FP"`
+- [x] **`utils.py::make_wandb_run_name`** *(👤)* — added `elif "ResidualFactorizedPrior" in model: model = "ResFP"/"FP"`
+
+```bash
+# Verify
+python src/train.py experiment=ADAM-ResFP debug=fdr
+```
+
+**Commit:** `feat: add ResidualFactorizedPriorPatched Hydra configs, naming, and Python 3.8 compat`
+
+---
+
+#### Step 1 — Train a checkpoint *(👤, gating step for Steps 3–5)*
+
+```bash
+python src/train.py experiment=ADAM-ResFP model.criterion.lmbda=1000 seed=42
+```
+
+---
+
+#### Step 2 — DPU Wrapper ✅
+
+- [x] **`FactorizedPriorDPUWrapper` added to `dpu_wrapper.py`** *(🤖)* — 2-subgraph wrapper (`g_a` + `g_s` only). Calibration mode: `g_a → EB passthrough → g_s`. Deployment mode: `forward(x_in, y_hat_in) → (y_out, x_out)`.
+
+```bash
+# Verify
+python -c "
+from src.models.components.res_factorized_prior_dpu import ResidualFactorizedPriorPatched
+from src.models.components.dpu_wrapper import FactorizedPriorDPUWrapper, ResidualScaleHyperpriorDPUWrapper
+from src.models.components.res_scale_hyperprior_dpu import ResidualScaleHyperpriorPatched
+import torch; x = torch.randn(1, 2, 256, 256)
+m = ResidualFactorizedPriorPatched(nb_channels_main=32, activation='relu', no_output_padding=True, export_dpu=True)
+w = FactorizedPriorDPUWrapper(m); w.eval()
+out = w(x); print('calib OK:', out['x_hat'].shape)
+y_out, x_out = w(x[:,:1], torch.randn(1,32,16,16)); print('deploy OK:', x_out.shape)
+m2 = ResidualScaleHyperpriorPatched(nb_channels_main=32, activation='relu', no_output_padding=True, export_dpu=True)
+out2 = ResidualScaleHyperpriorDPUWrapper(m2).eval()(x); print('ResSHyp regression OK:', out2['x_hat'].shape)
+"
+```
+
+**Commit:** `feat(fpga): add FactorizedPriorDPUWrapper for 2-subgraph DPU split graph`
+
+---
+
+#### Step 3 — Deploy + Quantization entry points *(🤖, needs Step 2)*
+
+- [x] **`deploy.py::_make_compiled_model_name`** *(👤, done in Step 0)*
+- [x] **`deploy.py::_export_entropy_params`** — dispatches on `_target_`; saves only EB keys for ResFP, adds GC keys only for ResSHyp (uses `isinstance(model, ResidualScaleHyperpriorPatched)` — no `has_gc` flag)
+- [x] **`deploy.py::DPU_WRAPPER_NAME`** — removed constant; replaced with `_get_dpu_wrapper_name(cfg)` helper; `phase_compile` loads config **once** and propagates `cfg` to all helpers
+- [x] **`model_quant.py::load_model`** — added `elif "ResidualFactorizedPriorPatched"` branch wrapping with `FactorizedPriorDPUWrapper`
+- [x] **`model_quant.py::evaluate`** — split into `evaluate_hyperprior` (4-input) and `evaluate_factorized` (2-input); `main()` dispatches via `eval_fn`
+- [x] **`model_quant.py` dummy inputs** — shapes derived from model properties (`full_model.nb_channels_main`, `full_model.main_downsampling_factor`, `full_model.hyper_downsampling_factor`) instead of hardcoded values
+- [x] **`res_factorized_prior_dpu.py` / `res_scale_hyperprior_dpu.py`** — added `self.nb_channels_main: int = N` attribute to both `__init__` methods
+
+Bonus — also fixed in this step (needed for safe entropy_params.npz loading):
+
+- [x] **`inference_hybrid.py`** — gate `GaussianConditional` on `"gc_scale_table" in data`; rename `process_single_tile` → `process_single_tile_SHyp`, add `process_single_tile_FP`; extract `_prepare_tile_input` / `_collect_tile_output` shared helpers; derive `model_name` from manifest and dispatch with `"SHyp" in model_name`
+- [x] **`inference_utils.py::identify_subgraphs`** — accepts `model_name: str = ""`; `required_keys` is `["g_a","g_s"]` (FP) or `["g_a","h_a","h_s","g_s"]` (SHyp)
+
+**Commit:** `feat(fpga): add FactorizedPriorPatched dispatch in deploy.py, model_quant.py, inference_hybrid.py`
+
+---
+
+#### Step 4 — FPGA Inference pipeline *(✅ covered in Step 3 bonus)*
+
+#### Step 5 — GPU / FPGA Benchmarks *(🤖)*
+
+- [x] **`benchmark_gpu.py`** — all `run_scenario_*` + `_precompress` + `get_model_info`: `hasattr(net, 'h_a')` topology guard; FP path `g_a → EB → g_s`, no h_a/h_s/GC
+- [x] **`benchmark_fpga.py`** — `gc: Optional[GaussianConditional]`; all five scenario functions + `_precompress` have FP branches; `run_benchmark()` reads `model_name` from `manifest.json`, passes to `identify_subgraphs`, loads `gc` only when `"gc_scale_table" in data`
+- [x] **Refactor** — introduced `tmark(label, timer, cuda_timer, device)` (replaces 3-line sync+mark×2 blocks) and `_count_bytes(strings)` (replaces nested sum comprehension); all 5 scenario functions and `_precompress` simplified significantly
+
+```bash
+python scripts/fpga/run_full_benchmark.py \
+    --model-dir results/fpga/active_model/ \
+    --warmup 20 --iters 100 \
+    --power --idle-baseline 10 \
+    --power-hz-gpu 10 --power-hz-fpga 50
+```
+
+**Commit:** `feat(benchmark): add FactorizedPrior scenario branching in gpu and fpga benchmarks`
+
+---
+
+#### Step 6 — Cleanup *(🤖, optional)*
+
+- [x] **Remove `"y_hat"` key** from `ResidualScaleHyperpriorPatched.forward()` and `ResidualScaleHyperpriorDPUWrapper.forward_mode1_calibration()` — nothing reads it
+
+```bash
+pytest -k "not slow"
+```
+
+**Commit:** `refactor: remove unused y_hat key from ResSHyp forward output dict`

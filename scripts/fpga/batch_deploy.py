@@ -70,7 +70,11 @@ PROJECT = "SAR_DDC_FPGA"
 # The tuple system below is consistent with update_wandb_runs.py and gives full
 # flexibility at negligible cost for a project of ~hundreds of runs.
 FILTERS_CONFIG: List[Tuple] = [
-    # Default: only DPU-compatible architectures (relu activation, no output_padding issue)
+    # Use the W&B run name to distinguish FP (Factorized Prior) from SHyp (Scale Hyperprior).
+    # Run names follow the convention: FP-relu_..., ResFP-relu_..., SHyp-relu_..., ResSHyp-relu_...
+    # "run.name" is a special key resolved from the W&B run object (not from run.config).
+    ("run.name", "contains", "FP"),
+    # DPU-compatible: relu activation, output_padding fix applied
     ("model.net.activation", "==", "relu"),
     ("model.net.no_output_padding", "==", True),
     ("model.net.no_residual_blocks", "==", True),
@@ -109,6 +113,10 @@ def check_single_condition(value: Any, op: str, test_value: Any) -> bool:
         return value is not None and float(value) > float(test_value)
     elif op == "<":
         return value is not None and float(value) < float(test_value)
+    elif op == "contains":
+        return value is not None and str(test_value) in str(value)
+    elif op == "not contains":
+        return value is None or str(test_value) not in str(value)
     elif op == "is_before":
         if value is None:
             return False
@@ -129,11 +137,20 @@ def check_single_condition(value: Any, op: str, test_value: Any) -> bool:
         raise ValueError(f"Unsupported filter op: '{op}'")
 
 
-def run_matches_filters(run_cfg: dict) -> bool:
-    """Return True if the W&B run config satisfies all FILTERS_CONFIG conditions."""
-    cfg = OmegaConf.create(run_cfg)
+def run_matches_filters(run: Any) -> bool:
+    """Return True if the W&B run satisfies all FILTERS_CONFIG conditions.
+
+    Keys prefixed with ``run.`` are resolved from the W&B run object's attributes
+    (e.g. ``run.name``, ``run.id``).  All other keys are resolved from ``run.config``
+    via OmegaConf, exactly as before.
+    """
+    cfg = OmegaConf.create(run.config)
     for key, op, test_value in FILTERS_CONFIG:
-        value = OmegaConf.select(cfg, key)
+        if key.startswith("run."):
+            attr = key[len("run.") :]
+            value = getattr(run, attr, None)
+        else:
+            value = OmegaConf.select(cfg, key)
         if not check_single_condition(value, op, test_value):
             return False
     return True
@@ -341,7 +358,7 @@ def main() -> None:
         print(f"Fetching all runs from {ENTITY}/{PROJECT}...")
         all_runs = list(api.runs(f"{ENTITY}/{PROJECT}"))
         print(f"  {len(all_runs)} total runs. Applying FILTERS_CONFIG: {FILTERS_CONFIG}")
-        runs = [r for r in all_runs if run_matches_filters(r.config)]
+        runs = [r for r in all_runs if run_matches_filters(r)]
         print(f"  \u2192 {len(runs)} runs match.")
 
     if not runs:

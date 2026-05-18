@@ -29,8 +29,18 @@ from pathlib import Path
 from typing import Any, List
 
 import numpy as np
+import rootutils
 import torch
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
+
+rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+
+from src.models.components.res_factorized_prior_dpu import (
+    ResidualFactorizedPriorPatched,
+)
+from src.models.components.res_scale_hyperprior_dpu import (
+    ResidualScaleHyperpriorPatched,
+)
 
 # ============================================================
 # - USER CONFIGURATION — edit RUN_DIR for each deployment
@@ -48,9 +58,6 @@ RUN_DIR = "DDC_FPGA/logs/train/sar_ddc/hyperprior/multiruns/2026-02-06_14-57-22/
 
 VAI_IMAGE = "xilinx/vitis-ai-pytorch-gpu:3.5.0.001-1eed93cde"
 CONTAINER_NAME = "vai_container"
-
-# Output prefix produced by vai_c_xir (-n flag)
-DPU_WRAPPER_NAME = "ResidualScaleHyperpriorDPUWrapper"
 
 ARCH_JSON_LOOKUP = {
     "ZCU102": "DDC_FPGA/scripts/fpga/DPU_archs/ZCU102_DPUCZDX8G_ISA1_B4096_arch.json",
@@ -168,38 +175,54 @@ class Tee:
 # ============================================================
 
 
-def _export_entropy_params(ckpt_path: Path, output_path: Path) -> None:
+def _get_dpu_wrapper_name(cfg: DictConfig) -> str:
+    """Derive the DPU wrapper class name from a pre-loaded Hydra config.
+
+    Returns 'ResidualScaleHyperpriorDPUWrapper' or 'FactorizedPriorDPUWrapper'. Raises ValueError
+    for unrecognised model targets.
+    """
+    target = cfg.model.net.get("_target_", "")
+    if "ResidualScaleHyperprior" in target:
+        return "ResidualScaleHyperpriorDPUWrapper"
+    elif "ResidualFactorizedPrior" in target:
+        return "FactorizedPriorDPUWrapper"
+    else:
+        raise ValueError(f"Unrecognised model target for DPU wrapper: {target}")
+
+
+def _export_entropy_params(ckpt_path: Path, output_path: Path, cfg: DictConfig) -> None:
     """Export entropy model parameters to a .npz file for FPGA inference.
 
-    Instantiates ResidualScaleHyperpriorPatched from the checkpoint config, calls .update() to
-    populate the CDF/quantile tables, then saves the tables required by entropy_models_inference.py
-    on the FPGA.
+    Instantiates the correct model class from the pre-loaded Hydra config, calls .update() to
+    populate the CDF/quantile tables, then saves the tables required by
+    entropy_models_inference.py on the FPGA.
+
+    Both model families write EB params (always present). GC params are written only for
+    ResidualScaleHyperpriorPatched. inference_hybrid.py gates GC loading on
+    ``"gc_scale_table" in data`` so the same filename is safe for both topologies.
     """
     # Deferred src imports — only valid in SAR_DDC env
     _project_root = Path(__file__).resolve().parents[2]
     if str(_project_root) not in sys.path:
         sys.path.insert(0, str(_project_root))
-    from src.models.components.res_scale_hyperprior_dpu import (  # noqa: E402
-        ResidualScaleHyperpriorPatched,
-    )
 
     print(f"Loading checkpoint from: {ckpt_path}")
     print(f"Saving entropy parameters to: {output_path}")
 
-    # ----- 1. Load Config & Instantiate Model -----
-    # We need to instantiate the model to call .update() method which populates the tables
-    config_path = ckpt_path.parent.parent / ".hydra" / "config.yaml"
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config not found: {config_path}")
+    # ----- 1. Instantiate Model from passed config -----
+    model_target = cfg.model.net.get("_target_", "")
+    net_params: dict = OmegaConf.to_container(cfg.model.net, resolve=True)  # type: ignore[assignment]
+    net_params.pop("_target_", None)
+    net_params["export_dpu"] = True
 
-    print(f"Reading config from {config_path}...")
-    conf = OmegaConf.load(config_path)
-    model_params = conf.model.net
-    if "_target_" in model_params:
-        model_params.pop("_target_")
-    model_params["export_dpu"] = True
-    print(f"Instantiating model with: {model_params}")
-    model = ResidualScaleHyperpriorPatched(**model_params)
+    if "ResidualScaleHyperprior" in model_target:
+        print(f"Instantiating ResidualScaleHyperpriorPatched with: {net_params}")
+        model = ResidualScaleHyperpriorPatched(**net_params)
+    elif "ResidualFactorizedPrior" in model_target:
+        print(f"Instantiating ResidualFactorizedPriorPatched with: {net_params}")
+        model = ResidualFactorizedPriorPatched(**net_params)
+    else:
+        raise ValueError(f"Unrecognised model target for entropy export: {model_target}")
 
     # ----- 2. Load Weights -----
     checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
@@ -214,7 +237,7 @@ def _export_entropy_params(ckpt_path: Path, output_path: Path) -> None:
     print("Force entropy models update (populate tables)...")
     model.update(force=True)
 
-    # ----- 4. Extract parameters -----
+    # ----- 4. Extract EB parameters (always present) -----
     eb = model.entropy_bottleneck
     eb_medians = eb.quantiles[:, 0, 1].detach().cpu().numpy()
     eb_quantized_cdf = eb._quantized_cdf.detach().cpu().numpy().astype(np.int32)
@@ -223,35 +246,40 @@ def _export_entropy_params(ckpt_path: Path, output_path: Path) -> None:
     if eb_quantized_cdf.size == 0:
         raise ValueError("EntropyBottleneck CDF is empty — update() failed.")
 
-    gc = model.gaussian_conditional
-    gc_scale_table = gc.scale_table.detach().cpu().numpy().astype(np.float32)
-    gc_quantized_cdf = gc.quantized_cdf.detach().cpu().numpy().astype(np.int32)
-    gc_cdf_length = gc.cdf_length.detach().cpu().numpy().astype(np.int32)
-    gc_offset = gc.offset.detach().cpu().numpy().astype(np.int32)
-    if gc_scale_table.size == 0:
-        raise RuntimeError("GaussianConditional scale_table is empty — update() failed.")
-
     print("Checks:")
     print(f"  EB medians:    {eb_medians.shape}")
     print(f"  EB CDF:        {eb_quantized_cdf.shape}")
-    print(f"  GC scale tbl:  {gc_scale_table.shape}")
-    print(f"  GC CDF:        {gc_quantized_cdf.shape}")
 
-    np.savez(
-        output_path,
+    save_dict = dict(
         eb_quantized_cdf=eb_quantized_cdf,
         eb_offset=eb_offset,
         eb_cdf_length=eb_cdf_length,
         eb_medians=eb_medians,
-        gc_scale_table=gc_scale_table,
-        gc_quantized_cdf=gc_quantized_cdf,
-        gc_cdf_length=gc_cdf_length,
-        gc_offset=gc_offset,
     )
+
+    # ----- 5. Extract GC parameters (ResSHyp only) -----
+    if isinstance(model, ResidualScaleHyperpriorPatched):
+        gc = model.gaussian_conditional
+        gc_scale_table = gc.scale_table.detach().cpu().numpy().astype(np.float32)
+        gc_quantized_cdf = gc.quantized_cdf.detach().cpu().numpy().astype(np.int32)
+        gc_cdf_length = gc.cdf_length.detach().cpu().numpy().astype(np.int32)
+        gc_offset = gc.offset.detach().cpu().numpy().astype(np.int32)
+        if gc_scale_table.size == 0:
+            raise RuntimeError("GaussianConditional scale_table is empty — update() failed.")
+        print(f"  GC scale tbl:  {gc_scale_table.shape}")
+        print(f"  GC CDF:        {gc_quantized_cdf.shape}")
+        save_dict.update(
+            gc_scale_table=gc_scale_table,
+            gc_quantized_cdf=gc_quantized_cdf,
+            gc_cdf_length=gc_cdf_length,
+            gc_offset=gc_offset,
+        )
+
+    np.savez(output_path, **save_dict)
     print(f"Entropy parameters saved to {output_path}.")
 
 
-def _make_compiled_model_name(cfg: Any) -> str:
+def _make_compiled_model_name(cfg: DictConfig) -> str:
     """Derive the FPGA artifact folder name from a Hydra config.
 
     Convention: ``<model>-<activation>_s<seed>_L<lambda>_pt``
@@ -269,6 +297,11 @@ def _make_compiled_model_name(cfg: Any) -> str:
             model = "SHyp"
         else:
             model = "ResSHyp"
+    elif "ResidualFactorizedPrior" in target:
+        if _get(net, "no_residual_blocks", False):
+            model = "FP"
+        else:
+            model = "ResFP"
     elif "Merlin" in target:
         model = "Merlin"
     else:
@@ -308,7 +341,7 @@ def _get_wandb_run_id_from_run_dir(run_dir_host: Path) -> str:
 
 
 def _create_manifest(
-    dest_dir: Path, cfg: Any, model_name: str, original_run_dir: str, wandb_run_id: str = ""
+    dest_dir: Path, cfg: DictConfig, model_name: str, original_run_dir: str, wandb_run_id: str = ""
 ) -> None:
     """Write manifest.json and a MODEL_IS_*.txt marker into dest_dir."""
     # 1. Extract Training Timestamp from Run Directory path
@@ -352,19 +385,16 @@ def _create_manifest(
 
 
 def _organize_compiled_output(
-    compiled_dir_abs: Path, run_dir_host: Path, wandb_run_id: str = ""
+    compiled_dir_abs: Path,
+    run_dir_host: Path,
+    cfg: DictConfig,
+    wandb_run_id: str = "",
 ) -> None:
     """Generate manifest, move compiled dir to compiled_models/, update active_model symlink."""
     output_root = PROJECT_ROOT / "results" / "fpga"
     compiled_models_dir = output_root / "compiled_models"
     compiled_models_dir.mkdir(parents=True, exist_ok=True)
 
-    config_path = run_dir_host / ".hydra" / "config.yaml"
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"Config not found at {config_path}. Necessary for manifest metadata."
-        )
-    cfg = OmegaConf.load(config_path)
     final_name = _make_compiled_model_name(cfg)
     OmegaConf.save(cfg, compiled_dir_abs / "train_config.yaml")
     _create_manifest(compiled_dir_abs, cfg, final_name, str(run_dir_host), wandb_run_id)
@@ -510,14 +540,27 @@ def phase_compile(
     target = TARGET_LOOKUP[arch]
     ff = " --fast_finetune" if fast_finetune else ""
 
+    # Absolute host paths (used for host-side commands)
+    run_dir_host = VITIS_AI_ROOT / run_dir
+
+    # Load config once — used by all host-side helpers
+    config_path = run_dir_host / ".hydra" / "config.yaml"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config not found: {config_path}")
+    cfg = OmegaConf.load(config_path)
+    if not isinstance(cfg, DictConfig):
+        raise TypeError(f"Expected DictConfig, got {type(cfg)}")
+
+    # Derive wrapper name from the run's Hydra config (model-type-aware)
+    dpu_wrapper_name = _get_dpu_wrapper_name(cfg)
+    print(f"  Wrapper : {dpu_wrapper_name}")
+
     # Paths relative to /workspace (used for container commands)
     model_quant_cmd = f"python DDC_FPGA/scripts/fpga/model_quant.py --run_dir {run_dir}"
-    xmodel_int = f"quantize_result/{DPU_WRAPPER_NAME}_int.xmodel"
-    compiled_dir_rel = f"{DPU_WRAPPER_NAME}_pt"
+    xmodel_int = f"quantize_result/{dpu_wrapper_name}_int.xmodel"
+    compiled_dir_rel = f"{dpu_wrapper_name}_pt"
 
-    # Absolute host paths (used for host-side commands)
     compiled_dir_abs = VITIS_AI_ROOT / compiled_dir_rel
-    run_dir_host = VITIS_AI_ROOT / run_dir
 
     print_header("Phase 1: Compile")
     print(f"  RUN_DIR : {run_dir}")
@@ -556,14 +599,14 @@ def phase_compile(
         f" -x {xmodel_int}"
         f" -a {arch_json}"
         f" -o {compiled_dir_rel}"
-        f" -n {DPU_WRAPPER_NAME}_pt"
+        f" -n {dpu_wrapper_name}_pt"
     )
 
     # 1.7. Generate SVG graph (optional)
     if image_graph:
         print("\n--- 1.7: Generate SVG graph ---")
         run_in_container(
-            f"xdputil xmodel {xmodel_int}" f" -s quantize_result/{DPU_WRAPPER_NAME}_graph.svg"
+            f"xdputil xmodel {xmodel_int}" f" -s quantize_result/{dpu_wrapper_name}_graph.svg"
         )
 
     # Fix permissions: vai_c_xir runs as root inside the container, so the compiled
@@ -576,6 +619,7 @@ def phase_compile(
     _export_entropy_params(
         ckpt_path=run_dir_host / "checkpoints" / "last.ckpt",
         output_path=compiled_dir_abs / "entropy_params.npz",
+        cfg=cfg,
     )
 
     # Copy inference scripts into the compiled directory (self-contained deployment)
@@ -601,7 +645,7 @@ def phase_compile(
             print(
                 "  Note: W&B run ID not found (no wandb/latest-run symlink). manifest will have empty wandb_run_id."
             )
-    _organize_compiled_output(compiled_dir_abs, run_dir_host, wandb_run_id)
+    _organize_compiled_output(compiled_dir_abs, run_dir_host, cfg, wandb_run_id)
 
 
 # ============================================================

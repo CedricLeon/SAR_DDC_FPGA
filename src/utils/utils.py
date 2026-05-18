@@ -24,8 +24,11 @@ def make_wandb_run_name(cfg: Dict[str, Any]) -> str:
             model = "SHyp"
         else:
             model = "ResSHyp"
-    elif "ResidualSimpleAE" in model:
-        model = "ResAE"
+    elif "ResidualFactorizedPrior" in model:
+        if cfg.model.net.get("no_residual_blocks", False):
+            model = "FP"
+        else:
+            model = "ResFP"
     elif "Merlin" in model:
         model = "Merlin"
     else:
