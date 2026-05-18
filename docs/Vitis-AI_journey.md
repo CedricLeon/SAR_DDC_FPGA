@@ -801,3 +801,48 @@ pytest -k "not slow"
 ```
 
 **Commit:** `refactor: remove unused y_hat key from ResSHyp forward output dict`
+
+---
+
+## Doc Re-organisation (2026-05-15)
+
+Restructured project documentation into clearly scoped files. Notes placed here either
+because they are unresolved research questions or because they record what was removed/
+corrected, so nothing is truly lost.
+
+### Unresolved: ln(2) offset in MERLIN loss optimisation
+
+*Moved from `docs/Method.md` — not yet understood, not operational, kept for future
+investigation.*
+
+Optimising the MERLIN log-scale loss (Eq. 2b) with respect to the reconstruction $\hat x$:
+
+$$
+\mathcal{L}(\check r, \check b) = \sum_k \frac{\check r_k}{2} + \exp(2\check b_k - \check r_k)
+$$
+
+$$
+\frac{\partial \mathcal{L}}{\partial \hat x} = \frac{1}{2} - \exp(2y - \hat x) = 0
+\quad\Leftrightarrow\quad \hat x = 2y + \ln(2)
+$$
+
+The $2y$ factor is intuitive (the network reconstructs full reflectivity, not half of it).
+The $\ln(2) \approx 0.693$ offset has no obvious explanation. It is small relative to the
+signal dynamic range and has never caused a visible artefact; it may reflect the asymmetric
+curvature of the loss around its minimum.
+
+### Corrections and removals
+
+- **Stale script reference fixed** in `docs/Method.md`: `script/TSX_dataset_creation.py`
+  → `scripts/dataset/create_dataset.py` (correct path and correct script name).
+- **"Data" section removed** from `docs/Method.md` → content now in new `docs/Data.md`.
+- **Duplicate paragraph** (`==To place somewhere else==` block about `dataset_creation.py`)
+  removed from `docs/Method.md` — covered in `docs/Data.md` preprocessing section.
+- **`==@TO UPDATE==` markers** removed from `docs/Method.md` — content was already correct,
+  markers were stale.
+- **"mostly written by ChatGPT"** annotation removed from the MERLIN Theory section header.
+- **README TODOs** trimmed: "Add Python 3.8 note to README" removed (done in the rewrite);
+  "Use rootutils better" removed (minor internal preference, not actionable).
+- **Full Method + Data sections removed** from `README.md` — content now lives in
+  `docs/Method.md` and `docs/Data.md` respectively; README is now a navigation + workflow
+  reference only.
