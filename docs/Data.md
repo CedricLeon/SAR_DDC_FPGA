@@ -99,7 +99,7 @@ Inside each folder, `.npy` files follow:
 ```
 
 | Prefix | Meaning |
-|--------|---------|
+| -------- | --------- |
 | `sym`  | Linear-scale symmetrised complex (real/imag stored) |
 | `linA` | Linear amplitude |
 | `logI` | Log-scale intensity |
@@ -121,7 +121,7 @@ The `MERLIN_DDS/` subfolder stores images denoised with the original checkpoint 
 The model operates on **log-amplitude** data. A fixed affine transform normalises the signal to approximately `[0, 1]` before entering the network. Constants are defined in `src/utils/constants.py` — treat this file as the **authoritative source**.
 
 | Constant | Value | Description |
-|----------|-------|-------------|
+| ---------- | ------- | ------------- |
 | `EPS` | `1e-2` | Added before log to avoid `log(0)`: `log_amp = log(amplitude + EPS)` |
 | `AMP_MIN` | `4.605170249938965` | ≈ p5 of `log(amplitude + EPS)` computed over the full dataset |
 | `AMP_MAX` | `10.742239952087402` | ≈ p95 of `log(amplitude + EPS)` computed over the full dataset |
