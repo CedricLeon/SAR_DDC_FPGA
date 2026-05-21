@@ -108,8 +108,10 @@ def _prepare_tile_input(noisy: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         noisy_real, noisy_imag: each [1, 1, 256, 256] NCHW float32
     """
     noisy_sq = np.square(noisy)
-    noisy_logI = np.log(noisy_sq + EPS)
-    noisy_logI_norm = (noisy_logI - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
+    noisy_logI = np.log(noisy_sq + np.float32(EPS))
+    noisy_logI_norm = (noisy_logI - np.float32(2 * AMP_MIN)) / np.float32(
+        2 * AMP_MAX - 2 * AMP_MIN
+    )
     noisy_real = noisy_logI_norm[:, :, 0][np.newaxis, np.newaxis, :, :]
     noisy_imag = noisy_logI_norm[:, :, 1][np.newaxis, np.newaxis, :, :]
     return noisy_real, noisy_imag
@@ -126,14 +128,16 @@ def process_single_tile_SHyp(
     eb: EntropyBottleneck,
     gc: GaussianConditional,
     verbose: bool = False,
-) -> Tuple[np.ndarray, int]:
+) -> Tuple[np.ndarray, int, int, int]:
     """Run full inference (ScaleHyperprior) on a single 256x256 tile.
 
     g_a -> h_a -> EB -> h_s -> GC -> g_s.
 
     Returns:
         recon_norm_logI (np.ndarray): [256, 256, 2] (Normalized Log Intensity)
-        num_bytes (int): Total bytes used to compress this tile
+        num_bytes (int): Total bytes (z_bytes + y_bytes)
+        z_bytes (int): Bytes used by entropy bottleneck (z codec)
+        y_bytes (int): Bytes used by Gaussian conditional (y codec)
     """
     # --- Step 0. Prepare Input (CPU) ---
     noisy_real, noisy_imag = _prepare_tile_input(noisy)
@@ -206,7 +210,7 @@ def process_single_tile_SHyp(
         print_tensor_stats("   - Reconstruction", recon)
         log(f"   - Total Bytes: {total_bytes}")
 
-    return recon, total_bytes
+    return recon, total_bytes, z_bytes, y_bytes
     #################################################
 
 
@@ -243,7 +247,7 @@ def process_single_tile_FP(
     runners: Dict[str, DPUSubgraphRunner],
     eb: EntropyBottleneck,
     verbose: bool = False,
-) -> Tuple[np.ndarray, int]:
+) -> Tuple[np.ndarray, int, int, int]:
     """Run full inference (FactorizedPrior) on a single 256x256 tile.
 
     No hyperprior path: g_a -> EB compress/decompress -> g_s.
@@ -251,6 +255,8 @@ def process_single_tile_FP(
     Returns:
         recon_norm_logI (np.ndarray): [256, 256, 2] (Normalized Log Intensity)
         num_bytes (int): Total bytes used to compress this tile
+        z_bytes (int): Always 0 (no hyperprior)
+        y_bytes (int): Bytes used by entropy bottleneck (y codec)
     """
     # --- Step 0. Prepare Input (CPU) ---
     noisy_real, noisy_imag = _prepare_tile_input(noisy)
@@ -290,7 +296,7 @@ def process_single_tile_FP(
         print_tensor_stats("   - Reconstruction", recon)
         log(f"   - Total Bytes: {y_bytes}")
 
-    return recon, y_bytes
+    return recon, y_bytes, 0, y_bytes
 
 
 def run_hybrid_inference(
@@ -299,6 +305,8 @@ def run_hybrid_inference(
     subset: int = 100,
     verbose: bool = False,
     save_patch_stats: bool = False,
+    compare_out: Optional[Path] = None,
+    debug_patch: int = -1,
 ):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
@@ -394,20 +402,24 @@ def run_hybrid_inference(
             src: {k: [] for k in _stat_keys} for src in ["fpga_recon", "merlin", "noisy"]
         }
 
+    # Per-patch compare data for --compare-out
+    compare_bpps: List[Dict] = []
+
     # 4. Inference Loop
     log("\nStarting Inference Loop...")
     for i in range(n_samples):
         t0_sample = time.time()
-        if verbose:
+        patch_verbose = verbose or (debug_patch >= 0 and i == debug_patch)
+        if patch_verbose:
             log(f"\n--- Sample {i} ---")
         # --- Hybrid Inference Call ---
         if gc is not None:
-            recon_norm_logI, num_bytes = process_single_tile_SHyp(
-                noisy[i], runners, eb, gc, verbose=False
+            recon_norm_logI, num_bytes, z_bytes_i, y_bytes_i = process_single_tile_SHyp(
+                noisy[i], runners, eb, gc, verbose=patch_verbose
             )
         else:
-            recon_norm_logI, num_bytes = process_single_tile_FP(
-                noisy[i], runners, eb, verbose=False
+            recon_norm_logI, num_bytes, z_bytes_i, y_bytes_i = process_single_tile_FP(
+                noisy[i], runners, eb, verbose=patch_verbose
             )
 
         dt = time.time() - t0_sample
@@ -438,6 +450,30 @@ def run_hybrid_inference(
         tracker_noisy.update(recon_linA, noisy_linA, num_bytes)
         tracker_adam.update(recon_linA, adam_linA, num_bytes)
         tracker_merlin.update(recon_linA, merlin_linA, num_bytes)
+
+        # Save per-patch compare artefacts (optional)
+        if compare_out is not None:
+            compare_out.mkdir(parents=True, exist_ok=True)
+            bpp_i = num_bytes * 8 / (recon_linA.shape[1] * recon_linA.shape[2])
+            np.save(
+                compare_out / f"patch_{i:04d}_recon_linA.npy",
+                recon_linA.squeeze().astype(np.float32),
+            )
+            psnr_merlin_i = float(
+                MetricsTracker.compute_psnr(recon_linA.squeeze(), merlin_linA.squeeze())
+            )
+            psnr_adam_i = float(
+                MetricsTracker.compute_psnr(recon_linA.squeeze(), adam_linA.squeeze())
+            )
+            compare_bpps.append(
+                {
+                    "bpp": float(bpp_i),
+                    "z_bytes": z_bytes_i,
+                    "y_bytes": y_bytes_i,
+                    "psnr_merlin": psnr_merlin_i,
+                    "psnr_adam": psnr_adam_i,
+                }
+            )
 
         # Per-patch stat collection
         if patch_stat_accum is not None:
@@ -470,6 +506,13 @@ def run_hybrid_inference(
     # Save patch stats if requested
     if patch_stat_accum is not None:
         _save_patch_stats(patch_stat_accum, output_dir / "fpga_patch_stats.npz")
+
+    # Write per-patch compare JSON if requested
+    if compare_out is not None and compare_bpps:
+        per_patch_json = {"n": len(compare_bpps), "patches": compare_bpps}
+        with open(compare_out / "per_patch.json", "w") as f:
+            json.dump(per_patch_json, f, indent=2)
+        log(f"Per-patch compare artefacts written to {compare_out}/")
 
     # Save Metrics
     log("\n ----- Test set Results -----")
@@ -613,6 +656,19 @@ if __name__ == "__main__":
         action="store_true",
         help="Save per-patch linA statistics (min/max/mean/std/p25/p75) to patch_stats.npz.",
     )
+    parser.add_argument(
+        "--compare-out",
+        metavar="DIR",
+        help="Save per-patch recon_linA.npy + per_patch.json here for Python/C++ comparison.",
+    )
+    parser.add_argument(
+        "--debug-patch",
+        type=int,
+        default=-1,
+        metavar="N",
+        help="Enable verbose intermediate-tensor stats for patch N (0-based). "
+        "Useful for diagnosing Python/C++ divergence.",
+    )
     args = parser.parse_args()
 
     xmodel_path = Path(args.xmodel).resolve()
@@ -626,4 +682,12 @@ if __name__ == "__main__":
 
     display_manifest(xmodel_path.parent)
 
-    run_hybrid_inference(xmodel_path, data_path, args.subset, args.verbose, args.save_patch_stats)
+    run_hybrid_inference(
+        xmodel_path,
+        data_path,
+        args.subset,
+        args.verbose,
+        args.save_patch_stats,
+        compare_out=Path(args.compare_out) if args.compare_out else None,
+        debug_patch=args.debug_patch,
+    )

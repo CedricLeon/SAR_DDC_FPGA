@@ -278,6 +278,14 @@ def _export_entropy_params(ckpt_path: Path, output_path: Path, cfg: DictConfig) 
     np.savez(output_path, **save_dict)
     print(f"Entropy parameters saved to {output_path}.")
 
+    # Also write individual .npy files in entropy_params/ directory so the C++
+    # inference binary can load them without an NPZ parser.
+    npy_dir = output_path.parent / "entropy_params"
+    npy_dir.mkdir(parents=True, exist_ok=True)
+    for name, arr in save_dict.items():
+        np.save(npy_dir / f"{name}.npy", arr)
+    print(f"Individual .npy files written to {npy_dir}/")
+
 
 def _make_compiled_model_name(cfg: DictConfig) -> str:
     """Derive the FPGA artifact folder name from a Hydra config.
@@ -781,8 +789,9 @@ def main() -> None:
         metavar="NAME",
         help=(
             "Compiled model name (e.g. ResSHyp-relu_s0_L100_pt). "
-            "When --skip-compile is set, updates active_model symlink before phases 2-4. "
-            "Typically set automatically by batch_deploy.py."
+            "Updates the active_model symlink so phases 2-4 use this model. "
+            "Use with --skip-compile to deploy without recompiling. "
+            "Set automatically by batch_deploy.py."
         ),
     )
     g_run.add_argument(
@@ -878,8 +887,10 @@ def main() -> None:
                 wandb_run_id=args.wandb_run_id,
             )
 
-    # If skipping compile with a known model name (e.g. from batch_deploy.py), redirect symlink.
-    if args.skip_compile and args.model_name:
+    # If a model name is given, redirect the active_model symlink to it.
+    # Works with or without --skip-compile; placed after compile so a fresh
+    # compile still runs first when --skip-compile is not set.
+    if args.model_name:
         _set_active_model_symlink(args.model_name)
 
     model_name = get_model_name()

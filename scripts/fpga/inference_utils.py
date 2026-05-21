@@ -25,8 +25,17 @@ def float_to_DPU_int(data_float: np.ndarray, input_scale: float) -> np.ndarray:
 
 
 def DPU_int_to_float(data_int: np.ndarray, scale: float) -> np.ndarray:
-    """Convert DPU fixed-point INT8 data back to float using the given scale."""
-    return data_int.astype(np.float32) * scale
+    """Convert DPU fixed-point INT8 data back to float using the given scale.
+
+    Explicitly casts *scale* to float32 so that numpy's type-promotion rules
+    keep the result float32 (float32 × float32 → float32).  Without the cast,
+    a Python-float scale (float64) would promote the entire output to float64.
+    Keeping the output float32 is essential: downstream consumers such as
+    GaussianConditional._get_scale_indexes() use np.searchsorted on the
+    float32 scale_table, and a float64 scales array can select a different CDF
+    bin for values near a boundary, silently producing wrong y_hat symbols.
+    """
+    return data_int.astype(np.float32) * np.float32(scale)
 
 
 class DPUJob:
@@ -269,7 +278,10 @@ def display_manifest(script_path: Path) -> None:
 def print_tensor_stats(name: str, tensor: np.ndarray):
     """Print statistics of a given tensor."""
     print(
-        f"{name}: shape={tensor.shape}, dtype={tensor.dtype}, min={tensor.min():.4f}, max={tensor.max():.4f}, mean={tensor.mean():.4f}, std={tensor.std():.4f}"
+        f"{name}: shape={tensor.shape}, dtype={tensor.dtype}, "
+        f"min={tensor.min():.4f}, max={tensor.max():.4f}, "
+        f"mean={tensor.mean():.4f}, std={tensor.std():.4f}, "
+        f"sum={float(tensor.sum()):.6f}"
     )
 
 
@@ -547,7 +559,7 @@ def reconstruct_from_patches(
 
 def patch_infer_fpga(
     image: np.ndarray,
-    infer_fn: Callable[[np.ndarray], Tuple[np.ndarray, int]],
+    infer_fn: Callable[[np.ndarray], Tuple[np.ndarray, int, int, int]],
     patch_size: int = 256,
     overlap: int = 16,
     eliminate_border_px: int = 0,
@@ -793,7 +805,9 @@ def patch_infer_fpga(
             ]  # [patch_size, patch_size, C_in]
 
             # Run the full FPGA pipeline (DPU encoder/decoder + entropy coding)
-            out_hwc, patch_bytes = infer_fn(patch_hwc)  # [patch_size, patch_size, C_out], int
+            out_hwc, patch_bytes, _, _ = infer_fn(
+                patch_hwc
+            )  # [patch_size, patch_size, C_out], int
 
             # Lazy canvas allocation on the first result — avoids a dummy DPU probe
             if canvas is None:
