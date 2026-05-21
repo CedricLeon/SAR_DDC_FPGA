@@ -43,6 +43,7 @@ from deploy import (
     VITIS_AI_ROOT,
     Tee,
     _make_compiled_model_name,
+    ensure_cpp_binary,
 )
 
 # ============================================================
@@ -399,6 +400,9 @@ def main() -> None:
     if args.dry_run:
         print("\n[dry-run] Exiting without deploying.")
         sys.exit(0)
+
+    print("\nEnsuring C++ inference binary is current on board...")
+    ensure_cpp_binary()
 
     print(f"\nBatch log: {log_path}")
     print("Starting deployment loop...\n")

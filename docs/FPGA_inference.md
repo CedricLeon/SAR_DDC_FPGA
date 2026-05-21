@@ -23,11 +23,12 @@ executable on the ZCU102 board** (requires `vart`, `xir`, and the `ans.so` exten
 
 | File | Role |
 | ------ | ------ |
-| `scripts/fpga/inference_hybrid.py` | Main orchestrator: loads model, runs the inference loop over patches/tiles |
+| `inference_cpp/src/` | C++ inference binary (`build_cpp/inference_hybrid`) — primary inference path on board |
+| `scripts/fpga/inference_hybrid.py` | Legacy Python orchestrator (reference only; no longer used in deployment) |
 | `scripts/fpga/inference_utils.py` | DPU runners (`DPUSubgraphRunner`, `DPUJob`), subgraph identification, metrics, tiling utilities |
 | `scripts/fpga/entropy_models_inference.py` | Pure-NumPy + C++ rANS wrappers for `EntropyBottleneck` and `GaussianConditional` |
 | `scripts/fpga/benchmark_fpga.py` | Latency/power benchmarking (not quality evaluation) |
-| `scripts/fpga/deploy.py` | Host-side orchestrator: quantize → compile → scp → run inference → fetch results |
+| `scripts/fpga/deploy.py` | Host-side orchestrator: quantize → compile → rsync → run C++ binary → fetch results |
 | `scripts/fpga/deploy_cpp_entropy_coder/` | Build scripts for the `ans.so` C++ extension (cross-compile for aarch64) |
 
 ---
@@ -295,11 +296,17 @@ The host-side orchestrator `deploy.py` manages the full pipeline:
 ```text
 [Host/Container]  quantize.sh → model_quant.py (calib + deploy xmodel)
 [Host/Container]  vai_c_xir   → compiled *.xmodel
-[Host]            export_entropy_params() → entropy_params.npz
-[Host]            scp compiled_model/ → ZCU102:/home/root/SAR_DDC/active_model/
-[ZCU102]          python3 inference_hybrid.py --xmodel *.xmodel --data test.npy
+[Host]            export_entropy_params() → entropy_params.npz + entropy_params/*.npy
+[Host]            rsync --exclude=results active_model/ → ZCU102:/home/root/SAR_DDC/active_model/
+[ZCU102]          build_cpp/inference_hybrid --xmodel active_model/*.xmodel \
+                    --params active_model/entropy_params --data data/test_sub500_seed42.npy
 [Host]            scp results/ ← ZCU102
 ```
+
+Python inference scripts (`inference_hybrid.py`, etc.) are no longer copied into each
+compiled model directory. The C++ binary (`build_cpp/inference_hybrid`) is built once and
+reused for all models. Use `deploy.py --rebuild-cpp` or `batch_deploy.py` (which rebuilds
+automatically) to push updated sources and recompile on the board.
 
 Results land in `results/fpga/active_model/results/`.
 

@@ -127,7 +127,7 @@ Thread C: [GaussianConditional tile N]          (CPU)
 
 ### Q9 — On-board correctness validation: bugs found and fixed
 
-Validation was run on a 100-patch subset of the `ResSHyp-relu_s0_L1000_pt` model (command: `build_cpp/inference_hybrid --xmodel active_model/*.xmodel --params active_model/entropy_params --data data/test_sub500_seed42.npy --subset 100 --compare-out /tmp/cpp_compare`). Python reference: `python3 active_model/inference_hybrid.py --xmodel active_model/*.xmodel --data data/test_sub500_seed42.npy --subset 100 --compare-out /tmp/py_compare`. Host comparison: `python scripts/fpga/compare_py_cpp.py --py /tmp/py_compare --cpp /tmp/cpp_compare`.
+Validation was run on a 100-patch subset of the `ResSHyp-relu_s0_L1000_pt` model. Both C++ (`build_cpp/inference_hybrid`) and Python (`inference_hybrid.py`) wrote per-patch `recon_linA.npy` + `per_patch.json` via `--compare-out` (flag since removed). Host comparison used `scripts/fpga/compare_py_cpp.py`.
 
 Several bugs were found and fixed:
 
@@ -148,7 +148,7 @@ Several bugs were found and fixed:
 - **Fix**: build `y` interleaved; de-interleave `y_hat` by channel.
 - **Status**: ✅ Fixed.
 
-**Note on FP path**: `_run_fp` currently uses block layout (deliberately reverted for BPP comparison experiment). Switch to interleaved (matching `_run_shyp`) once experiment is done.
+**Note on FP path**: `_run_fp` now also uses NHWC interleaved layout (Bug 5 fixed). Both paths are consistent.
 
 **Bug 3 — `std::round()` instead of banker's rounding in entropy models** (SHyp path)
 
@@ -244,29 +244,33 @@ For `inference_hybrid` this means: we can get low-overhead sequential pipelining
 
 ## 2. Deployment Workflow Changes
 
-### Current Python deployment
+### Previous Python deployment (superseded)
 
 ```
-Host → [deploy.py] → Docker PTQ/compile → xmodel files → scp → ZCU102
-Host → scp inference_hybrid.py + deps → ZCU102
+Host → [deploy.py] → Docker PTQ/compile → xmodel files + inference_hybrid.py → scp → ZCU102
 ZCU102: python3 inference_hybrid.py --xmodel ... --data ...
 ```
 
-### Target C++ deployment
+### Current C++ deployment ✅ DONE
 
 ```
-Host → [deploy.py] → Docker PTQ/compile → xmodel files → scp → ZCU102
-Host → [cross-compile in Docker] → inference_hybrid binary + libinference.so → scp → ZCU102
-Host → scp test data (.npy files) → ZCU102
-ZCU102: ./inference_hybrid --xmodel ... --data ...
-ZCU102 → scp results/*.json → Host → compare_gpu_fpga.ipynb
+Host → [deploy.py] → Docker PTQ/compile → xmodel + entropy_params/ → rsync (no results/) → ZCU102
+Host → [batch_deploy.py or --rebuild-cpp] → scp inference_cpp/src/ → ZCU102 → make -j4
+ZCU102: cd SAR_DDC && build_cpp/inference_hybrid --xmodel active_model/*.xmodel \
+        --params active_model/entropy_params --data data/test_sub500_seed42.npy
+ZCU102 → scp results/ → Host
 ```
+
+Key changes vs the original plan:
+- Build is **native on board** (not cross-compiled in Docker) — CMake + `make -j4` runs on the ZCU102.
+- Python inference scripts are **no longer copied** into each compiled model directory.
+- `batch_deploy.py` rebuilds the C++ binary **once per batch** before the deploy loop.
+- `deploy.py --rebuild-cpp` triggers a push + rebuild for single-model deploys.
 
 ### Build environment
 
-- Cross-compile inside Vitis-AI Docker (has PetaLinux GCC 11 aarch64 sysroot)
-- CMake build system
-- `deploy.py` extended with a `--build-cpp` step that runs `cmake + make` inside the container
+- Native build on the ZCU102 ARM A53 (GCC, CMake); no cross-compilation needed.
+- `build_cpp/` directory is cmake-configured once (manual one-time setup); subsequent deploys just `make -j4`.
 
 ### Output files
 
@@ -812,40 +816,13 @@ scp scripts/fpga/inference_utils.py  ZCU102:/home/root/SAR_DDC/active_model/
 ### Run commands (from `/home/root/SAR_DDC/` on board)
 
 ```bash
-# C++ inference (binary lives in build_cpp/, not active_model/)
 build_cpp/inference_hybrid \
     --xmodel  active_model/*.xmodel \
     --params  active_model/entropy_params \
     --data    data/test_sub500_seed42.npy \
     --subset  100 \
-    [--compare-out /tmp/cpp_out] \
     [--debug-patch N] \
     [--verbose]
-
-# Python reference
-python3 active_model/inference_hybrid.py \
-    --xmodel  active_model/*.xmodel \
-    --data    data/test_sub500_seed42.npy \
-    --subset  100 \
-    [--compare-out /tmp/py_out] \
-    [--debug-patch N] \
-    [--verbose]
-```
-
-### Compare outputs (on host, after scp of /tmp/cpp_out and /tmp/py_out)
-
-```bash
-python scripts/fpga/compare_py_cpp.py \
-    --py  /tmp/py_out \
-    --cpp /tmp/cpp_out \
-    [--patch N]           # show per-pixel detail for patch N
-```
-
-### Collect compare-out data from board
-
-```bash
-scp -r ZCU102:/tmp/cpp_out tmp/cpp_out
-scp -r ZCU102:/tmp/py_out  tmp/py_out
 ```
 
 ---

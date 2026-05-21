@@ -24,8 +24,8 @@ Three distinct environments — always use the right one.
 | --- | --- |
 | Host source | `/home/leon_ce/dev/Vitis-AI/DDC_FPGA/` (also mounted at `/mnt/vitisAI/Vitis-AI/DDC_FPGA/`) |
 | Board project root | `ZCU102:/home/root/SAR_DDC/` |
-| Board inference binary | `ZCU102:/home/root/SAR_DDC/active_model/inference_hybrid` |
-| Board Python scripts | `ZCU102:/home/root/SAR_DDC/active_model/` |
+| Board inference binary | `ZCU102:/home/root/SAR_DDC/build_cpp/inference_hybrid` |
+| Board active model | `ZCU102:/home/root/SAR_DDC/active_model/` (xmodel + entropy_params/) |
 | Board test data | `ZCU102:/home/root/SAR_DDC/data/test_sub500_seed42.npy` |
 | Active model (host) | `results/fpga/active_model/` (symlink) |
 
@@ -39,7 +39,7 @@ Read only what's relevant to the task at hand.
 | --- | --- |
 | Model architecture, MERLIN theory, loss, signal equations | `docs/Method.md` |
 | Data source, preprocessing, HDF5 schema, normalisation | `docs/Data.md` |
-| FPGA pipeline, DPU runners, entropy models | `docs/FPGA_inference.md` (describes Python pipeline; partially outdated — C++ port in progress) |
+| FPGA pipeline, DPU runners, entropy models | `docs/FPGA_inference.md` (C++ is now the primary inference path; Python pipeline kept as reference) |
 | **C++ port design, decisions, open bugs** | **`docs/cpp_inference_design.md`** ← read first for inference work |
 | ZCU102 hardware, benchmark methodology, power measurement | `docs/performance_benchmark_implementation.md` |
 | Vitis-AI issues, deployment journal | `docs/Vitis-AI_journey.md` (check here before debugging Vitis-AI issues) |
@@ -60,36 +60,23 @@ python src/train.py experiment=<name> debug=fdr   # fast dev run (1 batch smoke 
 python scripts/fpga/deploy.py --run-dir DDC_FPGA/logs/train/sar_ddc/hyperprior/runs/<date>/<id>
 # Skip phases selectively:
 python scripts/fpga/deploy.py --run-dir <...> --skip-compile --skip-transfer  # infer + fetch only
+# Rebuild C++ binary on board before inference (Phase 3 always uses the C++ binary):
+python scripts/fpga/deploy.py --run-dir <...> --skip-compile --rebuild-cpp
 ```
 
-### C++ Build and Deploy to Board
+### C++ Build on Board (manual)
 ```bash
-# 1. Push sources
-scp inference_cpp/src/*.cpp inference_cpp/src/*.hpp \
-    ZCU102:/home/root/SAR_DDC/inference_cpp/src/
-
-# 2. Build on board
+# Push sources and rebuild (done automatically by batch_deploy.py and --rebuild-cpp):
+scp -r inference_cpp/src/ ZCU102:/home/root/SAR_DDC/inference_cpp/src/
 ssh ZCU102 "cd /home/root/SAR_DDC/build_cpp && make -j4"
-
-# 3. Run directly (no deploy step needed — binary stays in build_cpp/)
-# ZCU102:/home/root/SAR_DDC/build_cpp/inference_hybrid --xmodel active_model/*.xmodel ...
 ```
 
-### C++ Inference Validation
+### C++ Inference (on board)
 ```bash
-# On board — C++ inference (binary is in build_cpp/, not active_model/)
 build_cpp/inference_hybrid --xmodel active_model/*.xmodel \
   --params active_model/entropy_params \
   --data data/test_sub500_seed42.npy --subset 100 \
-  --compare-out /tmp/cpp_out [--debug-patch N] [--verbose]
-
-# On board — Python reference
-python3 active_model/inference_hybrid.py --xmodel active_model/*.xmodel \
-  --data data/test_sub500_seed42.npy --subset 100 --compare-out /tmp/py_out
-
-# Fetch and compare (on host)
-scp -r ZCU102:/tmp/cpp_out tmp/cpp_out && scp -r ZCU102:/tmp/py_out tmp/py_out
-python scripts/fpga/compare_py_cpp.py --py tmp/py_out --cpp tmp/cpp_out
+  [--debug-patch N] [--verbose]
 ```
 
 ---

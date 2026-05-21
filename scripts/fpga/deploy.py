@@ -9,7 +9,7 @@ Phases:
     0 — Container health  : ensure vai_container is running and GPU-healthy
     1 — Compile           : quantize, compile, export entropy params, organize output
     2 — Transfer          : scp compiled model to FPGA
-    3 — Infer             : run inference_hybrid.py on FPGA (output streamed)
+    3 — Infer             : run C++ build_cpp/inference_hybrid on FPGA (output streamed)
     4 — Fetch             : scp results back to host
 
 Any phase can be skipped with --skip-<phase>. Phases 2-4 always read the active model
@@ -70,7 +70,9 @@ TARGET_LOOKUP = {
 
 FPGA_HOST = "ZCU102"
 FPGA_BASE_DIR = "/home/root/SAR_DDC"
-FPGA_DATA_PATH = "../data/test_sub500_seed42.npy"
+FPGA_DATA_PATH = (
+    "data/test_sub500_seed42.npy"  # board-root-relative (binary runs from FPGA_BASE_DIR)
+)
 FPGA_DATASET_SIZE = 500
 
 CALIB_SUBSET_LEN = 200
@@ -90,6 +92,7 @@ VITIS_AI_ROOT = PROJECT_ROOT.parent  # .../Vitis-AI/
 
 ACTIVE_MODEL_LINK = PROJECT_ROOT / "results" / "fpga" / "active_model"
 START_CONTAINER_SCRIPT = PROJECT_ROOT / "scripts" / "vitis-ai-automation" / "start_container_bg.sh"
+FPGA_CPP_SRC_LOCAL = PROJECT_ROOT / "inference_cpp" / "src"
 
 # ============================================================
 # TEE LOGGING HELPER
@@ -474,6 +477,14 @@ def run_in_container(cmd: str) -> None:
     run(["docker", "exec", CONTAINER_NAME, "bash", "-c", preamble + cmd])
 
 
+def ensure_cpp_binary() -> None:
+    """Push inference_cpp/src/ to the board and rebuild build_cpp/inference_hybrid."""
+    print_header("C++ binary: push sources and rebuild")
+    run(["scp", "-r", str(FPGA_CPP_SRC_LOCAL), f"{FPGA_HOST}:{FPGA_BASE_DIR}/inference_cpp/src/"])
+    run(["ssh", FPGA_HOST, f"cd {FPGA_BASE_DIR}/build_cpp && make -j4"])
+    print("  C++ binary ready.")
+
+
 # ============================================================
 # PHASE 0: Container lifecycle
 # ============================================================
@@ -630,18 +641,6 @@ def phase_compile(
         cfg=cfg,
     )
 
-    # Copy inference scripts into the compiled directory (self-contained deployment)
-    print("\n--- Copying inference scripts into compiled dir ---")
-    for script in [
-        "inference_hybrid.py",
-        "inference_utils.py",
-        "entropy_models_inference.py",
-        "benchmark_fpga.py",
-    ]:
-        src = PROJECT_ROOT / "scripts" / "fpga" / script
-        shutil.copy2(src, compiled_dir_abs / script)
-        print(f"  Copied {script}")
-
     # 1.9. Organize output: generate manifest, move to compiled_models/, update symlink
     print("\n--- 1.9: Organize output (host) ---")
     # Auto-detect W&B run ID when it was not passed explicitly (standalone deploy.py use).
@@ -692,6 +691,28 @@ def _set_active_model_symlink(model_name: str) -> None:
 # ============================================================
 
 
+def _ensure_entropy_params_dir(model_dir: Path) -> None:
+    """Unpack entropy_params.npz into entropy_params/ if the directory is absent.
+
+    Older compiled models were exported before the per-file .npy step was added. The C++ inference
+    binary requires individual .npy files, so we unpack on demand.
+    """
+    npy_dir = model_dir / "entropy_params"
+    npz_path = model_dir / "entropy_params.npz"
+    if npy_dir.exists():
+        return
+    if not npz_path.exists():
+        raise FileNotFoundError(
+            f"Neither entropy_params/ nor entropy_params.npz found in {model_dir}"
+        )
+    print(f"  entropy_params/ missing — unpacking {npz_path.name} ...")
+    npy_dir.mkdir()
+    data = np.load(npz_path)
+    for name in data.files:
+        np.save(npy_dir / f"{name}.npy", data[name])
+    print(f"  Unpacked {len(data.files)} arrays into {npy_dir}/")
+
+
 def phase_transfer(model_name: str) -> None:
     """Transfer the compiled model from the host to the FPGA using scp."""
     print_header(f"Phase 2: Transfer to FPGA ({FPGA_HOST})")
@@ -699,15 +720,32 @@ def phase_transfer(model_name: str) -> None:
     print(f"  Local src : {ACTIVE_MODEL_LINK}")
     print(f"  Remote dst: {FPGA_HOST}:{FPGA_BASE_DIR}/active_model/")
 
-    # Wipe old model from FPGA to prevent stale artifacts from previous runs.
-    # inference_hybrid.py cleans its own results/ dir, but model files (xmodel,
-    # entropy_params.npz, etc.) must also be fresh.
-    print(f"  Wiping {FPGA_BASE_DIR}/active_model on FPGA...")
-    run(["ssh", FPGA_HOST, f"rm -rf {FPGA_BASE_DIR}/active_model"])
+    # Ensure entropy_params/ dir exists (old models only have the .npz archive).
+    _ensure_entropy_params_dir(ACTIVE_MODEL_LINK.resolve())
 
-    # scp -r follows symlinks on the source, so the actual compiled model directory
-    # is transferred, not the symlink itself.
-    run(["scp", "-r", str(ACTIVE_MODEL_LINK), f"{FPGA_HOST}:{FPGA_BASE_DIR}/"])
+    # Wipe old model from FPGA to prevent stale artifacts from previous runs.
+    # The C++ binary cleans its own results/ dir, but model files (xmodel,
+    # entropy_params/, etc.) must also be fresh.
+    print(f"  Wiping {FPGA_BASE_DIR}/active_model on FPGA...")
+    run(
+        [
+            "ssh",
+            FPGA_HOST,
+            f"rm -rf {FPGA_BASE_DIR}/active_model && mkdir -p {FPGA_BASE_DIR}/active_model",
+        ]
+    )
+
+    # rsync follows symlinks on the source; --exclude=results avoids pushing stale
+    # host results/ (up to ~9 MB) that would be overwritten by the board anyway.
+    run(
+        [
+            "rsync",
+            "-av",
+            "--exclude=results",
+            str(ACTIVE_MODEL_LINK) + "/",
+            f"{FPGA_HOST}:{FPGA_BASE_DIR}/active_model/",
+        ]
+    )
     print("  Transfer complete.")
 
 
@@ -717,17 +755,14 @@ def phase_transfer(model_name: str) -> None:
 
 
 def phase_infer(subset: int) -> None:
-    """Run inference on the FPGA by SSHing in and executing inference_hybrid.py with the
-    appropriate arguments."""
+    """Run C++ inference binary on the FPGA by SSHing in and executing
+    build_cpp/inference_hybrid."""
     print_header("Phase 3: Inference on FPGA")
-    # ~/.bashrc is NOT sourced by non-interactive SSH sessions, so PYTHONPATH (which
-    # points to the ans.so C++ rANS extension at /home/root/SAR_DDC/) must be set
-    # explicitly in the command string.
     infer_cmd = (
-        f"export PYTHONPATH=$PYTHONPATH:{FPGA_BASE_DIR} && "
-        f"cd {FPGA_BASE_DIR}/active_model && "
-        f"python3 inference_hybrid.py"
-        f" --xmodel ./*.xmodel"
+        f"cd {FPGA_BASE_DIR} && "
+        f"build_cpp/inference_hybrid"
+        f" --xmodel active_model/*.xmodel"
+        f" --params active_model/entropy_params"
         f" --data {FPGA_DATA_PATH}"
         f" --subset {subset}"
     )
@@ -854,6 +889,14 @@ def main() -> None:
         default=FPGA_DATASET_SIZE,
         help=f"Number of test samples for inference (default: {FPGA_DATASET_SIZE}).",
     )
+    g_infer.add_argument(
+        "--rebuild-cpp",
+        action="store_true",
+        help=(
+            "Push inference_cpp/src/ to the board and rebuild build_cpp/inference_hybrid "
+            "before Phase 3. Default: assume binary is already current."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -909,6 +952,8 @@ def main() -> None:
             phase_transfer(model_name)
 
         if not args.skip_infer:
+            if args.rebuild_cpp:
+                ensure_cpp_binary()
             tee.verbose = PHASE3_VERBOSE  # toggle: may mute FPGA inference output
             phase_infer(args.subset)
             tee.verbose = True  # restore for phase 4 and Done summary
