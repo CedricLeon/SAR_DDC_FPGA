@@ -360,20 +360,33 @@ namespace ddc
             ga.run(real_ch.data(), y_real.data());
             ga.run(imag_ch.data(), y_imag.data());
 
-            // Block layout — [y_real | y_imag] (original layout before Bug 5 fix).
-            // Kept here intentionally for BPP comparison experiment vs interleaved.
+            // Interleaved NHWC — maps each real/imag pair to the correct EB CDF channel.
+            // Block layout tested empirically: +4 bytes on 40/100 patches, same MERLIN quality.
             const auto &y_shape = ga.output_shape(); // [N, H', W', C_MAIN]
             const int yh = y_shape[1], yw = y_shape[2], yc = y_shape[3];
             const int y_len = yh * yw * yc;
             std::vector<float> y(y_len * 2);
-            std::copy(y_real.begin(), y_real.end(), y.begin());
-            std::copy(y_imag.begin(), y_imag.end(), y.begin() + y_len);
+            for (int hw = 0; hw < yh * yw; ++hw)
+            {
+                for (int c = 0; c < yc; ++c)
+                {
+                    y[hw * 2 * yc + c]      = y_real[hw * yc + c];
+                    y[hw * 2 * yc + yc + c] = y_imag[hw * yc + c];
+                }
+            }
 
             std::vector<uint8_t> y_bits = eb_.compress(y.data(), yh, yw);
             std::vector<float> y_hat = eb_.decompress(y_bits, yh, yw);
 
-            std::vector<float> yh_real(y_hat.begin(), y_hat.begin() + y_len);
-            std::vector<float> yh_imag(y_hat.begin() + y_len, y_hat.end());
+            std::vector<float> yh_real(y_len), yh_imag(y_len);
+            for (int hw = 0; hw < yh * yw; ++hw)
+            {
+                for (int c = 0; c < yc; ++c)
+                {
+                    yh_real[hw * yc + c] = y_hat[hw * 2 * yc + c];
+                    yh_imag[hw * yc + c] = y_hat[hw * 2 * yc + yc + c];
+                }
+            }
 
             const auto &gs = loader_.runner("g_s");
             std::vector<float> recon_real(gs.output_numel()), recon_imag(gs.output_numel());
@@ -573,13 +586,6 @@ namespace ddc
 
         std::vector<float> vis_noisy, vis_recon, vis_adam, vis_merlin; // log-I, HW each
 
-        // Per-patch compare data for --compare-out (empty when not requested)
-        std::vector<double> compare_bpps;
-        std::vector<int> compare_z_bytes;
-        std::vector<int> compare_y_bytes;
-        std::vector<double> compare_psnr_merlin;
-        std::vector<double> compare_psnr_adam;
-
         auto t0_all = std::chrono::steady_clock::now();
 
         for (int i = 0; i < N; ++i)
@@ -627,23 +633,6 @@ namespace ddc
             acc_adam.update(recon_lina.data(), adam_lina.data(), H, W, res.num_bytes);
             acc_merlin.update(recon_lina.data(), merlin_lina.data(), H, W, res.num_bytes);
 
-            // Save per-patch compare artefacts (optional)
-            if (!cfg_.compare_out.empty())
-            {
-                namespace fs = std::filesystem;
-                fs::create_directories(cfg_.compare_out);
-                char fname[64];
-                std::snprintf(fname, sizeof(fname), "patch_%04d_recon_linA.npy", i);
-                npy_save_float32((cfg_.compare_out / fname).string(),
-                                 recon_lina.data(), {static_cast<size_t>(H), static_cast<size_t>(W)});
-                double bpp_i = static_cast<double>(res.num_bytes) * 8.0 / (H * W);
-                compare_bpps.push_back(bpp_i);
-                compare_z_bytes.push_back(res.z_bytes);
-                compare_y_bytes.push_back(res.y_bytes);
-                compare_psnr_merlin.push_back(compute_psnr(recon_lina.data(), merlin_lina.data(), H * W));
-                compare_psnr_adam.push_back(compute_psnr(recon_lina.data(), adam_lina.data(), H * W));
-            }
-
             // Visualisation (log-I)
             if (std::find(vis_idx.begin(), vis_idx.end(), i) != vis_idx.end())
             {
@@ -688,25 +677,6 @@ namespace ddc
                             std::chrono::steady_clock::now() - t0_all)
                             .count();
         LOG_INFO("Test subset done in " + std::to_string(total_ms) + " ms (" + std::to_string(total_ms / N) + " ms/sample)");
-
-        // Write per-patch compare JSON if requested
-        if (!cfg_.compare_out.empty() && !compare_bpps.empty())
-        {
-            nlohmann::json pp;
-            pp["n"] = static_cast<int>(compare_bpps.size());
-            nlohmann::json patches = nlohmann::json::array();
-            for (size_t pi = 0; pi < compare_bpps.size(); ++pi)
-                patches.push_back(nlohmann::json{
-                    {"bpp", compare_bpps[pi]},
-                    {"z_bytes", compare_z_bytes[pi]},
-                    {"y_bytes", compare_y_bytes[pi]},
-                    {"psnr_merlin", compare_psnr_merlin[pi]},
-                    {"psnr_adam", compare_psnr_adam[pi]}});
-            pp["patches"] = patches;
-            std::ofstream f(cfg_.compare_out / "per_patch.json");
-            f << pp.dump(2);
-            LOG_INFO("Per-patch compare artefacts written to " + cfg_.compare_out.string() + "/");
-        }
 
         // Build JSON summary (mirrors Python run_hybrid_inference output)
         auto noisy_m = acc_noisy.mean();

@@ -305,7 +305,6 @@ def run_hybrid_inference(
     subset: int = 100,
     verbose: bool = False,
     save_patch_stats: bool = False,
-    compare_out: Optional[Path] = None,
     debug_patch: int = -1,
 ):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -402,9 +401,6 @@ def run_hybrid_inference(
             src: {k: [] for k in _stat_keys} for src in ["fpga_recon", "merlin", "noisy"]
         }
 
-    # Per-patch compare data for --compare-out
-    compare_bpps: List[Dict] = []
-
     # 4. Inference Loop
     log("\nStarting Inference Loop...")
     for i in range(n_samples):
@@ -451,30 +447,6 @@ def run_hybrid_inference(
         tracker_adam.update(recon_linA, adam_linA, num_bytes)
         tracker_merlin.update(recon_linA, merlin_linA, num_bytes)
 
-        # Save per-patch compare artefacts (optional)
-        if compare_out is not None:
-            compare_out.mkdir(parents=True, exist_ok=True)
-            bpp_i = num_bytes * 8 / (recon_linA.shape[1] * recon_linA.shape[2])
-            np.save(
-                compare_out / f"patch_{i:04d}_recon_linA.npy",
-                recon_linA.squeeze().astype(np.float32),
-            )
-            psnr_merlin_i = float(
-                MetricsTracker.compute_psnr(recon_linA.squeeze(), merlin_linA.squeeze())
-            )
-            psnr_adam_i = float(
-                MetricsTracker.compute_psnr(recon_linA.squeeze(), adam_linA.squeeze())
-            )
-            compare_bpps.append(
-                {
-                    "bpp": float(bpp_i),
-                    "z_bytes": z_bytes_i,
-                    "y_bytes": y_bytes_i,
-                    "psnr_merlin": psnr_merlin_i,
-                    "psnr_adam": psnr_adam_i,
-                }
-            )
-
         # Per-patch stat collection
         if patch_stat_accum is not None:
             for src, arr in [
@@ -506,13 +478,6 @@ def run_hybrid_inference(
     # Save patch stats if requested
     if patch_stat_accum is not None:
         _save_patch_stats(patch_stat_accum, output_dir / "fpga_patch_stats.npz")
-
-    # Write per-patch compare JSON if requested
-    if compare_out is not None and compare_bpps:
-        per_patch_json = {"n": len(compare_bpps), "patches": compare_bpps}
-        with open(compare_out / "per_patch.json", "w") as f:
-            json.dump(per_patch_json, f, indent=2)
-        log(f"Per-patch compare artefacts written to {compare_out}/")
 
     # Save Metrics
     log("\n ----- Test set Results -----")
@@ -657,11 +622,6 @@ if __name__ == "__main__":
         help="Save per-patch linA statistics (min/max/mean/std/p25/p75) to patch_stats.npz.",
     )
     parser.add_argument(
-        "--compare-out",
-        metavar="DIR",
-        help="Save per-patch recon_linA.npy + per_patch.json here for Python/C++ comparison.",
-    )
-    parser.add_argument(
         "--debug-patch",
         type=int,
         default=-1,
@@ -688,6 +648,5 @@ if __name__ == "__main__":
         args.subset,
         args.verbose,
         args.save_patch_stats,
-        compare_out=Path(args.compare_out) if args.compare_out else None,
         debug_patch=args.debug_patch,
     )

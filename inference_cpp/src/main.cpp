@@ -8,10 +8,7 @@
  *       --data    /path/to/test_set.npy \
  *       --output  /path/to/results/ \
  *       --subset  100 \
- *       [--compare-out /path/to/compare/dir]  \
  *       [--verbose]
- *
- * Mirrors inference_hybrid.py argument interface.
  */
 
 #include <cstdlib>
@@ -32,7 +29,6 @@ static void usage(const char *prog)
         << "  --data    <path>   test set .npy (N,H,W,4) (required)\n"
         << "  --output  <path>   output directory [default: xmodel_dir/results]\n"
         << "  --subset  <int>    number of test-set patches to evaluate [default: 100]\n"
-        << "  --compare-out <dir> save patch_{i}_recon_linA.npy + per_patch.json for py/cpp comparison\n"
         << "  --debug-patch <N>  enable verbose stats only for patch index N (0-based)\n"
         << "  --verbose          enable verbose per-sample logging\n"
         << "  --log     <file>   write log to file in addition to stderr\n";
@@ -66,8 +62,6 @@ int main(int argc, char **argv)
             cfg.output_dir = next();
         else if (arg == "--subset")
             cfg.subset = std::stoi(next());
-        else if (arg == "--compare-out")
-            cfg.compare_out = next();
         else if (arg == "--debug-patch")
             cfg.debug_patch = std::stoi(next());
         else if (arg == "--log")

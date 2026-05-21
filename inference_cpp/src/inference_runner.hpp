@@ -32,9 +32,6 @@ namespace ddc
         std::filesystem::path output_dir;  // where results are written
         int subset = 100;                  // how many test-set patches to evaluate
         bool verbose = false;
-        // If non-empty: save patch_{i:04d}_recon_linA.npy + per_patch.json here
-        // for Python/C++ comparison.
-        std::filesystem::path compare_out;
         // If >= 0: enable verbose logging only for this patch index (0-based).
         // Useful for diagnosing Python/C++ divergence on a specific patch.
         int debug_patch = -1;
