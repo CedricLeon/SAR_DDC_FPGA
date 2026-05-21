@@ -194,7 +194,9 @@ def evaluate_model_captured(
     callbacks = []
     if "callbacks" in hydra_cfg and "compare_recon_to_gt" in hydra_cfg.callbacks:
         # Convert to a plain dict so we can freely add/remove keys without hitting OmegaConf struct-mode restrictions (Hydra configs are read-only by default).
-        cb_dict: Dict[str, Any] = OmegaConf.to_container(hydra_cfg.callbacks.compare_recon_to_gt, resolve=True)  # type: ignore[assignment]
+        cb_dict: Dict[str, Any] = OmegaConf.to_container(
+            hydra_cfg.callbacks.compare_recon_to_gt, resolve=True
+        )  # type: ignore[assignment]
         cb_dict["verbose"] = True
         # Migrate old API keys (blend_method/stride) to the new patch_infer API (blend_profile/overlap).
         cb_dict.pop("split_large_patch", None)
@@ -289,7 +291,7 @@ def _print_before_after(before: dict, after: dict) -> None:
     """Print a compact Before / After table for the keys listed in _SHOW_KEYS."""
     col_w = 12  # width for value column
     print(f"    {'Metric':<35} {'Before':>{col_w}}  {'After':>{col_w}}")
-    print(f"    {'-'*35} {'-'*col_w}  {'-'*col_w}")
+    print(f"    {'-' * 35} {'-' * col_w}  {'-' * col_w}")
     for key in _SHOW_KEYS:
         b_val = before.get(key)
         a_val = after.get(key)
@@ -382,6 +384,7 @@ def main():
     # matching_runs = [r for r in matching_runs if r.id in list_of_runs_id_in_the_filter]
     # One safe + one problematyic run = ['lwks3okq', 'jvsj0ut4']
     # All 24 runs with NaN problems (GDN + output_padding, for lambdas 50,100,2000,1000 all seeds = ['jvsj0ut4', 'we73n9uj', '5h78ir4k', 'zrw08hbz', 'elp40xh9', 'x4qu6p2x', 'vkd9treb', 'n5gsa2fo', '0rru19sn', '4p4ghwww', 'atv9gmhm', '9tfd1snp', 'ltec20ym', '5tj53usr', 'p9dl5f81', 'f5fs0s9d', 'hg6f3jgu', 'cj2n50np', '5wa47ncm', 'w870mauv', 'ljfcdsty', '0fftmoe3', 'gpesw2xn', 'pn1kgfwh']]
+    # matching_runs = [r for r in matching_runs if r.id in ["3nmfvbn0"]]
 
     # Filter by creation date using the helper to avoid timezone errors
     # matching_runs = filter_runs_by_creation_date(matching_runs, datetime(2026, 2, 11, 10, 0, 0))
