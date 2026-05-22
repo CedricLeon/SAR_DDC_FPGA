@@ -771,7 +771,11 @@ namespace ddc
 
             const int TH = static_cast<int>(tile_arr.shape[0]);
             const int TW = static_cast<int>(tile_arr.shape[1]);
-            auto tile_data = tile_arr.as_float32();
+            // to_float32_vec() handles both float32 and float64 on-disk dtypes.
+            // sym_Noisy.npy is saved as float64 by numpy; as_float32() would
+            // reinterpret the raw bytes and produce garbage — hence this call.
+            auto tile_data_vec = tile_arr.to_float32_vec();
+            const float *tile_data = tile_data_vec.data();
 
             // Overlap-blended inference
             auto [recon_norm, total_bytes] = tile_infer(tile_data, TH, TW, pipeline);

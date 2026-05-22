@@ -196,6 +196,16 @@ inline int32_t round_half_to_even(float v) {
 
 ---
 
+**Bug 6 — `_run_tile_eval_impl`: `sym_Noisy.npy` loaded as float32 but stored as float64**
+
+- **Location**: `inference_runner.cpp`, `_run_tile_eval_impl()`; `npy_io.hpp`, `as_float32()`
+- **Symptom**: Hamburg tile reconstruction is pure noise with visible 256×256 patch grid. PSNR vs MERLIN drops from ~21 dB (test set) to ~11 dB. `mse_noisy`/`psnr_noisy` reported as `null` in tile metrics JSON. Consistent across ALL 240 models.
+- **Root cause**: `sym_Noisy.npy` is saved by NumPy in float64 (8 bytes/element). `NpyArray::as_float32()` is a raw `reinterpret_cast` — it reinterprets the float64 bytes as float32, producing 2× as many garbage values per element. The DPU receives completely wrong input for every patch. `noisy_lina` also contains NaN (some float64 bit patterns decode as NaN in float32), causing the null metrics. The test set (`test_sub500_seed42.npy`) is float32, so it was unaffected.
+- **Fix**: Added `NpyArray::to_float32_vec()` in `npy_io.hpp` — handles both float32 (no-copy) and float64 (element-wise cast). `_run_tile_eval_impl` now calls `tile_arr.to_float32_vec()` instead of `tile_arr.as_float32()`.
+- **Status**: ✅ Fixed.
+
+---
+
 **Bug 5 — `_run_fp`: y built in block layout (minor, FP path only)**
 
 - **Location**: `inference_runner.cpp`, `_run_fp()`

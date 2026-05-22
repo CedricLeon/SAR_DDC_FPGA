@@ -36,6 +36,23 @@ struct NpyArray {
     const float*   as_float32() const { return reinterpret_cast<const float*>(data.data()); }
     const int32_t* as_int32()   const { return reinterpret_cast<const int32_t*>(data.data()); }
 
+    // Convert to float32 vector regardless of on-disk dtype (float32 or float64).
+    // Use this when the source dtype may be float64 (e.g. sym_Noisy.npy).
+    std::vector<float> to_float32_vec() const {
+        size_t n = numel();
+        if (dtype == "<f4" || dtype == "float32") {
+            const float* p = reinterpret_cast<const float*>(data.data());
+            return std::vector<float>(p, p + n);
+        } else if (dtype == "<f8" || dtype == "float64") {
+            const double* p = reinterpret_cast<const double*>(data.data());
+            std::vector<float> out(n);
+            for (size_t i = 0; i < n; ++i)
+                out[i] = static_cast<float>(p[i]);
+            return out;
+        }
+        throw std::runtime_error("NpyArray::to_float32_vec: unsupported dtype: " + dtype);
+    }
+
     // Helpers for common 1-D cases
     std::vector<float> to_float_vec() const {
         assert(dtype == "<f4" || dtype == "float32");
