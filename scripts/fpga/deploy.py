@@ -478,9 +478,22 @@ def run_in_container(cmd: str) -> None:
 
 
 def ensure_cpp_binary() -> None:
-    """Push inference_cpp/src/ to the board and rebuild build_cpp/inference_hybrid."""
+    """Push inference_cpp/src/ to the board and rebuild build_cpp/inference_hybrid.
+
+    Uses rsync (not scp -r) so that source files are written directly into the remote src/
+    directory rather than creating a nested src/src/ when the remote directory already exists.
+    Trailing slashes on both sides tell rsync to sync the *contents* of the local src/ into the
+    remote src/, not the directory itself.
+    """
     print_header("C++ binary: push sources and rebuild")
-    run(["scp", "-r", str(FPGA_CPP_SRC_LOCAL), f"{FPGA_HOST}:{FPGA_BASE_DIR}/inference_cpp/src/"])
+    run(
+        [
+            "rsync",
+            "-av",
+            str(FPGA_CPP_SRC_LOCAL) + "/",
+            f"{FPGA_HOST}:{FPGA_BASE_DIR}/inference_cpp/src/",
+        ]
+    )
     run(["ssh", FPGA_HOST, f"cd {FPGA_BASE_DIR}/build_cpp && make -j4"])
     print("  C++ binary ready.")
 
@@ -754,7 +767,7 @@ def phase_transfer(model_name: str) -> None:
 # ============================================================
 
 
-def phase_infer(subset: int) -> None:
+def phase_infer(subset: int, skip_test_set: bool = False) -> None:
     """Run C++ inference binary on the FPGA by SSHing in and executing
     build_cpp/inference_hybrid."""
     print_header("Phase 3: Inference on FPGA")
@@ -766,6 +779,8 @@ def phase_infer(subset: int) -> None:
         f" --data {FPGA_DATA_PATH}"
         f" --subset {subset}"
     )
+    if skip_test_set:
+        infer_cmd += " --skip-test-set"
     print(f"  SSH command: {infer_cmd}")
     # Output streams live to this terminal (no capture).
     run(["ssh", FPGA_HOST, infer_cmd])
@@ -897,6 +912,15 @@ def main() -> None:
             "before Phase 3. Default: assume binary is already current."
         ),
     )
+    g_infer.add_argument(
+        "--skip-test-set",
+        action="store_true",
+        help=(
+            "Pass --skip-test-set to the C++ binary: skip the 100-patch test-subset phase "
+            "and run only the Hamburg tile evaluation. Useful when rerunning tile eval after "
+            "a binary fix without repeating the full test-set sweep."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -955,7 +979,7 @@ def main() -> None:
             if args.rebuild_cpp:
                 ensure_cpp_binary()
             tee.verbose = PHASE3_VERBOSE  # toggle: may mute FPGA inference output
-            phase_infer(args.subset)
+            phase_infer(args.subset, skip_test_set=args.skip_test_set)
             tee.verbose = True  # restore for phase 4 and Done summary
 
         if not args.skip_fetch:

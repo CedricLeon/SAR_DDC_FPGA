@@ -30,6 +30,7 @@ static void usage(const char *prog)
         << "  --output  <path>   output directory [default: xmodel_dir/results]\n"
         << "  --subset  <int>    number of test-set patches to evaluate [default: 100]\n"
         << "  --debug-patch <N>  enable verbose stats only for patch index N (0-based)\n"
+        << "  --skip-test-set    skip the test-subset phase; run tile eval only\n"
         << "  --verbose          enable verbose per-sample logging\n"
         << "  --log     <file>   write log to file in addition to stderr\n";
 }
@@ -68,6 +69,8 @@ int main(int argc, char **argv)
             log_file = next();
         else if (arg == "--verbose")
             cfg.verbose = true;
+        else if (arg == "--skip-test-set")
+            cfg.skip_test_set = true;
         else if (arg == "--help" || arg == "-h")
         {
             usage(argv[0]);

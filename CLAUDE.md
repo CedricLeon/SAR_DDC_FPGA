@@ -49,6 +49,7 @@ Read only what's relevant to the task at hand.
 ## Common Commands
 
 ### Training
+
 ```bash
 conda activate DDC_FPGA
 python src/train.py experiment=<name>
@@ -56,22 +57,28 @@ python src/train.py experiment=<name> debug=fdr   # fast dev run (1 batch smoke 
 ```
 
 ### FPGA Deploy (single model)
+
 ```bash
 python scripts/fpga/deploy.py --run-dir DDC_FPGA/logs/train/sar_ddc/hyperprior/runs/<date>/<id>
 # Skip phases selectively:
 python scripts/fpga/deploy.py --run-dir <...> --skip-compile --skip-transfer  # infer + fetch only
 # Rebuild C++ binary on board before inference (Phase 3 always uses the C++ binary):
 python scripts/fpga/deploy.py --run-dir <...> --skip-compile --rebuild-cpp
+# Skip 100-patch test-set sweep, run only Hamburg tile eval (fast tile re-evaluation):
+python scripts/fpga/deploy.py --run-dir <...> --skip-compile --skip-test-set
 ```
 
 ### C++ Build on Board (manual)
+
 ```bash
-# Push sources and rebuild (done automatically by batch_deploy.py and --rebuild-cpp):
-scp -r inference_cpp/src/ ZCU102:/home/root/SAR_DDC/inference_cpp/src/
+# Push sources and rebuild (done automatically by batch_deploy.py and --rebuild-cpp).
+# Use rsync (not scp -r): scp -r creates nested src/src/ when the remote dir already exists.
+rsync -av inference_cpp/src/ ZCU102:/home/root/SAR_DDC/inference_cpp/src/
 ssh ZCU102 "cd /home/root/SAR_DDC/build_cpp && make -j4"
 ```
 
 ### C++ Inference (on board)
+
 ```bash
 build_cpp/inference_hybrid --xmodel active_model/*.xmodel \
   --params active_model/entropy_params \
@@ -101,11 +108,11 @@ Code compiled for the DPU must follow these rules:
 
 ---
 
-## Current Focus: C++ Inference Port
+## Current Focus: Hardware Benchmarking and C++ Parallelism
 
-**Goal**: C++ port of `scripts/fpga/inference_hybrid.py` → `inference_cpp/` → binary `inference_hybrid`.
+`inference_hybrid` is complete and validated. Next phase is `benchmark_hardware` — latency profiling and parallelism design. **Do not implement parallelism without a design discussion first** (see `docs/cpp_inference_design.md` §9).
 
-### Status (2026-05) — Validation COMPLETE
+### `inference_hybrid` Status (2026-05) — COMPLETE
 
 | Item | Status |
 | --- | --- |
@@ -117,6 +124,7 @@ Code compiled for the DPU must follow these rules:
 | Bug 5 — FP `_run_fp` y block layout | ✅ fixed — NHWC interleaved, consistent with SHyp |
 | `--debug-patch N` broken in C++ | ✅ fixed — all guards now use `Logger::is_verbose()` |
 | **On-board validation: 100/100 patches pass** | ✅ **DONE** — mean Δpm = +0.083 dB (C++ ≥ Python vs MERLIN) |
+| Bug 6 — Hamburg tile pure noise (float64) | ✅ fixed — `sym_Noisy.npy` is float64; added `to_float32_vec()` with dtype-aware cast |
 
 **Validation gate**: `|PSNR_cpp_vs_MERLIN − PSNR_py_vs_MERLIN| < 0.1 dB` per patch. This replaced the former pixel_tol=0.5 gate — see §0 Q9 Bug 4 closure in `docs/cpp_inference_design.md`.
 

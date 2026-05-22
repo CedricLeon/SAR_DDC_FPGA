@@ -1,0 +1,40 @@
+# SHyp and ResSHyp models — standard lr=5e-5 training
+#
+# 120 runs: 2 archs (SHyp, ResSHyp) × 6 seeds × 10 lambda values.
+# These models are already compiled from the initial batch run.
+# Tagged "lr_5e-5".
+#
+# Usage:
+#   python scripts/fpga/batch_deploy.py --config SHyp_ResSHyp_lr5e5 --tag shyp_resshyp_cpp_reeval
+
+description: "SHyp + ResSHyp — lr=5e-5 (120 models)"
+
+filters:
+  # "SHyp" matches both "SHyp-relu_..." and "ResSHyp-relu_..." run names.
+  # Does NOT match "FP" or "ResFP".
+  - field: run.name
+    op: contains
+    value: SHyp
+
+  # DPU-compatible activation and output-padding fix.
+  - field: model.net.activation
+    op: "=="
+    value: relu
+
+  - field: model.net.no_output_padding
+    op: "=="
+    value: true
+
+  # Full sweep: 6 seeds × 10 lambda values.
+  - field: seed
+    op: "in"
+    value: [0, 1, 2, 3, 4, 5]
+
+  - field: model.criterion.lmbda
+    op: "in"
+    value: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
+
+  # Standard lr=5e-5 runs only.
+  - field: model.net_optimizer.lr
+    op: "=="
+    value: 5e-5

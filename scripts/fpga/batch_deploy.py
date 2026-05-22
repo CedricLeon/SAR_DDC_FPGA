@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Batch FPGA deployment: fetch W&B runs matching filters and deploy each via deploy.py.
 
-    python scripts/fpga/batch_deploy.py --tag <label> [options]
-    python scripts/fpga/batch_deploy.py --tag <label> --dry-run
+    python scripts/fpga/batch_deploy.py --config scripts/fpga/batch_deploy_configs/<cfg>.yaml --tag <label> [options]
+    python scripts/fpga/batch_deploy.py --config scripts/fpga/batch_deploy_configs/<cfg>.yaml --tag <label> --dry-run
     python scripts/fpga/batch_deploy.py --tag <label> --run-ids abc123 def456 ...
 
-Runs are fetched from W&B and filtered by FILTERS_CONFIG (see USER CONFIGURATION).
+Pass --config with a path to a YAML filter config (see scripts/fpga/batch_deploy_configs/).
+Either --config or --run-ids must be provided.
 For each run:
   - If compiled model already exists in compiled_models/ → skip compile (default).
   - Use --force-recompile to override and always recompile.
@@ -28,9 +29,10 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import wandb
+import yaml
 from omegaconf import OmegaConf
 
 # ---- Import constants and helpers from deploy.py (same directory) ----
@@ -47,41 +49,45 @@ from deploy import (
 )
 
 # ============================================================
-# USER CONFIGURATION
+# W&B SETUP
 # ============================================================
 
 ENTITY = "cedric-leonard"
 PROJECT = "SAR_DDC_FPGA"
 
-# Filters applied when fetching all runs from W&B.
-# Format: list of (dotted_config_key, operator, value) tuples.
-# Supported operators: ==, !=, in, not in, is_none, exists, >, <,
-#                      is_before, is_after, is_none_or_is_before, is_none_or_is_after
-#
-# Alternative: W&B supports server-side MongoDB-style filtering via the `filters` kwarg:
-#   api.runs(f"{ENTITY}/{PROJECT}", filters={
-#       "$and": [
-#           {"config.model.net.activation": {"$eq": "relu"}},
-#           {"config.model.net.no_output_padding": {"$eq": True}},
-#       ]
-#   })
-# This avoids fetching the full project list, but is unreliable for deeply nested keys
-# in W&B's internal flat config storage. Also, complex ops (is_none_or_X, date ranges)
-# cannot be expressed server-side and still need client-side logic anyway.
-# The tuple system below is consistent with update_wandb_runs.py and gives full
-# flexibility at negligible cost for a project of ~hundreds of runs.
-FILTERS_CONFIG: List[Tuple] = [
-    # Use the W&B run name to distinguish FP (Factorized Prior) from SHyp (Scale Hyperprior).
-    # Run names follow the convention: FP-relu_..., ResFP-relu_..., SHyp-relu_..., ResSHyp-relu_...
-    # "run.name" is a special key resolved from the W&B run object (not from run.config).
-    ("run.name", "contains", "FP"),
-    # DPU-compatible: relu activation, output_padding fix applied
-    ("model.net.activation", "==", "relu"),
-    ("model.net.no_output_padding", "==", True),
-    ("model.net.no_residual_blocks", "==", True),
-    ("seed", "in", [0, 1, 2, 3, 4, 5]),
-    ("model.criterion.lmbda", "in", [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]),
-]
+# ============================================================
+# FILTER CONFIG LOADER
+# ============================================================
+
+
+def load_filters_config(config_path: str) -> Tuple[str, List[Tuple]]:
+    """Load a YAML filter config and return (description, filters_as_tuples).
+
+    ``config_path`` must be a path to a YAML file (absolute or relative to CWD).
+    Filter configs live in scripts/fpga/batch_deploy_configs/.
+
+    Each YAML filter entry has keys ``field``, ``op``, ``value`` and is
+    converted to the tuple ``(field, op, value)`` expected by
+    ``run_matches_filters``.
+
+    Supported operators: ==, !=, in, not in, is_none, exists, >, <,
+                         contains, not contains,
+                         is_before, is_after, is_none_or_is_before,
+                         is_none_or_is_after.
+    """
+    p = Path(config_path)
+    if not p.exists():
+        raise FileNotFoundError(f"Filter config not found: '{config_path}'")
+
+    with open(p) as f:
+        raw = yaml.safe_load(f)
+
+    description = raw.get("description", p.stem)
+    filters: List[Tuple] = [
+        (entry["field"], entry["op"], entry["value"]) for entry in raw.get("filters", [])
+    ]
+    return description, filters
+
 
 # ============================================================
 # CONSTANTS
@@ -99,8 +105,18 @@ BATCH_LOG_DIR = PROJECT_ROOT / "results" / "fpga" / "batch_deploy"
 def check_single_condition(value: Any, op: str, test_value: Any) -> bool:
     """Check a single filter condition (mirrors update_wandb_runs.py for consistency)."""
     if op == "==":
+        if isinstance(test_value, (int, float)):
+            try:
+                return float(value) == float(test_value)
+            except (TypeError, ValueError):
+                pass
         return value == test_value
     elif op == "!=":
+        if isinstance(test_value, (int, float)):
+            try:
+                return float(value) != float(test_value)
+            except (TypeError, ValueError):
+                pass
         return value != test_value
     elif op == "in":
         return value in test_value
@@ -138,15 +154,15 @@ def check_single_condition(value: Any, op: str, test_value: Any) -> bool:
         raise ValueError(f"Unsupported filter op: '{op}'")
 
 
-def run_matches_filters(run: Any) -> bool:
-    """Return True if the W&B run satisfies all FILTERS_CONFIG conditions.
+def run_matches_filters(run: Any, filters: List[Tuple]) -> bool:
+    """Return True if the W&B run satisfies all filter conditions.
 
     Keys prefixed with ``run.`` are resolved from the W&B run object's attributes
     (e.g. ``run.name``, ``run.id``).  All other keys are resolved from ``run.config``
-    via OmegaConf, exactly as before.
+    via OmegaConf.
     """
     cfg = OmegaConf.create(run.config)
-    for key, op, test_value in FILTERS_CONFIG:
+    for key, op, test_value in filters:
         if key.startswith("run."):
             attr = key[len("run.") :]
             value = getattr(run, attr, None)
@@ -288,6 +304,16 @@ def main() -> None:
         help="Short label identifying this batch (used in the log filename, e.g. 'relu_seed0-2').",
     )
     parser.add_argument(
+        "--config",
+        metavar="NAME_OR_PATH",
+        default=None,
+        help=(
+            "Path to a YAML filter config (absolute or relative to CWD). "
+            "Configs live in scripts/fpga/batch_deploy_configs/. "
+            "Required unless --run-ids is given."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print matched runs and exit without deploying.",
@@ -298,7 +324,7 @@ def main() -> None:
         metavar="ID",
         default=None,
         help=(
-            "Deploy specific W&B run IDs directly, bypassing FILTERS_CONFIG. "
+            "Deploy specific W&B run IDs directly, bypassing filter config. "
             "Each ID is fetched individually from W&B."
         ),
     )
@@ -336,8 +362,28 @@ def main() -> None:
         default=FPGA_DATASET_SIZE,
         help=f"Number of test samples for FPGA inference (default: {FPGA_DATASET_SIZE}).",
     )
+    g_infer.add_argument(
+        "--skip-test-set",
+        action="store_true",
+        help=(
+            "Pass --skip-test-set to each deploy.py call: skip the test-subset phase "
+            "and run only the Hamburg tile evaluation. Useful for fast tile re-evaluation "
+            "after a binary fix."
+        ),
+    )
 
     args = parser.parse_args()
+
+    # ---- Validate: need --config or --run-ids ----
+    if not args.run_ids and not args.config:
+        parser.error("Either --config <name> or --run-ids <id ...> is required.")
+
+    # ---- Load filter config (not needed when --run-ids is used) ----
+    filters: List[Tuple] = []
+    config_description = ""
+    if args.config:
+        config_description, filters = load_filters_config(args.config)
+        print(f"Filter config: {args.config!r} \u2014 {config_description}")
 
     # ---- Set up batch log directory ----
     BATCH_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -358,8 +404,8 @@ def main() -> None:
     else:
         print(f"Fetching all runs from {ENTITY}/{PROJECT}...")
         all_runs = list(api.runs(f"{ENTITY}/{PROJECT}"))
-        print(f"  {len(all_runs)} total runs. Applying FILTERS_CONFIG: {FILTERS_CONFIG}")
-        runs = [r for r in all_runs if run_matches_filters(r)]
+        print(f"  {len(all_runs)} total runs \u2014 applying {len(filters)} filter(s)...")
+        runs = [r for r in all_runs if run_matches_filters(r, filters)]
         print(f"  \u2192 {len(runs)} runs match.")
 
     if not runs:
@@ -383,6 +429,8 @@ def main() -> None:
     # ---- Print pre-deployment table ----
     print(f"\n{'#' * 70}")
     print(f"  batch_deploy.py  —  tag: {args.tag}  —  {len(runs_info)} runs")
+    if config_description:
+        print(f"  config: {args.config!r}  ({config_description})")
     print(
         f"  arch: {args.arch}  |  subset: {args.subset}  |  force-recompile: {args.force_recompile}"
     )
@@ -460,6 +508,8 @@ def main() -> None:
                     cmd.append("--inspect")
                 if args.image_graph:
                     cmd.append("--image-graph")
+                if args.skip_test_set:
+                    cmd.append("--skip-test-set")
 
                 print(f"[CMD] {' '.join(cmd)}")
 

@@ -115,7 +115,7 @@ User observation: "if `g_a_real` and `g_a_imag` get allocated to the same core t
 
 Planned inter-tile parallelism threads (v2.0):
 
-```
+```text
 Thread A: [g_a tile N] → [h_a tile N]          (DPU)
 Thread B: [EntropyBottleneck tile N] → [h_s tile N]  (CPU → DPU)
 Thread C: [GaussianConditional tile N]          (CPU)
@@ -131,14 +131,14 @@ Validation was run on a 100-patch subset of the `ResSHyp-relu_s0_L1000_pt` model
 
 Several bugs were found and fixed:
 
-**Bug 1 — `quantize_float_to_int8` used `std::round()` instead of truncation** (both FP and SHyp paths)
+#### Bug 1 — `quantize_float_to_int8` used `std::round()` instead of truncation (both FP and SHyp paths)
 
 - **Location**: `dpu_runners.cpp`, `quantize_float_to_int8()`
 - **Root cause**: Python's `.astype(np.int8)` truncates toward zero; C++ was using `std::round()` — a systematic +0.5 int8-unit bias on positive DPU inputs. After exp() denormalization this produces ~6% pixel ratio on the FP model.
 - **Fix**: `static_cast<int8_t>(std::round(v))` → `static_cast<int8_t>(v)` with saturating clamp (already present).
 - **Status**: ✅ Fixed.
 
-**Bug 2 — `_run_shyp`: `y` built in block layout instead of NHWC interleaved** (SHyp path only)
+#### Bug 2 — `_run_shyp`: `y` built in block layout instead of NHWC interleaved (SHyp path only)
 
 - **Location**: `inference_runner.cpp`, `_run_shyp()`
 - **Root cause**: `y` was built as `[y_real_block | y_imag_block]` (stride `C_MAIN` per spatial position). Python builds `y` as NHWC with `C = 2*C_MAIN` (interleaved via `np.concatenate(..., axis=-1)`). Two consequences:
@@ -150,7 +150,7 @@ Several bugs were found and fixed:
 
 **Note on FP path**: `_run_fp` now also uses NHWC interleaved layout (Bug 5 fixed). Both paths are consistent.
 
-**Bug 3 — `std::round()` instead of banker's rounding in entropy models** (SHyp path)
+#### Bug 3 — `std::round()` instead of banker's rounding in entropy models (SHyp path)
 
 - **Location**: `entropy_models.cpp`, `GaussianConditional::compress()` and `EntropyBottleneck::compress()`
 - **Root cause**: DPU `g_a` outputs are dequantized as `int8 × 2^{−fixpos}`, which can land exactly on half-integers (e.g., fixpos=2 → values like 0.5, 1.5). `std::round(0.5) = 1` (round-half-away-from-zero), but Python's `numpy.round(0.5) = 0` (round-half-to-even / banker's rounding). The GC CDF tables were trained with PyTorch's banker's rounding; C++ was sending symbols outside the trained CDF range, which the rANS encoder handled via bypass coding — producing ~1 000 bytes of excess per patch.
@@ -158,7 +158,7 @@ Several bugs were found and fixed:
 - **Effect**: Δy dropped from mean=+1 024 bytes to mean=−1 byte across 10 patches. 8/10 patches are now byte-identical.
 - **Status**: ✅ Fixed.
 
-**Bug 3a — Residual 4-byte GC difference on 2/10 patches (open)**
+#### Bug 3a — Residual 4-byte GC difference on 2/10 patches (open)
 
 - **Symptom**: Patches 6 and 7 have Δy=−4 (C++ encodes 4 bytes *fewer* than Python). PSNR between C++ and Python outputs: 42–49 dB; max amplitude difference: ~242.
 - **Root cause (hypothesis)**: `std::rint` depends on the FPU rounding mode. The VART/XIR runtime may alter the ARM FPU rounding register at startup, changing it away from round-to-nearest-even. For the ~1 element per patch that lands exactly on a half-integer boundary, `std::rint` and `np.round` would then disagree. C++ rounds down → smaller-magnitude symbol → within CDF range → fewer bits. Python rounds up → symbol potentially at CDF boundary → bypass coding → more bits.
@@ -186,7 +186,7 @@ inline int32_t round_half_to_even(float v) {
 - **Fix**: C++ `denorm_to_lina()` now uses `double` arithmetic internally, matching Python's float64 path. Python saves `recon_linA.astype(np.float32)` in the compare-out, so both sides write identical float32 values. With pixel_tol=0.5, any residual FP noise is well within tolerance.
 - **Status**: ✅ Fixed.
 
-**Bug 4 — 9 patches: Δy=0, Δz=0, but pixel diff vs Python → CLOSED (not a bug)**
+#### Bug 4 — 9 patches: Δy=0, Δz=0, but pixel diff vs Python → CLOSED (not a bug)
 
 - **Symptom**: On 100-patch runs, 9 patches ({7, 10, 17, 42, 45, 46, 59, 67, 70}) show Δy=0 AND Δz=0 yet PSNR between C++ and Python is only 43–60 dB, max pixel error > 200.
 - **Investigation**: Added per-patch PSNR vs MERLIN ground truth to both Python and C++ compare-out JSON. On all 9 patches, C++ PSNR-vs-MERLIN ≥ Python PSNR-vs-MERLIN (mean Δpm = +0.083 dB; all 9 patches positive).
@@ -194,24 +194,22 @@ inline int32_t round_half_to_even(float v) {
 - **Conclusion**: C++ is not wrong. This is not a bug. The validation gate has been updated (see Design Philosophy below).
 - **Status**: ✅ CLOSED.
 
+#### Bug 5 — `_run_fp`: y built in block layout (minor, FP path only)
+
+- **Location**: `inference_runner.cpp`, `_run_fp()`
+- **Symptom**: FP model shows Δy ≤ 8 bytes on some patches; pixels pass (< 0.5 tol) since EB is self-consistent.
+- **Root cause**: `_run_fp` builds `y` as `[y_real_block | y_imag_block]` instead of NHWC-interleaved. EB CDFs are channel-indexed independently, so the spatial ordering within a channel doesn't matter — only the cross-channel pairing of each element with its CDF affects encoding length. Block vs interleaved changes which real/imag pair maps to which spatial position, producing minor BPP overhead.
+- **Status**: ✅ Fixed. `_run_fp` now uses NHWC interleaved layout, consistent with `_run_shyp`. No BPP overhead on FP path.
+
 ---
 
-**Bug 6 — `_run_tile_eval_impl`: `sym_Noisy.npy` loaded as float32 but stored as float64**
+#### *Bug 6 — `_run_tile_eval_impl`: `sym_Noisy.npy` loaded as float32 but stored as float64
 
 - **Location**: `inference_runner.cpp`, `_run_tile_eval_impl()`; `npy_io.hpp`, `as_float32()`
 - **Symptom**: Hamburg tile reconstruction is pure noise with visible 256×256 patch grid. PSNR vs MERLIN drops from ~21 dB (test set) to ~11 dB. `mse_noisy`/`psnr_noisy` reported as `null` in tile metrics JSON. Consistent across ALL 240 models.
 - **Root cause**: `sym_Noisy.npy` is saved by NumPy in float64 (8 bytes/element). `NpyArray::as_float32()` is a raw `reinterpret_cast` — it reinterprets the float64 bytes as float32, producing 2× as many garbage values per element. The DPU receives completely wrong input for every patch. `noisy_lina` also contains NaN (some float64 bit patterns decode as NaN in float32), causing the null metrics. The test set (`test_sub500_seed42.npy`) is float32, so it was unaffected.
 - **Fix**: Added `NpyArray::to_float32_vec()` in `npy_io.hpp` — handles both float32 (no-copy) and float64 (element-wise cast). `_run_tile_eval_impl` now calls `tile_arr.to_float32_vec()` instead of `tile_arr.as_float32()`.
 - **Status**: ✅ Fixed.
-
----
-
-**Bug 5 — `_run_fp`: y built in block layout (minor, FP path only)**
-
-- **Location**: `inference_runner.cpp`, `_run_fp()`
-- **Symptom**: FP model shows Δy ≤ 8 bytes on some patches; pixels pass (< 0.5 tol) since EB is self-consistent.
-- **Root cause**: `_run_fp` builds `y` as `[y_real_block | y_imag_block]` instead of NHWC-interleaved. EB CDFs are channel-indexed independently, so the spatial ordering within a channel doesn't matter — only the cross-channel pairing of each element with its CDF affects encoding length. Block vs interleaved changes which real/imag pair maps to which spatial position, producing minor BPP overhead.
-- **Status**: ✅ Fixed. `_run_fp` now uses NHWC interleaved layout, consistent with `_run_shyp`. No BPP overhead on FP path.
 
 ---
 
@@ -240,7 +238,7 @@ The goal of `compare_py_cpp.py` is **bug detection**, not bit-exact replication 
 
 Python's GIL means only one thread runs Python bytecode at a time. In `inference_hybrid.py`, the flow is:
 
-```
+```text
 g_a (DPU) → h_a (DPU) → EntropyBottleneck compress (CPU) → h_s (DPU) → GaussianConditional compress (CPU) → g_s (DPU)
 ```
 
@@ -256,22 +254,23 @@ For `inference_hybrid` this means: we can get low-overhead sequential pipelining
 
 ### Previous Python deployment (superseded)
 
-```
+```text
 Host → [deploy.py] → Docker PTQ/compile → xmodel files + inference_hybrid.py → scp → ZCU102
 ZCU102: python3 inference_hybrid.py --xmodel ... --data ...
 ```
 
 ### Current C++ deployment ✅ DONE
 
-```
+```text
 Host → [deploy.py] → Docker PTQ/compile → xmodel + entropy_params/ → rsync (no results/) → ZCU102
-Host → [batch_deploy.py or --rebuild-cpp] → scp inference_cpp/src/ → ZCU102 → make -j4
+Host → [batch_deploy.py or --rebuild-cpp] → rsync inference_cpp/src/ → ZCU102 → make -j4
 ZCU102: cd SAR_DDC && build_cpp/inference_hybrid --xmodel active_model/*.xmodel \
         --params active_model/entropy_params --data data/test_sub500_seed42.npy
 ZCU102 → scp results/ → Host
 ```
 
 Key changes vs the original plan:
+
 - Build is **native on board** (not cross-compiled in Docker) — CMake + `make -j4` runs on the ZCU102.
 - Python inference scripts are **no longer copied** into each compiled model directory.
 - `batch_deploy.py` rebuilds the C++ binary **once per batch** before the deploy loop.
@@ -287,6 +286,7 @@ Key changes vs the original plan:
 All written to `<xmodel_dir>/results/`:
 
 **`inference_meta.json`** — build/run provenance:
+
 ```json
 {
   "evaluated_at": "2026-05-18_10-00-00",
@@ -296,6 +296,7 @@ All written to `<xmodel_dir>/results/`:
 ```
 
 **`metrics.json`** — averaged metrics over the test subset (keys mirror Python `MetricsTracker`):
+
 ```json
 {
   "Noisy": {"bpp": 4.36, "mse": 9908.4, "psnr": 15.19, "ssim": 0.057,
@@ -307,6 +308,7 @@ All written to `<xmodel_dir>/results/`:
 ```
 
 **`{tile_name}_metrics.json`** — per-tile evaluation (one file per tile directory found):
+
 ```json
 {
   "bpp": 6.82, "mse_noisy": 18305.1, "psnr_noisy": 12.1,
@@ -507,7 +509,7 @@ Written via `nlohmann/json` (v3.10.2 on the board, `<nlohmann/json.hpp>`). No ex
 
 ## 6. Module Structure
 
-```
+```text
 inference_cpp/
 ├── CMakeLists.txt                    # HAVE_DPU, WITHOUT_OPENCV options; optional targets
 ├── cmake/
@@ -549,7 +551,7 @@ Goal: reproduce `scripts/fpga/inference_hybrid.py` in C++, achieving identical n
 
 ### 7.1 CLI interface
 
-```
+```text
 ./inference_hybrid \
     --xmodel  results/fpga/active_model/model.xmodel \
     --params  results/fpga/active_model/entropy_params/ \
@@ -566,7 +568,7 @@ Mirrors the Python script's arguments. `--params` is the directory containing `e
 
 One patch at a time, fully sequential — no parallelism.
 
-```
+```text
 For each patch (real, imag):
   1. Load patch from NPY                    → x_real, x_imag [256,256]
   2. Log-amplitude normalise                → x_norm_real, x_norm_imag
@@ -636,7 +638,7 @@ Any larger discrepancy indicates a normalisation, quantisation, or entropy codin
 
 The original source files are:
 
-```
+```text
 CompressAI/compressai/cpp_exts/rans/rans_interface.cpp  — encoder + decoder impl
 CompressAI/compressai/cpp_exts/rans/rans_interface.hpp  — class declarations
 CompressAI/third_party/ryg_rans/rans64.h                — ryg_rans core (pure C, no Python)
@@ -721,10 +723,11 @@ The entropy model parameters are loaded from individual NPY files in an `entropy
 
 ## 9. Future: benchmark\_hardware and Parallelism
 
-**Status: design deferred. Do not implement until `inference_hybrid` is validated AND a dedicated parallelism design session has been completed.**
+**Status: `inference_hybrid` validation is complete (100/100 patches pass). Ready to begin design. A dedicated parallelism design session must precede any `benchmark_hardware` code.**
 
 The parallelism ideas captured in §0 Q9 are exploratory and partially contradictory — they have not been reconciled into a coherent design. Before writing any `benchmark_hardware` code:
-1. Prototype strip tiling on the board with the Python `inference_hybrid.py` to measure actual latency breakdown (DPU vs CPU vs overhead)
+
+1. Profile the sequential `inference_hybrid` pipeline on the board to get a latency breakdown (DPU vs CPU entropy vs overhead)
 2. Decide whether to pursue intra-patch parallelism (Option A), inter-tile pipelining (Option B), or a combination
 3. Work out the DPU core allocation table explicitly (which runner creation order gives which subgraph which core, for the intended parallel schedule)
 4. Write a dedicated `benchmark_hardware` design document before touching any C++ code
@@ -750,11 +753,13 @@ This section captures notes for the future `benchmark_hardware` binary.
 With 3 DPU cores (B4096), the options are:
 
 **Option A — intra-patch parallel channels** (within one tile):
+
 - Run `g_a_real` on core 0 and `g_a_imag` on core 1 simultaneously
 - Latency reduction for a single tile; requires 2 DPU runners per g_a subgraph
 - Serialise at h_a (1 runner, 1 core), then parallelise g_s similarly
 
 **Option B — inter-tile pipelining** (pipeline consecutive tiles):
+
 - While tile N is in CPU entropy coding, start tile N+1 DPU forward pass
 - Requires careful staging: DPU cores used by tile N+1's g_a must not conflict with tile N's pending g_s
 - With 3 cores: `g_a_real[N+1]` (core 0), `g_a_imag[N+1]` (core 1), `h_s[N]` (core 2) can run simultaneously
@@ -764,6 +769,7 @@ With 3 DPU cores (B4096), the options are:
 ### 9.4 DPUCoreAllocator design note
 
 For v2.0 we will need a `DPUCoreAllocator` that:
+
 - Tracks which subgraph names map to which core (based on creation order)
 - Validates at startup that the intended parallel pairs are on different cores
 - Provides an API like `allocate(subgraph, target_core)` that creates runners in the right order
@@ -785,7 +791,8 @@ Implementation: not yet designed. Open for a dedicated planning session.
 | Bug 4 — 9 patches PSNR 43–60 dB | ✅ closed | Not a bug — C++ is closer to MERLIN than Python; see §12 |
 | Bug 5 — FP path y block layout | ✅ fixed | `_run_fp` now uses interleaved layout consistent with `_run_shyp` |
 | `--debug-patch` C++ output broken | ✅ fixed | All `cfg_.verbose` guards in `_run_shyp` now use `Logger::instance().is_verbose()` |
-| `inference_utils.py` `sum=` field | ❌ not deployed to board | Added on host; `scripts/fpga/inference_utils.py` needs `scp` to board |
+| Bug 6 — Hamburg tile pure noise (float64) | ✅ fixed | `sym_Noisy.npy` is float64; `as_float32()` reinterpret was garbage. Added `to_float32_vec()` with dtype-aware cast; see §0 |
+| `inference_utils.py` `sum=` field | ✅ moot | Python scripts are no longer deployed to the board; C++ binary is the only inference path |
 | JSON schema validation | ❌ pending | Run `compare_gpu_fpga.ipynb` against C++ output JSON to catch key-name mismatches |
 | Final 100-patch all-pass | ✅ done | 100/100 patches pass \|Δpm\| < 0.1 dB gate; mean Δpm = +0.083 dB |
 | DPU core allocation plan | deferred | `benchmark_hardware` only — see §9.4 |
@@ -809,18 +816,13 @@ Implementation: not yet designed. Open for a dedicated planning session.
 ### Full deploy-and-build cycle (host → board)
 
 ```bash
-# 1. Deploy C++ sources
-scp inference_cpp/src/*.cpp inference_cpp/src/*.hpp \
-    ZCU102:/home/root/SAR_DDC/inference_cpp/src/
+# 1. Deploy C++ sources (rsync — scp -r creates nested src/src/ if remote dir exists)
+rsync -av inference_cpp/src/ ZCU102:/home/root/SAR_DDC/inference_cpp/src/
 
 # 2. Build on board
 ssh ZCU102 "cd /home/root/SAR_DDC/build_cpp && make -j4"
 
 # Binary stays in build_cpp/ — run as build_cpp/inference_hybrid (no deploy step needed)
-
-# 4. Deploy Python scripts (when changed)
-scp scripts/fpga/inference_hybrid.py ZCU102:/home/root/SAR_DDC/active_model/
-scp scripts/fpga/inference_utils.py  ZCU102:/home/root/SAR_DDC/active_model/
 ```
 
 ### Run commands (from `/home/root/SAR_DDC/` on board)

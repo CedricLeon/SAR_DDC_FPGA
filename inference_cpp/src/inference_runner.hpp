@@ -32,6 +32,7 @@ namespace ddc
         std::filesystem::path output_dir;  // where results are written
         int subset = 100;                  // how many test-set patches to evaluate
         bool verbose = false;
+        bool skip_test_set = false;        // skip test-subset phase, run tile eval only
         // If >= 0: enable verbose logging only for this patch index (0-based).
         // Useful for diagnosing Python/C++ divergence on a specific patch.
         int debug_patch = -1;

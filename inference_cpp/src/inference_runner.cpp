@@ -553,7 +553,10 @@ namespace ddc
 
         InferencePipeline pipeline(cfg_);
 
-        _run_test_subset_impl(pipeline);
+        if (!cfg_.skip_test_set)
+            _run_test_subset_impl(pipeline);
+        else
+            LOG_INFO("Test-subset phase skipped (--skip-test-set).");
         _run_tile_eval_impl(pipeline);
     }
 
