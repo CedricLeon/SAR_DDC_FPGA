@@ -114,9 +114,10 @@ the non-DPU modules.
 
 ## 6. Milestone checklist
 
-- [ ] **M1 — S0 + `stage_timer`**: stage decomposition (`BenchPipeline`), shared
-  `patch_transforms.hpp` extraction (+ board re-verify inference unchanged), sequential executor,
-  CMake target, minimal CLI → C++ per-stage compress/full breakdown. *Settles the real bottleneck.*
+- [x] **M1 — S0 + `stage_timer`**: stage decomposition (`BenchPipeline`), shared
+  `patch_transforms.hpp` extraction (+ **board re-verify** inference unchanged — required before
+  trusting results), sequential executor, CMake target, minimal CLI → C++ per-stage compress/full
+  breakdown. *Settles the real bottleneck.* ⚠️ Board push + re-verify pending.
 - [ ] **M2 — `power_sampler`**: validate vs known idle (~6 W VCCINT, perf doc §4.6).
 - [ ] **M3 — S1 + ceilings**: confirm ~1.9× g_a channel-parallel speedup; **gate**: prove N
   concurrent runners use N cores; spike `xir::Attrs` core-hint.
@@ -142,6 +143,55 @@ the non-DPU modules.
 ## 8. Decisions log / journal
 
 *(Append-only. Newest at top. Record surprises, dead-ends, and why choices were made.)*
+
+- **2026-05-23** — M1 board verified. S0 first results (ResSHyp model, compress+full scenarios, 50 iters).
+  Board re-verify: `patch_transforms.hpp` extraction confirmed behavior-preserving (bpp/PSNR/SSIM
+  bit-identical pre- and post-push). One compile error caught: most-vexing-parse on
+  `BenchPipeline pipeline(fs::path(...), fs::path(...))` — fixed with brace init. CMakeLists.txt
+  must also be pushed (not just `src/`) when adding new targets; cmake re-configure needed.
+
+  **S0 deliverable #0 results** (ResSHyp L1000, SHyp path, 50 iters, 20 patches cycled):
+
+  | Stage | Mean (ms) | % of total |
+  | --- | --- | --- |
+  | normalize | 8.92 | 14.4% |
+  | g_a (×2 runs) | 10.40 | 16.8% |
+  | h_a | 1.33 | 2.2% |
+  | eb (z only) | 0.23 | 0.4% |
+  | h_s | 0.83 | 1.3% |
+  | gc (y) | 21.52 | **34.8%** |
+  | g_s (×2 runs) | 8.84 | 14.3% |
+  | denorm | 9.75 | 15.8% |
+  | **total (full)** | **61.83** | |
+  | compress only | 43.26 | |
+
+  **Key findings vs working hypothesis:**
+  - Total C++ pipeline: 62 ms vs Python ~425 ms — **7× speedup** from language change alone.
+  - GC is still #1 at 34.8% (Python: 58%) — the numpy overhead collapsed as expected.
+  - normalize + denorm together: 18.7 ms (30.2%) — pure A53 loop arithmetic, *not accelerated*.
+    ARM A53 float `log()` is ~68 ns/call (no NEON). With 256×256×2 = 131K calls, 8.9 ms is expected.
+    This is **a new bottleneck not visible in Python** (numpy vectorizes it internally).
+  - DPU total (g_a + h_a + h_s + g_s): 21.4 ms (34.6%); CPU total: 40.4 ms (65.4%).
+  - EB is negligible (0.4%) — z is only 2×2×256 = 1024 floats.
+  - **Implication for P0 coarse pipe**: max(DPU, CPU_entropy) = max(21.4, 21.75) ≈ 21.75 ms —
+    theoretical ≈1.85× speedup if we overlap DPU (of next patch) with entropy (of current).
+    But: h_s depends on z_hat (EB output), so the DPU thread must stall waiting for EB mid-patch.
+    The clean pipeline split point is *before h_a* (hand off z after h_a; entropy thread runs EB,
+    sends z_hat back; DPU thread continues with h_s). This is more granular than "coarse 2-stage".
+    normalize + denorm (30%) remain on CPU and don't benefit from DPU/entropy overlap.
+
+- **2026-05-23** — M1 implementation complete (pending board re-verify). Files written:
+  `src/patch_transforms.hpp` (extracted `normalize_patch`, `denorm_to_lina`, `raw_to_lina`
+  from anonymous namespace in `inference_runner.cpp`); `src/benchmark/bench_pipeline.{hpp,cpp}`
+  (`BenchPipeline` + `PatchState`, 7 stages as callable methods); `src/benchmark/bench_configs.{hpp,cpp}`
+  (`run_s0` sequential executor with `StageTimer`); `src/benchmark/main_benchmark.cpp` (CLI + JSON);
+  `CMakeLists.txt` updated with `benchmark_hardware` target. Board re-verify step: push sources,
+  build, run `inference_hybrid` on 100 patches, confirm PSNR unchanged (|Δ| < 0.1 dB gate).
+  Known measurement artifact: `eb_.compress()` / `gc_.compress()` do a heap alloc inside the timed
+  stage (variable-length entropy output — unavoidable without pre-sizing a max-size buffer). Noted
+  but not fixed in M1. For P0/P2: `BenchPipeline` has one `XModelLoader` (one set of runners);
+  concurrent stage calls across threads would race on the same runner — multiple `BenchPipeline`
+  instances (one per thread) will be required.
 
 - **2026-05-22** — Phase planned and approved. Confirmed via VART 3.0 C++ API doc (UG1414) that
   there is no core-pinning mechanism; `--dpu-cores` reframed as influence-plus-verification.

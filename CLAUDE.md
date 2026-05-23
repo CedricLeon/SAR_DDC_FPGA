@@ -130,7 +130,21 @@ Code compiled for the DPU must follow these rules:
 
 ### Phase 2: `benchmark_hardware` binary
 
-Profile the sequential pipeline first to get a latency breakdown (DPU vs CPU entropy vs overhead). Then design a parallelism strategy — §9.3 of `docs/cpp_inference_design.md` has two options (intra-patch parallel channels vs inter-tile pipelining). **Do not implement without a design discussion.** Board has a 3-core B4096 DPU; VART assigns cores round-robin at runner construction time.
+Profile the sequential pipeline first to get a latency breakdown (DPU vs CPU entropy vs overhead). Design is fully documented in `docs/benchmark_hardware_design.md`.
+
+**M1 (S0 + stage_timer)**: ✅ complete and board-verified (2026-05-23).
+Binary: `build_cpp/benchmark_hardware`. Build: same `make -j4` in `build_cpp/` as `inference_hybrid`.
+
+Board-verified: PSNR bit-identical pre/post push — `patch_transforms.hpp` extraction confirmed behavior-preserving.
+
+```bash
+# Board run (after push + build)
+build_cpp/benchmark_hardware \
+    --xmodel active_model/*.xmodel \
+    --params active_model/entropy_params \
+    --data   data/test_sub500_seed42.npy \
+    --config s0 --scenario compress --warmup 5 --iters 50
+```
 
 ---
 

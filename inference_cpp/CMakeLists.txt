@@ -106,6 +106,24 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# benchmark_hardware — per-stage latency and throughput profiler
+# Requires nlohmann/json (same as inference_hybrid).
+# ---------------------------------------------------------------------------
+if(NLOHMANN_JSON_INCLUDE_DIR)
+    set(BENCHMARK_SOURCES
+        src/benchmark/bench_pipeline.cpp
+        src/benchmark/bench_configs.cpp
+        src/benchmark/main_benchmark.cpp
+    )
+    add_executable(benchmark_hardware ${BENCHMARK_SOURCES})
+    target_include_directories(benchmark_hardware PRIVATE
+        src src/benchmark include ${NLOHMANN_JSON_INCLUDE_DIR})
+    target_link_libraries(benchmark_hardware PRIVATE inference_lib)
+else()
+    message(STATUS "Skipping benchmark_hardware target (nlohmann/json not found)")
+endif()
+
+# ---------------------------------------------------------------------------
 # Unit tests (rANS roundtrip — no DPU required)
 # ---------------------------------------------------------------------------
 add_executable(test_rans tests/test_rans_roundtrip.cpp)
