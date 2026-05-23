@@ -38,6 +38,7 @@
 #include "logger.hpp"
 #include "metrics.hpp"
 #include "npy_io.hpp"
+#include "patch_transforms.hpp"
 #include "scoped_timer.hpp"
 
 #ifdef HAVE_DPU
@@ -78,54 +79,6 @@ namespace ddc
             if (offs.empty() || offs.back() != last)
                 offs.push_back(last);
             return offs;
-        }
-
-        // Normalise raw complex HW2 patch -> normalised log-intensity HW2.
-        // recon_norm_logI = (log(amp^2 + EPS) - 2*AMP_MIN) / (2*AMP_MAX - 2*AMP_MIN)
-        // Writes into `out` (HxWx2, same layout as input).
-        [[maybe_unused]] void normalize_patch(const float *in_hwc, float *out_hwc, int H, int W)
-        {
-            const float denom = 2.0f * (static_cast<float>(AMP_MAX) - static_cast<float>(AMP_MIN));
-            for (int i = 0; i < H * W; ++i)
-            {
-                for (int c = 0; c < 2; ++c)
-                {
-                    float amp = in_hwc[i * 2 + c];
-                    float logI = std::log(amp * amp + static_cast<float>(EPS));
-                    out_hwc[i * 2 + c] = (logI - 2.0f * static_cast<float>(AMP_MIN)) / denom;
-                }
-            }
-        }
-
-        // Denormalise recon_norm_logI HW2 -> linear amplitude HW (single channel).
-        // linI = 0.5*(exp(logI_ch0)^2 + exp(logI_ch1)^2)
-        // linA = sqrt(linI)
-        // Arithmetic is done in double to match Python's float64 intermediate computation
-        // (numpy promotes float32 × float64-constant to float64).  Final result is cast to float32.
-        void denorm_to_lina(const float *norm_hwc, float *out_hw, int H, int W)
-        {
-            const double amp_range = AMP_MAX - AMP_MIN;
-            const double amp_min = AMP_MIN;
-            for (int i = 0; i < H * W; ++i)
-            {
-                double logI0 = static_cast<double>(norm_hwc[i * 2 + 0]) * amp_range + amp_min;
-                double logI1 = static_cast<double>(norm_hwc[i * 2 + 1]) * amp_range + amp_min;
-                double linI0 = std::exp(logI0);
-                double linI1 = std::exp(logI1);
-                double linI = 0.5 * (linI0 * linI0 + linI1 * linI1);
-                out_hw[i] = static_cast<float>(std::sqrt(linI));
-            }
-        }
-
-        // Raw complex HW2 -> linear amplitude HW.
-        void raw_to_lina(const float *in_hwc, float *out_hw, int H, int W)
-        {
-            for (int i = 0; i < H * W; ++i)
-            {
-                float r = in_hwc[i * 2 + 0];
-                float im = in_hwc[i * 2 + 1];
-                out_hw[i] = std::sqrt(r * r + im * im);
-            }
         }
 
         // Save a flat float array as NPY (shape = {H, W}).
