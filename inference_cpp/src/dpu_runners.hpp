@@ -90,10 +90,18 @@ public:
     // True if a role exists (e.g. h_a/h_s only present for ScaleHyperprior).
     bool has_role(const std::string& role) const;
 
+    // Create an additional runner for 'role' with label 'alias'.
+    // The new runner obtains the next VART round-robin core assignment.
+    // Used by BenchPipeline::init_s1() to create g_a_1 / g_s_1 duplicates.
+    // Throws if 'role' is not found or load() has not been called.
+    DPUSubgraphRunner create_duplicate_runner(const std::string& role,
+                                              const std::string& alias) const;
+
 private:
     bool loaded_ = false;
     std::unique_ptr<xir::Graph>              graph_;
     std::map<std::string, DPUSubgraphRunner> runners_;
+    std::map<std::string, xir::Subgraph*>   subgraphs_;  // for create_duplicate_runner
 };
 
 } // namespace ddc

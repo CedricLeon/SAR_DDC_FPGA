@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <thread>
 
 #include "constants.hpp"
 #include "patch_transforms.hpp"
@@ -132,6 +133,25 @@ PatchState BenchPipeline::make_patch_state(int H, int W) const
 }
 
 // ---------------------------------------------------------------------------
+// init_s1 — create duplicate g_a / g_s runners for channel-parallel S1
+// ---------------------------------------------------------------------------
+void BenchPipeline::init_s1()
+{
+    if (has_s1_)
+        throw std::runtime_error("init_s1: already initialised");
+#ifdef HAVE_DPU
+    // g_a_1 and g_s_1 are created after the primary runners; VART round-robin
+    // assigns them to the next core slots, which empirically differ from the
+    // primary g_a / g_s runners created during XModelLoader::load().
+    runner_ga2_.emplace(loader_.create_duplicate_runner("g_a", "g_a_1"));
+    runner_gs2_.emplace(loader_.create_duplicate_runner("g_s", "g_s_1"));
+    has_s1_ = true;
+#else
+    throw std::runtime_error("init_s1: compiled without HAVE_DPU");
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // Stage 0 — CPU normalise
 // ---------------------------------------------------------------------------
 void BenchPipeline::stage_normalize(PatchState& s)
@@ -175,6 +195,42 @@ void BenchPipeline::stage_ga(PatchState& s)
 }
 
 // ---------------------------------------------------------------------------
+// Stage 1 S1 — concurrent g_a(real) ‖ g_a(imag)
+// ---------------------------------------------------------------------------
+void BenchPipeline::stage_ga_s1(PatchState& s)
+{
+    // Same deinterleave as stage_ga
+    for (int i = 0; i < s.H * s.W; ++i) {
+        s.real_ch[i] = s.norm_hwc[i * 2 + 0];
+        s.imag_ch[i] = s.norm_hwc[i * 2 + 1];
+    }
+
+#ifdef HAVE_DPU
+    if (!runner_ga2_)
+        throw std::runtime_error("stage_ga_s1: call init_s1() first");
+    const auto& ga  = loader_.runner("g_a");
+    const auto& ga2 = *runner_ga2_;
+    // imag in a thread; real in the calling thread — results written to disjoint buffers
+    std::thread t([&]{ ga2.run(s.imag_ch.data(), s.y_imag.data()); });
+    ga.run(s.real_ch.data(), s.y_real.data());
+    t.join();
+#else
+    throw std::runtime_error("stage_ga_s1: compiled without HAVE_DPU");
+#endif
+
+    // Interleave and compute |y| — identical to stage_ga
+    for (int hw = 0; hw < s.yh * s.yw; ++hw) {
+        for (int c = 0; c < s.yc; ++c) {
+            s.y[hw * 2 * s.yc + c]        = s.y_real[hw * s.yc + c];
+            s.y[hw * 2 * s.yc + s.yc + c] = s.y_imag[hw * s.yc + c];
+        }
+    }
+    int y_total = s.yh * s.yw * s.yc * 2;
+    for (int i = 0; i < y_total; ++i)
+        s.y_abs[i] = std::abs(s.y[i]);
+}
+
+// ---------------------------------------------------------------------------
 // Stage 2 — DPU h_a  (SHyp only)
 // ---------------------------------------------------------------------------
 void BenchPipeline::stage_ha(PatchState& s)
@@ -189,23 +245,33 @@ void BenchPipeline::stage_ha(PatchState& s)
 }
 
 // ---------------------------------------------------------------------------
-// Stage 3 — CPU entropy bottleneck
-//   SHyp: compress+decompress z  → z_hat / z_bytes
-//   FP:   compress+decompress y  → y_hat / y_bytes / num_bytes
+// Stage 3a — CPU EB compress
+//   SHyp: z → z_bits / z_bytes
+//   FP:   y → y_bits / y_bytes / num_bytes
 // ---------------------------------------------------------------------------
-void BenchPipeline::stage_eb(PatchState& s)
+void BenchPipeline::stage_eb_compress(PatchState& s)
 {
     if (has_gc_) {
-        // ScaleHyperprior: EB on the hyper latent z
-        std::vector<uint8_t> z_bits = eb_.compress(s.z.data(), s.zh, s.zw);
-        s.z_hat   = eb_.decompress(z_bits, s.zh, s.zw);
-        s.z_bytes = static_cast<int>(z_bits.size());
+        s.z_bits  = eb_.compress(s.z.data(), s.zh, s.zw);
+        s.z_bytes = static_cast<int>(s.z_bits.size());
     } else {
-        // FactorizedPrior: EB directly on the main latent y
-        std::vector<uint8_t> y_bits = eb_.compress(s.y.data(), s.yh, s.yw);
-        s.y_hat   = eb_.decompress(y_bits, s.yh, s.yw);
-        s.y_bytes = static_cast<int>(y_bits.size());
+        s.y_bits    = eb_.compress(s.y.data(), s.yh, s.yw);
+        s.y_bytes   = static_cast<int>(s.y_bits.size());
         s.num_bytes = s.y_bytes;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3b — CPU EB decompress
+//   SHyp: z_bits → z_hat
+//   FP:   y_bits → y_hat
+// ---------------------------------------------------------------------------
+void BenchPipeline::stage_eb_decompress(PatchState& s)
+{
+    if (has_gc_) {
+        s.z_hat = eb_.decompress(s.z_bits, s.zh, s.zw);
+    } else {
+        s.y_hat = eb_.decompress(s.y_bits, s.yh, s.yw);
     }
 }
 
@@ -224,19 +290,24 @@ void BenchPipeline::stage_hs(PatchState& s)
 }
 
 // ---------------------------------------------------------------------------
-// Stage 5 — CPU Gaussian conditional  (SHyp only)
+// Stage 5a — CPU GC compress  (SHyp only)
 // ---------------------------------------------------------------------------
-void BenchPipeline::stage_gc(PatchState& s)
+void BenchPipeline::stage_gc_compress(PatchState& s)
 {
     // means is pre-zeroed in make_patch_state; stays zero across iterations
-    std::vector<uint8_t> y_bits = gc_.compress(
-        s.y.data(), s.scales.data(), s.means.data(),
-        s.yh, s.yw, C_MAIN * 2);
-    s.y_hat = gc_.decompress(
-        y_bits, s.scales.data(), s.means.data(),
-        s.yh, s.yw, C_MAIN * 2);
-    s.y_bytes   = static_cast<int>(y_bits.size());
+    s.y_bits    = gc_.compress(s.y.data(), s.scales.data(), s.means.data(),
+                               s.yh, s.yw, C_MAIN * 2);
+    s.y_bytes   = static_cast<int>(s.y_bits.size());
     s.num_bytes = s.z_bytes + s.y_bytes;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 5b — CPU GC decompress  (SHyp only)
+// ---------------------------------------------------------------------------
+void BenchPipeline::stage_gc_decompress(PatchState& s)
+{
+    s.y_hat = gc_.decompress(s.y_bits, s.scales.data(), s.means.data(),
+                              s.yh, s.yw, C_MAIN * 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +333,38 @@ void BenchPipeline::stage_gs(PatchState& s)
 #endif
 
     // Pack into HW2
+    for (int i = 0; i < s.H * s.W; ++i) {
+        s.recon_norm_logI[i * 2 + 0] = s.recon_real[i];
+        s.recon_norm_logI[i * 2 + 1] = s.recon_imag[i];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stage 6 S1 — concurrent g_s(real) ‖ g_s(imag)
+// ---------------------------------------------------------------------------
+void BenchPipeline::stage_gs_s1(PatchState& s)
+{
+    // Same deinterleave as stage_gs
+    for (int hw = 0; hw < s.yh * s.yw; ++hw) {
+        for (int c = 0; c < s.yc; ++c) {
+            s.yh_real[hw * s.yc + c] = s.y_hat[hw * 2 * s.yc + c];
+            s.yh_imag[hw * s.yc + c] = s.y_hat[hw * 2 * s.yc + s.yc + c];
+        }
+    }
+
+#ifdef HAVE_DPU
+    if (!runner_gs2_)
+        throw std::runtime_error("stage_gs_s1: call init_s1() first");
+    const auto& gs  = loader_.runner("g_s");
+    const auto& gs2 = *runner_gs2_;
+    std::thread t([&]{ gs2.run(s.yh_imag.data(), s.recon_imag.data()); });
+    gs.run(s.yh_real.data(), s.recon_real.data());
+    t.join();
+#else
+    throw std::runtime_error("stage_gs_s1: compiled without HAVE_DPU");
+#endif
+
+    // Pack — identical to stage_gs
     for (int i = 0; i < s.H * s.W; ++i) {
         s.recon_norm_logI[i * 2 + 0] = s.recon_real[i];
         s.recon_norm_logI[i * 2 + 1] = s.recon_imag[i];

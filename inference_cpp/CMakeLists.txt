@@ -113,6 +113,7 @@ if(NLOHMANN_JSON_INCLUDE_DIR)
     set(BENCHMARK_SOURCES
         src/benchmark/bench_pipeline.cpp
         src/benchmark/bench_configs.cpp
+        src/benchmark/power_sampler.cpp
         src/benchmark/main_benchmark.cpp
     )
     add_executable(benchmark_hardware ${BENCHMARK_SOURCES})

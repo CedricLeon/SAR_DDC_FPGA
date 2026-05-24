@@ -199,6 +199,7 @@ namespace ddc
                 continue;
 
             const std::string &role = it->second;
+            subgraphs_[role] = sg;
             runners_.emplace(role, DPUSubgraphRunner(sg, role));
             LOG_INFO("XModelLoader: created runner for role=" + role + " (kernel=" + sg->get_name() + ")");
         }
@@ -222,6 +223,18 @@ namespace ddc
     bool XModelLoader::has_role(const std::string &role) const
     {
         return runners_.count(role) > 0;
+    }
+
+    DPUSubgraphRunner XModelLoader::create_duplicate_runner(
+        const std::string& role, const std::string& alias) const
+    {
+        if (!loaded_)
+            throw std::runtime_error("XModelLoader::create_duplicate_runner: not loaded");
+        auto it = subgraphs_.find(role);
+        if (it == subgraphs_.end())
+            throw std::runtime_error(
+                "XModelLoader::create_duplicate_runner: role '" + role + "' not found");
+        return DPUSubgraphRunner(it->second, alias);
     }
 
 } // namespace ddc

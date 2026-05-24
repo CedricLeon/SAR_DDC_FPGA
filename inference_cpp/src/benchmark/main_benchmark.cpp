@@ -13,11 +13,14 @@
  *       [--dpu-cores    1]         runner replicas (S0 ignores >1)
  *       [--entropy-threads 1]      entropy workers (S0 ignores >1)
  *       [--output    result.json]
- *       [--power]                  enable power sampling (M2 — no-op in M1)
+ *       [--power]                  enable power sampling (INA226 + PMBus)
+ *       [--idle-baseline-s 10]     idle window duration in seconds
  *       [--verbose]
  *
  * Output: JSON file with per-stage stats + throughput + metadata.
  * Schema extends benchmark_fpga.py so results drop into benchmark_analysis.ipynb.
+ * With --power, a "power" object is added containing idle and active windows
+ * with per-rail stats and group aggregates (PL, PS, DPU_fabric, etc.).
  */
 
 #include <chrono>
@@ -26,6 +29,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -34,6 +38,7 @@
 
 #include "bench_configs.hpp"
 #include "bench_pipeline.hpp"
+#include "power_sampler.hpp"
 #include "stage_timer.hpp"
 
 static void usage(const char* prog)
@@ -43,15 +48,22 @@ static void usage(const char* prog)
         << "  --xmodel  <path>           .xmodel file (required)\n"
         << "  --params  <path>           entropy params dir with eb_*.npy (required)\n"
         << "  --data    <path>           test .npy (N,H,W,4) (required)\n"
-        << "  --config  <s0>             benchmark config [default: s0]\n"
+        << "  --config  <name>           benchmark config [default: s0]\n"
+        << "                             s0         sequential baseline (1 DPU, 1 thread)\n"
+        << "                             s1         channel-parallel g_a/g_s (2 runners each)\n"
+        << "                             nn_only    DPU data-parallel ceiling\n"
+        << "                             entropy_only  CPU entropy ceiling\n"
         << "  --scenario <compress|full> pipeline scenario [default: compress]\n"
         << "  --warmup  <N>              warmup iterations [default: 5]\n"
         << "  --iters   <N>              timed iterations [default: 50]\n"
         << "  --subset  <N>              patches to load and cycle [default: 20]\n"
-        << "  --dpu-cores <N>            DPU runner replicas [default: 1]\n"
-        << "  --entropy-threads <N>      entropy workers [default: 1]\n"
+        << "  --dpu-cores <N>            nn_only: N concurrent pipelines [default: 1]\n"
+        << "                             s0/s1: ignored\n"
+        << "  --entropy-threads <N>      entropy_only: N concurrent workers [default: 1]\n"
+        << "                             s0/s1: ignored\n"
         << "  --output  <path>           JSON output path [default: benchmark_result.json]\n"
-        << "  --power                    enable power sampling (M2; no-op now)\n"
+        << "  --power                    enable INA226 + PMBus power sampling\n"
+        << "  --idle-baseline-s <N>      idle baseline window in seconds [default: 10]\n"
         << "  --verbose                  enable verbose logging\n";
 }
 
@@ -60,16 +72,17 @@ int main(int argc, char** argv)
     namespace fs = std::filesystem;
 
     std::string  xmodel_str, params_str, data_str;
-    std::string  config_name   = "s0";
-    std::string  scenario_str  = "compress";
-    std::string  output_str    = "benchmark_result.json";
-    int          warmup        = 5;
-    int          iters         = 50;
-    int          subset        = 20;
-    int          dpu_cores     = 1;
-    int          entropy_thds  = 1;
-    bool         power_flag    = false;
-    bool         verbose       = false;
+    std::string  config_name      = "s0";
+    std::string  scenario_str     = "compress";
+    std::string  output_str       = "benchmark_result.json";
+    int          warmup           = 5;
+    int          iters            = 50;
+    int          subset           = 20;
+    int          dpu_cores        = 1;
+    int          entropy_thds     = 1;
+    int          idle_baseline_s  = 10;
+    bool         power_flag       = false;
+    bool         verbose          = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -91,9 +104,10 @@ int main(int argc, char** argv)
         else if (arg == "--subset")           subset       = std::stoi(next());
         else if (arg == "--dpu-cores")        dpu_cores    = std::stoi(next());
         else if (arg == "--entropy-threads")  entropy_thds = std::stoi(next());
-        else if (arg == "--output")           output_str   = next();
-        else if (arg == "--power")            power_flag   = true;
-        else if (arg == "--verbose")          verbose      = true;
+        else if (arg == "--output")           output_str      = next();
+        else if (arg == "--power")            power_flag      = true;
+        else if (arg == "--idle-baseline-s")  idle_baseline_s = std::stoi(next());
+        else if (arg == "--verbose")          verbose         = true;
         else if (arg == "--help" || arg == "-h") { usage(argv[0]); return 0; }
         else {
             std::cerr << "Unknown argument: " << arg << "\n";
@@ -110,9 +124,14 @@ int main(int argc, char** argv)
     }
 
     // Validate config
-    if (config_name != "s0") {
+    const std::initializer_list<const char*> valid_configs =
+        {"s0", "s1", "nn_only", "entropy_only"};
+    bool config_valid = false;
+    for (const char* c : valid_configs)
+        if (config_name == c) { config_valid = true; break; }
+    if (!config_valid) {
         std::cerr << "Error: unknown --config '" << config_name
-                  << "'. Available: s0\n";
+                  << "'. Available: s0 | s1 | nn_only | entropy_only\n";
         return 1;
     }
 
@@ -137,9 +156,6 @@ int main(int argc, char** argv)
         }
     }
 
-    if (power_flag)
-        std::cerr << "[info] --power specified; power sampling not yet implemented (M2).\n";
-
     if (verbose)
         std::cerr << "[info] verbose mode enabled.\n";
 
@@ -150,10 +166,8 @@ int main(int argc, char** argv)
     ts << std::put_time(std::gmtime(&t_now), "%Y-%m-%dT%H:%M:%SZ");
 
     try {
-        // Load models — use named temporaries to avoid the most-vexing-parse
         fs::path xmodel_path{xmodel_str};
         fs::path params_path{params_str};
-        ddc::BenchPipeline pipeline{xmodel_path, params_path};
 
         ddc::RunConfig cfg;
         cfg.scenario        = scenario;
@@ -163,11 +177,58 @@ int main(int argc, char** argv)
         cfg.subset          = subset;
         cfg.dpu_cores       = dpu_cores;
         cfg.entropy_threads = entropy_thds;
+        cfg.xmodel_path     = xmodel_path;   // used by nn_only / entropy_only
+        cfg.params_path     = params_path;
+
+        // Construct pipeline before the power window for s0/s1 (avoids including
+        // DPU runner initialisation in the active power reading).
+        // nn_only/entropy_only construct their own pipelines inside the run function.
+        std::unique_ptr<ddc::BenchPipeline> pipeline_ptr;
+        if (config_name == "s0" || config_name == "s1") {
+            pipeline_ptr = std::make_unique<ddc::BenchPipeline>(xmodel_path, params_path);
+            if (config_name == "s1")
+                pipeline_ptr->init_s1();
+        }
+
+        // Power sampler — idle baseline before, active window around benchmark
+        ddc::PowerSampler sampler;
+        ddc::PowerResult  power_idle, power_active;
+        bool power_ok = false;
+        if (power_flag) {
+            if (!sampler.init()) {
+                std::cerr << "[warn] --power: no INA226 sensors found; power data will be empty.\n";
+            } else {
+                std::cerr << "[info] Running idle baseline (" << idle_baseline_s << " s)...\n";
+                power_idle = sampler.idle_baseline(static_cast<double>(idle_baseline_s));
+                auto it = power_idle.rails.find("VCCINT");
+                if (it != power_idle.rails.end())
+                    std::cerr << "[info] Idle VCCINT: " << it->second.avg_power_w << " W ("
+                              << it->second.n_samples << " samples)\n";
+                std::cerr << "[info] Starting active power window...\n";
+                sampler.start();
+                power_ok = true;
+            }
+        }
 
         // Dispatch
         ddc::BenchResult result;
         if (config_name == "s0")
-            result = ddc::run_s0(pipeline, cfg);
+            result = ddc::run_s0(*pipeline_ptr, cfg);
+        else if (config_name == "s1")
+            result = ddc::run_s1(*pipeline_ptr, cfg);
+        else if (config_name == "nn_only")
+            result = ddc::run_nn_only(cfg);
+        else   // entropy_only
+            result = ddc::run_entropy_only(cfg);
+
+        if (power_ok) {
+            sampler.stop();
+            power_active = sampler.results();
+            auto it = power_active.rails.find("VCCINT");
+            if (it != power_active.rails.end())
+                std::cerr << "[info] Active VCCINT: " << it->second.avg_power_w << " W ("
+                          << it->second.n_samples << " samples)\n";
+        }
 
         // Serialize to JSON
         nlohmann::json out;
@@ -200,6 +261,33 @@ int main(int argc, char** argv)
         }
         out["stages"] = stages_json;
 
+        // Power results (only present when --power was specified and sensors found)
+        if (power_ok) {
+            auto power_to_json = [](const ddc::PowerResult& pr) {
+                nlohmann::json pj;
+                pj["valid"]      = pr.valid;
+                pj["duration_s"] = pr.duration_s;
+                nlohmann::json rails_j;
+                for (const auto& [rail, rs] : pr.rails) {
+                    rails_j[rail] = {
+                        {"avg_power_w", rs.avg_power_w},
+                        {"energy_j",    rs.energy_j},
+                        {"n_samples",   rs.n_samples},
+                        {"duration_s",  rs.duration_s},
+                    };
+                }
+                pj["rails"]  = rails_j;
+                nlohmann::json groups_j;
+                for (const auto& [grp, w] : pr.groups)
+                    groups_j[grp] = w;
+                pj["groups"] = groups_j;
+                return pj;
+            };
+            out["power"]["idle_baseline_s"] = idle_baseline_s;
+            out["power"]["idle"]            = power_to_json(power_idle);
+            out["power"]["active"]          = power_to_json(power_active);
+        }
+
         // Write
         std::ofstream f(output_str);
         if (!f) throw std::runtime_error("cannot open output: " + output_str);
@@ -215,9 +303,63 @@ int main(int argc, char** argv)
                   << "  total lat:   " << result.total_latency_mean_ms << " ms\n"
                   << "\n  per-stage (mean | p95 ms):\n";
         for (const auto& [label, st] : result.stage_stats) {
-            std::cerr << "    " << label
-                      << ": " << st.mean_s * 1e3 << " | " << st.p95_s * 1e3 << " ms\n";
+            std::cerr << "    " << std::left << std::setw(16) << label
+                      << ": " << std::fixed << std::setprecision(3)
+                      << st.mean_s * 1e3 << " | " << st.p95_s * 1e3 << " ms\n";
         }
+
+        // Power summary
+        if (power_ok) {
+            // Helper: look up a group's power from a PowerResult (-1 = not found)
+            auto grp_w = [](const ddc::PowerResult& pr, const std::string& g) -> double {
+                auto it = pr.groups.find(g);
+                return it != pr.groups.end() ? it->second : -1.0;
+            };
+            auto rail_w = [](const ddc::PowerResult& pr, const std::string& r) -> double {
+                auto it = pr.rails.find(r);
+                return it != pr.rails.end() ? it->second.avg_power_w : -1.0;
+            };
+            // Print one row: label  idle  active  +delta W
+            auto pw_row = [&](const char* label, double idle, double active) {
+                if (idle < 0.0 || active < 0.0) return;
+                std::cerr << "    " << std::left << std::setw(14) << label
+                          << std::right << std::fixed << std::setprecision(3)
+                          << std::setw(7) << idle   << "  "
+                          << std::setw(7) << active << "  "
+                          << std::showpos << std::setw(7) << (active - idle)
+                          << std::noshowpos << " W\n";
+            };
+
+            int n_ina = 0;
+            {
+                auto it = power_idle.rails.find("VCCINT");
+                if (it != power_idle.rails.end()) n_ina = it->second.n_samples;
+            }
+            std::cerr << "\n  --- power (idle | active | delta) ---\n"
+                      << "    " << std::left << std::setw(14) << ""
+                      << std::right << std::setw(7) << "idle"  << "  "
+                      << std::setw(7) << "active" << "  "
+                      << std::setw(8) << "delta\n";
+            pw_row("VCCINT",      rail_w(power_idle, "VCCINT"),     rail_w(power_active, "VCCINT"));
+            pw_row("DPU_fabric",  grp_w(power_idle,  "DPU_fabric"), grp_w(power_active,  "DPU_fabric"));
+            pw_row("PL",          grp_w(power_idle,  "PL"),         grp_w(power_active,  "PL"));
+            pw_row("PS",          grp_w(power_idle,  "PS"),         grp_w(power_active,  "PS"));
+            pw_row("MPSoC",       grp_w(power_idle,  "MPSoC"),      grp_w(power_active,  "MPSoC"));
+            pw_row("peripherals", grp_w(power_idle,  "peripherals"),grp_w(power_active,  "peripherals"));
+            std::cerr << "    (idle baseline: " << idle_baseline_s << " s"
+                      << ", " << n_ina << " INA226 samples)\n";
+
+            // Energy per patch
+            double lat_s = result.total_latency_mean_ms / 1e3;
+            double mpsoc_active = grp_w(power_active, "MPSoC");
+            if (mpsoc_active > 0.0 && lat_s > 0.0)
+                std::cerr << "\n  energy/patch (MPSoC × lat): "
+                          << std::fixed << std::setprecision(2)
+                          << mpsoc_active * lat_s * 1e3 << " mJ"
+                          << "  (" << mpsoc_active << " W × "
+                          << result.total_latency_mean_ms << " ms)\n";
+        }
+
         std::cerr << "\n  -> " << output_str << "\n";
     }
     catch (const std::exception& e) {

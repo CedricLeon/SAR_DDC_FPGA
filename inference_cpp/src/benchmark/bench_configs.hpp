@@ -32,8 +32,20 @@ struct RunConfig {
     int                   iters           = 50;   // timed iterations
     std::filesystem::path data_path;              // test .npy (N, H, W, 4)
     int                   subset          = 20;   // patches loaded (cycled if iters > subset)
-    int                   dpu_cores       = 1;    // runner replicas (S0 ignores >1)
-    int                   entropy_threads = 1;    // entropy workers (S0 ignores >1)
+    // dpu_cores semantics differ by config:
+    //   S0/S1:       ignored (S0=1 runner; S1=2 structural runners per role)
+    //   nn_only:     N independent BenchPipeline instances (data-parallel ceiling)
+    //   P0/P2:       N DPU pipeline lanes
+    int                   dpu_cores       = 1;
+    // entropy_threads semantics:
+    //   S0/S1:       ignored
+    //   entropy_only: N concurrent entropy workers (CPU ceiling)
+    //   P2:          N entropy consumers
+    int                   entropy_threads = 1;
+    // Paths used by configs that construct their own BenchPipeline instances
+    // (nn_only, entropy_only).  Set by main_benchmark.cpp before dispatch.
+    std::filesystem::path xmodel_path;
+    std::filesystem::path params_path;
 };
 
 // BenchResult — output of a benchmark run.
@@ -53,5 +65,24 @@ struct BenchResult {
 // next.  Reports per-stage mean / std / p95 latency (ms).
 // RunConfig::dpu_cores and ::entropy_threads are accepted but silently ignored.
 BenchResult run_s0(BenchPipeline& pipeline, const RunConfig& cfg);
+
+// ---------------------------------------------------------------------------
+// M3: S1, nn_only, entropy_only
+// ---------------------------------------------------------------------------
+
+// S1 channel-parallel: pipeline must have init_s1() called before this.
+// stage_ga and stage_gs are replaced by their _s1 (concurrent) variants.
+// Reports per-stage latency (wall time of the concurrent g_a / g_s = max of two).
+BenchResult run_s1(BenchPipeline& pipeline, const RunConfig& cfg);
+
+// nn_only DPU ceiling: creates cfg.dpu_cores independent BenchPipeline instances,
+// each processing a different patch concurrently.  Headline = throughput_fps.
+// cfg.xmodel_path and cfg.params_path must be set.
+BenchResult run_nn_only(const RunConfig& cfg);
+
+// entropy_only CPU ceiling: creates cfg.entropy_threads BenchPipeline instances
+// (DPU used only in warmup to populate state); timed loop runs entropy stages only.
+// cfg.xmodel_path and cfg.params_path must be set.
+BenchResult run_entropy_only(const RunConfig& cfg);
 
 } // namespace ddc
