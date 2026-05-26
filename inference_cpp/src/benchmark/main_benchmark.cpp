@@ -135,6 +135,21 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    // Warn on inapplicable flags (soft warning — scripted sweeps may pass a fixed flag set)
+    auto warn_ignored = [](const char* flag, const char* cfg, const char* hint = nullptr) {
+        std::cerr << "[warn] --" << flag << " has no effect for --config " << cfg;
+        if (hint) std::cerr << "; " << hint;
+        std::cerr << "\n";
+    };
+    if (config_name == "s0" || config_name == "s1") {
+        if (dpu_cores    != 1) warn_ignored("dpu-cores",       config_name.c_str(), "fixed at 2 runners/pair for s1, 1 for s0");
+        if (entropy_thds != 1) warn_ignored("entropy-threads", config_name.c_str());
+    } else if (config_name == "nn_only") {
+        if (entropy_thds != 1) warn_ignored("entropy-threads", "nn_only", "use --dpu-cores for nn_only");
+    } else if (config_name == "entropy_only") {
+        if (dpu_cores    != 1) warn_ignored("dpu-cores",       "entropy_only", "use --entropy-threads for entropy_only");
+    }
+
     // Parse scenario
     ddc::Scenario scenario;
     if      (scenario_str == "compress") scenario = ddc::Scenario::compress;
@@ -260,6 +275,10 @@ int main(int argc, char** argv)
             stages_json[label] = sj;
         }
         out["stages"] = stages_json;
+
+        // Byte counts per timed iteration (run_s0 / run_s1 only — for correctness verification)
+        if (!result.bytes_per_iter.empty())
+            out["bytes_per_iter"] = result.bytes_per_iter;
 
         // Power results (only present when --power was specified and sensors found)
         if (power_ok) {

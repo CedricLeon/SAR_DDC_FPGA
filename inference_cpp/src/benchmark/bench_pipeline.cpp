@@ -28,6 +28,50 @@
 namespace ddc {
 
 // ---------------------------------------------------------------------------
+// Private helpers — pure transforms on PatchState fields, shared between the
+// sequential and S1-concurrent stage variants.
+// ---------------------------------------------------------------------------
+
+static void channel_split(PatchState& s)
+{
+    for (int i = 0; i < s.H * s.W; ++i) {
+        s.real_ch[i] = s.norm_hwc[i * 2 + 0];
+        s.imag_ch[i] = s.norm_hwc[i * 2 + 1];
+    }
+}
+
+static void interleave_and_abs(PatchState& s)
+{
+    for (int hw = 0; hw < s.yh * s.yw; ++hw) {
+        for (int c = 0; c < s.yc; ++c) {
+            s.y[hw * 2 * s.yc + c]        = s.y_real[hw * s.yc + c];
+            s.y[hw * 2 * s.yc + s.yc + c] = s.y_imag[hw * s.yc + c];
+        }
+    }
+    const int y_total = s.yh * s.yw * s.yc * 2;
+    for (int i = 0; i < y_total; ++i)
+        s.y_abs[i] = std::abs(s.y[i]);
+}
+
+static void deinterleave_yhat(PatchState& s)
+{
+    for (int hw = 0; hw < s.yh * s.yw; ++hw) {
+        for (int c = 0; c < s.yc; ++c) {
+            s.yh_real[hw * s.yc + c] = s.y_hat[hw * 2 * s.yc + c];
+            s.yh_imag[hw * s.yc + c] = s.y_hat[hw * 2 * s.yc + s.yc + c];
+        }
+    }
+}
+
+static void pack_recon(PatchState& s)
+{
+    for (int i = 0; i < s.H * s.W; ++i) {
+        s.recon_norm_logI[i * 2 + 0] = s.recon_real[i];
+        s.recon_norm_logI[i * 2 + 1] = s.recon_imag[i];
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Constructor
 // ---------------------------------------------------------------------------
 BenchPipeline::BenchPipeline(const std::filesystem::path& xmodel_path,
@@ -140,11 +184,30 @@ void BenchPipeline::init_s1()
     if (has_s1_)
         throw std::runtime_error("init_s1: already initialised");
 #ifdef HAVE_DPU
-    // g_a_1 and g_s_1 are created after the primary runners; VART round-robin
-    // assigns them to the next core slots, which empirically differ from the
-    // primary g_a / g_s runners created during XModelLoader::load().
-    runner_ga2_.emplace(loader_.create_duplicate_runner("g_a", "g_a_1"));
-    runner_gs2_.emplace(loader_.create_duplicate_runner("g_s", "g_s_1"));
+    // VART assigns cores via global round-robin at runner creation time.
+    // We need both concurrent pairs (g_a‖g_a_1, g_s‖g_s_1) on distinct cores.
+    // The correct creation order depends on how many primary runners were loaded:
+    //
+    //   SHyp (4 primaries: g_a→0, h_a→1, g_s→2, h_s→0):
+    //     next slot = core 1.  Create g_s_1 first (→1 ≠ g_s core 2 ✓),
+    //     then g_a_1 (→2 ≠ g_a core 0 ✓).  Both pairs on distinct cores.
+    //
+    //   FP (2 primaries: g_a→0, g_s→1):
+    //     next slot = core 2.  Create g_a_1 first (→2 ≠ g_a core 0 ✓),
+    //     then g_s_1 (→0 ≠ g_s core 1 ✓).  Both pairs on distinct cores.
+    //
+    // WARNING: assumes 3 DPU cores (ZCU102 B4096×3).  On fewer cores the
+    // round-robin wraps sooner and a collision may occur (see design doc §9-A).
+    // To verify the physical core count on the board run: xdputil query
+    if (has_gc_) {
+        // SHyp: g_s_1 first → core 1, then g_a_1 → core 2
+        runner_gs2_.emplace(loader_.create_duplicate_runner("g_s", "g_s_1"));
+        runner_ga2_.emplace(loader_.create_duplicate_runner("g_a", "g_a_1"));
+    } else {
+        // FP: g_a_1 first → core 2, then g_s_1 → core 0
+        runner_ga2_.emplace(loader_.create_duplicate_runner("g_a", "g_a_1"));
+        runner_gs2_.emplace(loader_.create_duplicate_runner("g_s", "g_s_1"));
+    }
     has_s1_ = true;
 #else
     throw std::runtime_error("init_s1: compiled without HAVE_DPU");
@@ -164,12 +227,7 @@ void BenchPipeline::stage_normalize(PatchState& s)
 // ---------------------------------------------------------------------------
 void BenchPipeline::stage_ga(PatchState& s)
 {
-    // Split norm_hwc [H*W*2] → real_ch [H*W] + imag_ch [H*W]
-    for (int i = 0; i < s.H * s.W; ++i) {
-        s.real_ch[i] = s.norm_hwc[i * 2 + 0];
-        s.imag_ch[i] = s.norm_hwc[i * 2 + 1];
-    }
-
+    channel_split(s);
 #ifdef HAVE_DPU
     const auto& ga = loader_.runner("g_a");
     ga.run(s.real_ch.data(), s.y_real.data());
@@ -177,21 +235,7 @@ void BenchPipeline::stage_ga(PatchState& s)
 #else
     throw std::runtime_error("stage_ga: compiled without HAVE_DPU");
 #endif
-
-    // Interleave: y[hw][c_real..., c_imag...] — each spatial pos gets
-    // the real channel block followed by the imag channel block.
-    // Identical to np.concatenate((y_real, y_imag), axis=-1) in Python.
-    for (int hw = 0; hw < s.yh * s.yw; ++hw) {
-        for (int c = 0; c < s.yc; ++c) {
-            s.y[hw * 2 * s.yc + c]        = s.y_real[hw * s.yc + c];
-            s.y[hw * 2 * s.yc + s.yc + c] = s.y_imag[hw * s.yc + c];
-        }
-    }
-
-    // |y| for h_a (always computed; zero cost for FP since h_a is skipped)
-    int y_total = s.yh * s.yw * s.yc * 2;
-    for (int i = 0; i < y_total; ++i)
-        s.y_abs[i] = std::abs(s.y[i]);
+    interleave_and_abs(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -199,35 +243,19 @@ void BenchPipeline::stage_ga(PatchState& s)
 // ---------------------------------------------------------------------------
 void BenchPipeline::stage_ga_s1(PatchState& s)
 {
-    // Same deinterleave as stage_ga
-    for (int i = 0; i < s.H * s.W; ++i) {
-        s.real_ch[i] = s.norm_hwc[i * 2 + 0];
-        s.imag_ch[i] = s.norm_hwc[i * 2 + 1];
-    }
-
+    channel_split(s);
 #ifdef HAVE_DPU
     if (!runner_ga2_)
         throw std::runtime_error("stage_ga_s1: call init_s1() first");
     const auto& ga  = loader_.runner("g_a");
     const auto& ga2 = *runner_ga2_;
-    // imag in a thread; real in the calling thread — results written to disjoint buffers
     std::thread t([&]{ ga2.run(s.imag_ch.data(), s.y_imag.data()); });
     ga.run(s.real_ch.data(), s.y_real.data());
     t.join();
 #else
     throw std::runtime_error("stage_ga_s1: compiled without HAVE_DPU");
 #endif
-
-    // Interleave and compute |y| — identical to stage_ga
-    for (int hw = 0; hw < s.yh * s.yw; ++hw) {
-        for (int c = 0; c < s.yc; ++c) {
-            s.y[hw * 2 * s.yc + c]        = s.y_real[hw * s.yc + c];
-            s.y[hw * 2 * s.yc + s.yc + c] = s.y_imag[hw * s.yc + c];
-        }
-    }
-    int y_total = s.yh * s.yw * s.yc * 2;
-    for (int i = 0; i < y_total; ++i)
-        s.y_abs[i] = std::abs(s.y[i]);
+    interleave_and_abs(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -315,28 +343,15 @@ void BenchPipeline::stage_gc_decompress(PatchState& s)
 // ---------------------------------------------------------------------------
 void BenchPipeline::stage_gs(PatchState& s)
 {
-    // Reverse the interleave from stage_ga
-    for (int hw = 0; hw < s.yh * s.yw; ++hw) {
-        for (int c = 0; c < s.yc; ++c) {
-            s.yh_real[hw * s.yc + c] = s.y_hat[hw * 2 * s.yc + c];
-            s.yh_imag[hw * s.yc + c] = s.y_hat[hw * 2 * s.yc + s.yc + c];
-        }
-    }
-
+    deinterleave_yhat(s);
 #ifdef HAVE_DPU
     const auto& gs = loader_.runner("g_s");
     gs.run(s.yh_real.data(), s.recon_real.data());
     gs.run(s.yh_imag.data(), s.recon_imag.data());
 #else
-    (void)s;
     throw std::runtime_error("stage_gs: compiled without HAVE_DPU");
 #endif
-
-    // Pack into HW2
-    for (int i = 0; i < s.H * s.W; ++i) {
-        s.recon_norm_logI[i * 2 + 0] = s.recon_real[i];
-        s.recon_norm_logI[i * 2 + 1] = s.recon_imag[i];
-    }
+    pack_recon(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -344,14 +359,7 @@ void BenchPipeline::stage_gs(PatchState& s)
 // ---------------------------------------------------------------------------
 void BenchPipeline::stage_gs_s1(PatchState& s)
 {
-    // Same deinterleave as stage_gs
-    for (int hw = 0; hw < s.yh * s.yw; ++hw) {
-        for (int c = 0; c < s.yc; ++c) {
-            s.yh_real[hw * s.yc + c] = s.y_hat[hw * 2 * s.yc + c];
-            s.yh_imag[hw * s.yc + c] = s.y_hat[hw * 2 * s.yc + s.yc + c];
-        }
-    }
-
+    deinterleave_yhat(s);
 #ifdef HAVE_DPU
     if (!runner_gs2_)
         throw std::runtime_error("stage_gs_s1: call init_s1() first");
@@ -363,12 +371,7 @@ void BenchPipeline::stage_gs_s1(PatchState& s)
 #else
     throw std::runtime_error("stage_gs_s1: compiled without HAVE_DPU");
 #endif
-
-    // Pack — identical to stage_gs
-    for (int i = 0; i < s.H * s.W; ++i) {
-        s.recon_norm_logI[i * 2 + 0] = s.recon_real[i];
-        s.recon_norm_logI[i * 2 + 1] = s.recon_imag[i];
-    }
+    pack_recon(s);
 }
 
 // ---------------------------------------------------------------------------

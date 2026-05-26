@@ -33,7 +33,7 @@ work. This phase builds a `benchmark_hardware` C++ binary to answer, for an upco
 | Pipeline scope | Compress-only for pipelined configs |
 | Scenario coverage | Data-parallel ceilings (`nn_only`, `entropy_only`) + pipelined `compress`; `full`/`decompress` kept **sequential** as Python-comparison references |
 | Initial scope | S0, S1, ceilings, P0, P2. **P3 deferred** (fine-grained per-subgraph pipeline + DPU core allocator) |
-| Models | 4 architectures (SHyp, ResSHyp, FP, ResFP), one representative each. Seed is timing-irrelevant; lambda sensitivity is a *separate later experiment* — the script does not special-case it |
+| Models | 4 architectures (SHyp, ResSHyp, FP, ResFP), one representative each. Seed is timing-irrelevant; lambda sensitivity is a *separate later experiment* — the script does not special-case it. **Naming note**: `Res` prefix = `no_residual_blocks=False` (3 extra ResidualBlocks per stage in g_a and g_s, each block = conv+act+conv with skip connection). SHyp/FP = `no_residual_blocks=True` (lighter, faster DPU stages). The benchmarked ResSHyp/FP-relu numbers are **not** interchangeable with SHyp/FP; both must be benchmarked separately before publishing. |
 | Sweeps | `--dpu-cores {1,2,3}`, `--entropy-threads {1,2,3,4}` as free knobs for scaling curves |
 | Power | Native C++ sampler, self-contained module, runtime-gated by `--power` |
 | Build style | Slow, controlled, milestone-by-milestone; modular, single-source-of-truth, no redundant functions/classes |
@@ -151,14 +151,10 @@ the non-DPU modules.
   in background threads. Board-verified 2026-05-23: idle VCCINT = 6.010 W (✓ known ~6 W),
   UTIL_3V3 = 2.11 W (✓), DDR4_DIMM_VDDQ = 0.48 W (✓). Active VCCINT = 7.67 W (+1.66 W DPU).
   JSON schema: `power.{idle,active}.{rails,groups}` with all 7 group aggregates. `--idle-baseline-s N` flag.
-- [ ] **M3 — S1 + ceilings**: confirm ~1.9× g_a channel-parallel speedup; **gate**: prove N
-  concurrent runners use N cores; spike `xir::Attrs` core-hint.
-  Implementation notes: (1) `BenchPipeline` currently holds one runner per role — S1 requires
-  **2 g_a runners + 2 g_s runners** created in order `g_a_0, g_a_1, h_a, h_s, g_s_0, g_s_1`
-  so VART round-robin places g_a pair on cores 0+1 and g_s pair on cores 2+0. (2) `BenchPipeline`
-  will need an extension (e.g. `BenchPipelineS1` subclass or a construction flag) to hold the
-  extra runners. (3) Proof of overlap: concurrent wall-time for real+imag g_a pair materially
-  below 2×serial (expect ≈1.9× for clean placement on two cores).
+- [x] **M3 — S1 + ceilings**: board-verified 2026-05-24 (ResSHyp + FP-relu). g_a speedup 1.95×;
+  g_s speedup 1.96× (after creation-order fix); byte-identical output vs S0 (all 20 patches);
+  inference_hybrid PSNR unchanged; FP S1 branch verified (g_a 1.71×, g_s 1.79×, bytes pass).
+  See M3 verification journal below. Remaining pre-M4 task: item [B] refactor.
 - [ ] **M4 — P0**: coarse 2-stage DPU‖entropy pipe.
 - [ ] **M5 — P2 + sweeps**: K entropy consumers; run `--dpu-cores`/`--entropy-threads` sweeps.
 - [ ] **(later) P3**: fine-grained per-subgraph pipeline + DPU core allocator — gated on P0/P2 data.
@@ -181,6 +177,54 @@ the non-DPU modules.
 ## 8. Decisions log / journal
 
 *(Append-only. Newest at top. Record surprises, dead-ends, and why choices were made.)*
+
+- **2026-05-24** — M3 board-verified. ResSHyp L1000, compress + full scenarios, 20 iters, 20 patches.
+
+  **init_s1 creation-order fix:** the original code always created `g_a_1` then `g_s_1`. For SHyp
+  (4 primary runners → next VART slot = core 1), this placed `g_s_1` on core 2 (same as `g_s`) —
+  eliminating the g_s speedup in the full scenario. Fix: make `init_s1` model-aware: SHyp creates
+  `g_s_1` first (→ core 1 ≠ g_s core 2 ✓) then `g_a_1` (→ core 2 ≠ g_a core 0 ✓); FP keeps the
+  original order (2 primaries → next slot = core 2; `g_a_1` first ✓, `g_s_1` second ✓).
+  Runner creation order observed in log after fix (SHyp): primary g_a→0, h_a→1, g_s→2, h_s→0;
+  init_s1: g_s_1→1, g_a_1→2. Both concurrent pairs now on distinct cores.
+
+  **M3 results (after fix):**
+
+  | Config | Scenario | g_a (ms) | g_s (ms) | Total (ms) | Throughput | vs S0 |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | S0 | compress | 73.13 | — | 97.2 | 10.3 fps | baseline |
+  | S1 | compress | 37.53 | — | 60.6 | 16.4 fps | 1.59× total; **g_a 1.95×** |
+  | S0 | full | 73.18 | 71.76 | 187.8 | 5.3 fps | baseline |
+  | S1 | full | 37.50 | 36.53 | 116.5 | 8.6 fps | 1.61× total; **g_a 1.95×; g_s 1.96×** |
+
+  **Correctness checks (all passed):**
+  - S0 regression: 97.2 ms compress, 187.8 ms full — matches M1 baseline ✓
+  - S1 byte identity: `bytes_per_iter` from S0 and S1 compress are element-wise identical across
+    all 20 patches (8848, 9944, … 9748 — all 20 values match exactly) ✓
+  - inference_hybrid regression: PSNR 32.09 dB (10 patches, ResSHyp) — unchanged after
+    `subgraphs_` addition to `XModelLoader` ✓
+  - nn_only N=2: 20.4 fps (1.96×), entropy_only N=2: 163 fps (1.97×) — unchanged from M3 impl ✓
+  - FP model (FP-relu L1000, 2-runner model): S1 FP branch verified. g_a 10.4→6.1 ms (1.71×);
+    g_s 8.65→4.84 ms (1.79×); byte identity PASS. Lower speedup than ResSHyp (1.71-1.79× vs
+    1.95-1.96×) because FP has no residual blocks — shorter DPU inference means fixed thread
+    overhead is proportionally larger. See §9 architecture naming note.
+
+  **FP-relu L1000 S0/S1 timing (for reference):**
+
+  | Stage | S0 compress (ms) | S0 full (ms) | S1 compress (ms) | S1 full (ms) |
+  | --- | --- | --- | --- | --- |
+  | normalize | 8.96 | 9.00 | 8.96 | 8.93 |
+  | g_a | 10.39 | 10.39 | 6.05 (1.71×) | 6.00 (1.73×) |
+  | eb_compress | 6.66 | 6.66 | 6.68 | 6.65 |
+  | eb_decompress | — | 6.96 | — | 6.97 |
+  | g_s | — | 8.65 | — | 4.84 (1.79×) |
+  | denorm | — | 9.75 | — | 9.74 |
+  | **Total** | **26.0** | **51.4** | **21.7 (1.20×)** | **43.1 (1.19×)** |
+
+  **Key FP insight:** DPU is only 37% of the full pipeline (vs 78% for ResSHyp). S1 gives only
+  1.19× end-to-end because normalize+denorm (36%) and entropy (27%) don't parallelize. NEON
+  vectorization of normalize/denorm would have much larger relative impact for FP than scheduling
+  changes.
 
 - **2026-05-23** — Stage split fix: `stage_eb` and `stage_gc` each split into separate `_compress`
   and `_decompress` stages. Motivation: (1) `stage_gc` was running both GC compress+decompress in
@@ -310,3 +354,54 @@ the non-DPU modules.
   there is no core-pinning mechanism; `--dpu-cores` reframed as influence-plus-verification.
   Initial scope set to S0/S1/ceilings/P0/P2; P3 deferred. Doc strategy: living journal →
   graduate to perf doc → archive.
+
+---
+
+## 9. Pending Improvements & Open Questions
+
+*(Items to tackle in order of relevance to the active milestone. Add new items here.)*
+
+**[A] Single-core build warning for S1** *(done — comment + doc)*
+`init_s1()` now carries a `WARNING: assumes 3 DPU cores (ZCU102 B4096×3)` comment with a
+pointer to verify via `xdputil query` (which reads DPU hardware registers and reports the
+physical core count, architecture, and clock frequency — see
+`docs/performance_benchmark_implementation.md` §3). VART provides no programmatic API to
+query core count, so the warning is documentation-level only. No further action needed unless
+the binary is ported to different hardware.
+
+**[B] Refactor deinterleave / interleave duplicates** *(planned for pre-M4 cleanup)*
+`stage_ga` and `stage_ga_s1` share identical deinterleave + interleave + `|y|` loops;
+`stage_gs` and `stage_gs_s1` share identical deinterleave + pack loops. Currently noted
+with `// Same as stage_X` comments.
+
+Planned extraction into `bench_pipeline.cpp` anonymous namespace:
+- `channel_split(norm_hwc, real_ch, imag_ch, H, W)` — deinterleave input
+- `interleave_and_abs(y_real, y_imag, y, y_abs, yh, yw, yc)` — interleave outputs + `|y|`
+- `deinterleave_yhat(y_hat, yh_real, yh_imag, yh, yw, yc)` — split y_hat for g_s input
+- `pack_recon(recon_real, recon_imag, recon_norm_logI, H, W)` — pack g_s outputs
+
+Each stage function becomes ~10 lines; ~120 lines of duplication removed. Do in a single
+focused commit before M4 (no new features, pure refactor).
+
+**[C] CLI design: single main vs subcommands** *(medium priority — usability)*
+Three options considered:
+- **Separate binaries** (`benchmark_hardware_s0`, …): compile-time prevention of invalid
+  arg combinations, but duplicates all shared CLI boilerplate (xmodel, params, data,
+  power, iters, warmup) and causes version drift.
+- **Subcommands** (`benchmark_hardware s0 [opts]`, `benchmark_hardware nn_only [opts]`):
+  one binary, each subcommand has its own option set — invalid combinations prevented by
+  construction. Modest refactor: `main_s0()`, `main_s1()`, etc. dispatched from a thin
+  `main()` after parsing `argv[1]`; shared args parsed once. **Recommended** when the full
+  config set is settled (before or at M5/publication).
+- **Flat CLI + guards** (current): simplest; extend with validation (see [D]).
+**Decision**: add guards [D] now; defer subcommand refactor to pre-M5 cleanup.
+
+**[D] Argument safeguards for nonsensical combinations** *(medium priority — correctness)*
+Several config/flag combinations silently ignore or misapply arguments:
+- `--config s0 --dpu-cores N>1` → silently ignored
+- `--config s1 --dpu-cores N>1` → silently ignored (S1 always uses exactly 2 runners/pair)
+- `--config entropy_only --dpu-cores N>1` → ignored; use `--entropy-threads` instead
+- `--config nn_only --entropy-threads N>1` → ignored; use `--dpu-cores` instead
+Add a post-parse validation block in `main_benchmark.cpp` that emits `[warn]` for each
+inapplicable non-default flag (soft warning, not a hard error, to allow scripted sweeps
+that pass a fixed flag set).

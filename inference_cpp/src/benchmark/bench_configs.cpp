@@ -141,6 +141,35 @@ static void run_one_notimed(BenchPipeline& pl, PatchState& s,
 }
 
 // ---------------------------------------------------------------------------
+// Helper: S1 warmup — same execution path as the timed loop (stage_ga_s1 /
+// stage_gs_s1) so that std::thread launch and VART concurrent-runner paths
+// are exercised before the timing window opens.
+// ---------------------------------------------------------------------------
+static void run_one_s1_notimed(BenchPipeline& pl, PatchState& s,
+                               bool is_shyp, bool is_compress)
+{
+    pl.stage_normalize(s);
+    pl.stage_ga_s1(s);
+    if (is_shyp) {
+        pl.stage_ha(s);
+        pl.stage_eb_compress(s);
+        pl.stage_eb_decompress(s);
+        pl.stage_hs(s);
+        pl.stage_gc_compress(s);
+        if (!is_compress)
+            pl.stage_gc_decompress(s);
+    } else {
+        pl.stage_eb_compress(s);
+        if (!is_compress)
+            pl.stage_eb_decompress(s);
+    }
+    if (!is_compress) {
+        pl.stage_gs_s1(s);
+        pl.stage_denorm(s);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helper: one S1 timed iteration (uses stage_ga_s1 / stage_gs_s1)
 // ---------------------------------------------------------------------------
 static void run_one_s1(BenchPipeline& pl, PatchState& s,
@@ -261,6 +290,8 @@ BenchResult run_s0(BenchPipeline& pipeline, const RunConfig& cfg)
 
     // Timed loop
     StageTimer timer;
+    std::vector<int> bytes_record;
+    bytes_record.reserve(static_cast<size_t>(cfg.iters));
     auto t_start = std::chrono::steady_clock::now();
 
     for (int it = 0; it < cfg.iters; ++it) {
@@ -268,6 +299,7 @@ BenchResult run_s0(BenchPipeline& pipeline, const RunConfig& cfg)
         std::memcpy(state.noisy_hwc.data(), pd.patches[it % P].data(),
                     static_cast<size_t>(H * W * 2) * sizeof(float));
         run_one(pipeline, state, timer, is_shyp, is_cmp);
+        bytes_record.push_back(state.num_bytes);
     }
 
     auto t_end     = std::chrono::steady_clock::now();
@@ -280,6 +312,7 @@ BenchResult run_s0(BenchPipeline& pipeline, const RunConfig& cfg)
     r.wall_time_s            = wall_s;
     r.num_iters              = cfg.iters;
     r.is_shyp                = is_shyp;
+    r.bytes_per_iter         = std::move(bytes_record);
     return r;
 }
 
@@ -298,20 +331,25 @@ BenchResult run_s1(BenchPipeline& pipeline, const RunConfig& cfg)
     const bool is_shyp = pipeline.uses_hyper();
     const bool is_cmp  = (cfg.scenario == Scenario::compress);
 
-    // Warmup uses sequential path (DPU exercise is what matters, not parallelism)
+    // Warmup uses the same concurrent path as the timed loop (stage_ga_s1 /
+    // stage_gs_s1) so thread launch and VART concurrent-runner paths are
+    // exercised before the timing window opens.
     for (int w = 0; w < cfg.warmup; ++w) {
         std::memcpy(state.noisy_hwc.data(), pd.patches[w % P].data(),
                     static_cast<size_t>(H * W * 2) * sizeof(float));
-        run_one_notimed(pipeline, state, is_shyp, is_cmp);
+        run_one_s1_notimed(pipeline, state, is_shyp, is_cmp);
     }
 
     StageTimer timer;
+    std::vector<int> bytes_record;
+    bytes_record.reserve(static_cast<size_t>(cfg.iters));
     auto t_start = std::chrono::steady_clock::now();
 
     for (int it = 0; it < cfg.iters; ++it) {
         std::memcpy(state.noisy_hwc.data(), pd.patches[it % P].data(),
                     static_cast<size_t>(H * W * 2) * sizeof(float));
         run_one_s1(pipeline, state, timer, is_shyp, is_cmp);
+        bytes_record.push_back(state.num_bytes);
     }
 
     auto t_end    = std::chrono::steady_clock::now();
@@ -324,6 +362,7 @@ BenchResult run_s1(BenchPipeline& pipeline, const RunConfig& cfg)
     r.wall_time_s           = wall_s;
     r.num_iters             = cfg.iters;
     r.is_shyp               = is_shyp;
+    r.bytes_per_iter        = std::move(bytes_record);
     return r;
 }
 

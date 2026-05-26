@@ -133,17 +133,30 @@ Code compiled for the DPU must follow these rules:
 Profile the sequential pipeline first to get a latency breakdown (DPU vs CPU entropy vs overhead). Design is fully documented in `docs/benchmark_hardware_design.md`.
 
 **M1 (S0 + stage_timer)**: ✅ complete and board-verified (2026-05-23).
+**M3 (S1 + ceilings)**: ✅ complete and board-verified (2026-05-24). g_a 1.95× speedup; g_s 1.96× (both pairs on distinct DPU cores after creation-order fix). Byte-identical to S0. nn_only N=2: 1.96× throughput; entropy_only N=2: 1.97× CPU scaling.
+
 Binary: `build_cpp/benchmark_hardware`. Build: same `make -j4` in `build_cpp/` as `inference_hybrid`.
 
-Board-verified: PSNR bit-identical pre/post push — `patch_transforms.hpp` extraction confirmed behavior-preserving.
-
 ```bash
-# Board run (after push + build)
+# S0 sequential baseline
 build_cpp/benchmark_hardware \
     --xmodel active_model/*.xmodel \
     --params active_model/entropy_params \
     --data   data/test_sub500_seed42.npy \
     --config s0 --scenario compress --warmup 5 --iters 50
+
+# S1 channel-parallel (g_a‖g_a, g_s‖g_s)
+build_cpp/benchmark_hardware \
+    --xmodel active_model/*.xmodel \
+    --params active_model/entropy_params \
+    --data   data/test_sub500_seed42.npy \
+    --config s1 --scenario full --warmup 5 --iters 50
+
+# DPU ceiling (N concurrent pipelines)
+build_cpp/benchmark_hardware [paths...] --config nn_only --dpu-cores 2
+
+# CPU entropy ceiling (N concurrent workers)
+build_cpp/benchmark_hardware [paths...] --config entropy_only --entropy-threads 4
 ```
 
 ---

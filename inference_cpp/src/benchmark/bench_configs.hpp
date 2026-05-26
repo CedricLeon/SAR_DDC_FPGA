@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "bench_pipeline.hpp"
 #include "stage_timer.hpp"
@@ -56,6 +57,10 @@ struct BenchResult {
     double wall_time_s           = 0.0;   // total timed window
     int    num_iters             = 0;
     bool   is_shyp               = false; // true = ScaleHyperprior; false = FactorizedPrior
+    // Byte counts recorded after each timed iteration (run_s0 / run_s1 only).
+    // Used to verify that S1 produces byte-identical output to S0 for the same inputs.
+    // Empty for ceiling configs (nn_only, entropy_only).
+    std::vector<int> bytes_per_iter;
 };
 
 // ---------------------------------------------------------------------------
