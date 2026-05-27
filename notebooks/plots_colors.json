@@ -83,5 +83,31 @@
     "gpu": "#0072B2",
     "fpga": "#009E73",
     "_note": "Used in compare_gpu_fpga quality-delta figures. Same as platforms.gpu_dynamic / fpga_dynamic."
+  },
+  "bench_configs": {
+    "s0":           "#003f5c",
+    "s1":           "#0072B2",
+    "nn_only":      "#56B4E9",
+    "entropy_only": "#E69F00",
+    "roofline":     "#D55E00",
+    "_note": "Used in benchmark_hardware_analysis. s0=dark blue (baseline), s1=mid blue (parallel), nn_only=pale blue (DPU ceiling), entropy_only=yellow (CPU ceiling), roofline=orange (theoretical peak)."
+  },
+  "bench_scenarios": {
+    "compress": "#009E73",
+    "full":     "#CC79A7",
+    "_note": "Used in benchmark_hardware_analysis. compress=green (encode only), full=mauve (encode+decode+recon)."
+  },
+  "cpp_stages": {
+    "normalize":        "#aab7b8",
+    "g_a":              "#003f5c",
+    "h_a":              "#0072B2",
+    "h_s":              "#56B4E9",
+    "g_s":              "#a8d4f0",
+    "eb_compress":      "#8B0000",
+    "eb_decompress":    "#CC4444",
+    "gc_compress":      "#D55E00",
+    "gc_decompress":    "#E69F00",
+    "denorm":           "#d5dbdb",
+    "_note": "Used in §2 stage breakdown bars. Matches latency_steps where stages overlap (g_a/h_a/g_s/h_s and EB/GC). normalize/denorm are grey. Okabe-Ito throughout."
   }
 }

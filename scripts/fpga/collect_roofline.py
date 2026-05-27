@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""collect_roofline.py — measure peak DPU FPS per subgraph via xdputil benchmark.
+"""collect_roofline.py — collect xmodel-derived info needed for roofline analysis.
 
 Run ON THE BOARD while the target model is active in active_model/.
 
@@ -7,13 +7,35 @@ Usage:
     python3 collect_roofline.py <model_name>
 
 Output:
-    /home/root/SAR_DDC/bench_results/<model_name>_xdputil_peaks.json
+    /home/root/SAR_DDC/bench_results/<model_name>_xmodel_info.json
 
-Each DPU subgraph is benchmarked with 1 thread for 60 s (xdputil fixed window).
-The subgraph indices are discovered dynamically from `xdputil xmodel -l` — they
-are NOT sequential (USER/CPU subgraphs are interspersed). Functional names
-(g_a, h_a, h_s, g_s) are extracted from the subgraph name field.
+For each DPU subgraph (g_a, h_a, h_s, g_s as applicable):
+  - peak_fps  → measured via `xdputil benchmark -i <idx> 1`, 60 s window
+  - workload_ops, *_bytes → parsed from `xdputil xmodel -l` (the same call that
+    discovers subgraph indices, so no extra invocation)
+
+Resulting JSON schema (nested):
+  {
+    "model_name": "...",
+    "xmodel": "...",
+    "subgraphs": {
+      "g_a": {
+        "index": 1,                  # xmodel subgraph index (for reproducibility)
+        "peak_fps": 27.83,           # measured ceiling, single-thread, zero host overhead
+        "workload_ops": ...,         # MACs reported by xdputil (a "workload" unit)
+        "const_bytes": ...,          # REG_0: INT8 weights footprint
+        "workspace_bytes": ...,      # REG_1: intermediate activations
+        "input_bytes": ...,          # REG_2: input buffer size
+        "output_bytes": ...,         # REG_3: output buffer size
+        "fixpos_in": ..., "fixpos_out": ...   # quantization scales
+      },
+      "etc": ...
+    },
+    "total_workload_ops": ...,       # sum across all DPU subgraphs
+    "total_const_bytes": ...         # sum across all DPU subgraphs
+  }
 """
+
 import json
 import re
 import subprocess
@@ -49,7 +71,21 @@ def list_dpu_subgraphs(xmodel: Path):
                 f"Cannot detect functional name (g_a/h_a/h_s/g_s) for DPU "
                 f"subgraph: {sg['name']!r}. Update FUNC_NAMES or detect_func_name()."
             )
-        dpu_sgs.append({"index": sg["index"], "func": fn, "name": sg["name"]})
+        regs = {ri["name"]: ri for ri in sg.get("reg info", [])}
+        dpu_sgs.append(
+            {
+                "index": sg["index"],
+                "func": fn,
+                "name": sg["name"],
+                "workload_ops": sg.get("workload", 0),
+                "const_bytes": regs.get("REG_0", {}).get("size", 0),
+                "workspace_bytes": regs.get("REG_1", {}).get("size", 0),
+                "input_bytes": regs.get("REG_2", {}).get("size", 0),
+                "output_bytes": regs.get("REG_3", {}).get("size", 0),
+                "fixpos_in": sg.get("input_tensor", [{}])[0].get("fixpos"),
+                "fixpos_out": sg.get("output_tensor", [{}])[0].get("fixpos"),
+            }
+        )
     if not dpu_sgs:
         raise RuntimeError(f"No DPU subgraphs found in {xmodel}")
     return dpu_sgs
@@ -83,7 +119,7 @@ def main():
         raise RuntimeError(f"Expected exactly one .xmodel in {active}, found: {xmodels}")
     xmodel = xmodels[0]
 
-    outfile = BOARD_ROOT / "bench_results" / f"{model_name}_xdputil_peaks.json"
+    outfile = BOARD_ROOT / "bench_results" / f"{model_name}_xmodel_info.json"
     outfile.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"model:  {model_name}")
@@ -93,16 +129,38 @@ def main():
     print(f"DPU subgraphs: {[(s['func'], s['index']) for s in dpu_sgs]}")
     print()
 
-    peaks = {}
+    subgraphs = {}
     for sg in dpu_sgs:
         print(f"--- {sg['func']} (xmodel subgraph index {sg['index']}) --- ~60 s")
         fps = benchmark_subgraph(xmodel, sg["index"])
-        peaks[sg["func"]] = fps
-        print(f"    {fps:.3f} fps\n")
+        print(
+            f"    peak {fps:.3f} fps  ·  "
+            f"{sg['workload_ops']:,} ops  ·  "
+            f"{sg['const_bytes']:,} const B\n"
+        )
+        subgraphs[sg["func"]] = {
+            "index": sg["index"],
+            "peak_fps": fps,
+            "workload_ops": sg["workload_ops"],
+            "const_bytes": sg["const_bytes"],
+            "workspace_bytes": sg["workspace_bytes"],
+            "input_bytes": sg["input_bytes"],
+            "output_bytes": sg["output_bytes"],
+            "fixpos_in": sg["fixpos_in"],
+            "fixpos_out": sg["fixpos_out"],
+        }
 
-    out = {"model_name": model_name, "xmodel": str(xmodel), **peaks}
+    out = {
+        "model_name": model_name,
+        "xmodel": str(xmodel),
+        "subgraphs": subgraphs,
+        "total_workload_ops": sum(s["workload_ops"] for s in subgraphs.values()),
+        "total_const_bytes": sum(s["const_bytes"] for s in subgraphs.values()),
+    }
     outfile.write_text(json.dumps(out, indent=2) + "\n")
     print(f"Written: {outfile}")
+    print(f"  total_workload_ops = {out['total_workload_ops']:,}")
+    print(f"  total_const_bytes  = {out['total_const_bytes']:,}")
 
 
 if __name__ == "__main__":
