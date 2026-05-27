@@ -249,7 +249,24 @@ int main(int argc, char** argv)
         nlohmann::json out;
         out["config"]           = config_name;
         out["scenario"]         = scenario_str;
-        out["arch"]             = result.is_shyp ? "SHyp" : "FP";
+        // Derive arch from active_model/manifest.json ("model_name" field prefix).
+        // The xmodel filename cannot distinguish ResSHyp from SHyp (both compile
+        // to ResidualScaleHyperpriorDPUWrapper_pt.xmodel), but manifest.json
+        // always carries the exact model name (e.g. "ResSHyp-relu_s0_L1000_pt").
+        {
+            fs::path manifest = xmodel_path.parent_path() / "manifest.json";
+            if (!fs::exists(manifest))
+                throw std::runtime_error("manifest.json not found at " + manifest.string()
+                    + " — deploy the model with deploy.py before benchmarking");
+            std::ifstream mf(manifest);
+            auto mj = nlohmann::json::parse(mf);
+            std::string model_name = mj.at("model_name").get<std::string>();
+            auto dash = model_name.find('-');
+            if (dash == std::string::npos)
+                throw std::runtime_error("manifest.json model_name has unexpected format: '"
+                    + model_name + "' (expected e.g. 'ResSHyp-relu_s0_L1000_pt')");
+            out["arch"] = model_name.substr(0, dash);
+        }
         out["xmodel"]           = xmodel_str;
         out["params"]           = params_str;
         out["dpu_cores"]        = dpu_cores;

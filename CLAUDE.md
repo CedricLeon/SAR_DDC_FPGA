@@ -137,26 +137,30 @@ Profile the sequential pipeline first to get a latency breakdown (DPU vs CPU ent
 
 Binary: `build_cpp/benchmark_hardware`. Build: same `make -j4` in `build_cpp/` as `inference_hybrid`.
 
+**Canonical results storage**: `results/benchmark_hardware/<model_name>/<config>_<scenario>[_dpuN][_entN].json`
+
+Arch is auto-detected from `active_model/manifest.json` (`model_name` field prefix).
+Throws an error if manifest is absent or `model_name` format is unexpected.
+
 ```bash
-# S0 sequential baseline
+# Single run (manual, on board)
 build_cpp/benchmark_hardware \
     --xmodel active_model/*.xmodel \
     --params active_model/entropy_params \
     --data   data/test_sub500_seed42.npy \
-    --config s0 --scenario compress --warmup 5 --iters 50
+    --config s0 --scenario compress --warmup 5 --iters 50 \
+    --output /path/to/s0_compress.json
 
-# S1 channel-parallel (g_a‖g_a, g_s‖g_s)
-build_cpp/benchmark_hardware \
-    --xmodel active_model/*.xmodel \
-    --params active_model/entropy_params \
-    --data   data/test_sub500_seed42.npy \
-    --config s1 --scenario full --warmup 5 --iters 50
+# Full sweep for all 4 archs (host-side, ~30-40 min):
+python scripts/fpga/benchmark_sweep.py
+# Options: --models ResSHyp-relu_s0_L1000_pt,FP-relu_s0_L1000_pt
+#          --skip-ceiling  --skip-roofline  --rebuild-cpp  --force
 
-# DPU ceiling (N concurrent pipelines)
-build_cpp/benchmark_hardware [paths...] --config nn_only --dpu-cores 2
+# Manual single-model sweep (on board after deploying):
+python3 /home/root/SAR_DDC/run_benchmarks.py ResSHyp-relu_s0_L1000_pt
 
-# CPU entropy ceiling (N concurrent workers)
-build_cpp/benchmark_hardware [paths...] --config entropy_only --entropy-threads 4
+# Roofline only (on board, ~4 min for SHyp, ~2 min for FP):
+python3 /home/root/SAR_DDC/collect_roofline.py ResSHyp-relu_s0_L1000_pt
 ```
 
 ---
@@ -169,3 +173,4 @@ build_cpp/benchmark_hardware [paths...] --config entropy_only --entropy-threads 
 - **C++ decisions**: provide clear explanations and context in chat.
 - **Destructive actions**: always ask before deleting files, force-pushing, or anything irreversible.
 - **Regressions**: run `make test` after Python edits to catch regressions.
+- **Errors over silent fallbacks**: if code expects a file, field, or format that should always be present (e.g. `manifest.json`, a specific JSON key, a model name pattern), throw an explicit error when it is missing or malformed — never silently fall back to a default. A missed fallback produces wrong results that may go unnoticed; a hard error forces an immediate fix.
