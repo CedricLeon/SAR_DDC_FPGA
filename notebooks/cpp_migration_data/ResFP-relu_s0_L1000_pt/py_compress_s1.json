@@ -1,0 +1,320 @@
+{
+  "platform": "FPGA_ZCU102",
+  "scenario": "compress",
+  "timestamp": "2021-11-20T15:30:06.254187",
+  "n_warmup": 5,
+  "n_iters": 50,
+  "latency_breakdown": {
+    "preprocess": {
+      "mean_s": 4.132400208618492e-06,
+      "std_s": 1.1468733843884373e-07,
+      "median_s": 4.140005330555141e-06,
+      "min_s": 3.930006641894579e-06,
+      "max_s": 4.4800108298659325e-06,
+      "p95_s": 4.299989086575806e-06,
+      "n": 50
+    },
+    "dpu_g_a": {
+      "mean_s": 0.03844574640010251,
+      "std_s": 0.00027031643553208245,
+      "median_s": 0.03839776500535663,
+      "min_s": 0.038172360000316985,
+      "max_s": 0.03997250999964308,
+      "p95_s": 0.03892135000205599,
+      "n": 50
+    },
+    "cpu_eb_compress": {
+      "mean_s": 0.04982608480000636,
+      "std_s": 0.0007182280163965488,
+      "median_s": 0.0498312000054284,
+      "min_s": 0.0490763599955244,
+      "max_s": 0.053380409997771494,
+      "p95_s": 0.050330879996181466,
+      "n": 50
+    }
+  },
+  "latency_total_mean_s": 0.08827596360031749,
+  "latency_total_mean_ms": 88.2759636003175,
+  "latency_dpu_total_mean_ms": 38.44574640010251,
+  "latency_cpu_total_mean_ms": 49.826084800006356,
+  "latency_wall_total_s": 4.417524079995928,
+  "throughput_fps": 11.318557430488548,
+  "avg_compressed_bytes": 8816,
+  "power": {
+    "per_rail": {
+      "VCCOPS3": {
+        "avg_power_w": 0.0,
+        "energy_j": 0.0,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VCCPSDDRPLL": {
+        "avg_power_w": 0.037,
+        "energy_j": 0.162037,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VCCINT": {
+        "avg_power_w": 9.9414,
+        "energy_j": 43.537451,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VCCBRAM": {
+        "avg_power_w": 0.062,
+        "energy_j": 0.271522,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VCCAUX": {
+        "avg_power_w": 0.35,
+        "energy_j": 1.532785,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VCC1V2": {
+        "avg_power_w": 0.025,
+        "energy_j": 0.109485,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VCC3V3": {
+        "avg_power_w": 0.025,
+        "energy_j": 0.109485,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VADJ_FMC": {
+        "avg_power_w": 0.0,
+        "energy_j": 0.0,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "MGTAVCC": {
+        "avg_power_w": 0.025,
+        "energy_j": 0.109485,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "MGTAVTT": {
+        "avg_power_w": 0.025,
+        "energy_j": 0.109485,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VCCPSINTFP": {
+        "avg_power_w": 1.0914,
+        "energy_j": 4.779715,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VCCPSINTLP": {
+        "avg_power_w": 0.682,
+        "energy_j": 2.986549,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VCCPSAUX": {
+        "avg_power_w": 0.025,
+        "energy_j": 0.109485,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VCCPSPLL": {
+        "avg_power_w": 0.037,
+        "energy_j": 0.162037,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "MGTRAVCC": {
+        "avg_power_w": 0.037,
+        "energy_j": 0.162037,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "MGTRAVTT": {
+        "avg_power_w": 0.025,
+        "energy_j": 0.109485,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VCCO_PSDDR_504": {
+        "avg_power_w": 0.2679,
+        "energy_j": 1.173193,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      },
+      "VCCOPS": {
+        "avg_power_w": 0.0294,
+        "energy_j": 0.128806,
+        "n_samples": 136,
+        "duration_s": 4.3794
+      }
+    },
+    "groups_avg_w": {
+      "PL": 10.4034,
+      "PS": 2.1697,
+      "MGT": 0.112,
+      "FMC": 0.0,
+      "DPU_fabric": 10.0034,
+      "PS_compute": 1.7734,
+      "MPSoC": 12.5731,
+      "peripherals": 2.5539,
+      "TBP": 15.239
+    },
+    "board_total_avg_w": 12.6851,
+    "pmbus_rails": {
+      "DDR4_DIMM_VDDQ": {
+        "avg_power_w": 0.5951,
+        "energy_j": 2.631072,
+        "n_samples": 101,
+        "duration_s": 4.4212
+      },
+      "UTIL_3V3": {
+        "avg_power_w": 1.9578,
+        "energy_j": 8.655663,
+        "n_samples": 101,
+        "duration_s": 4.4212
+      },
+      "UTIL_5V0": {
+        "avg_power_w": 0.001,
+        "energy_j": 0.004408,
+        "n_samples": 101,
+        "duration_s": 4.4212
+      }
+    },
+    "board_total_extended_avg_w": 15.239,
+    "idle_baseline": {
+      "VCCOPS3": {
+        "avg_power_w": 0.0,
+        "energy_j": 0.0,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VCCPSDDRPLL": {
+        "avg_power_w": 0.037,
+        "energy_j": 0.369859,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VCCINT": {
+        "avg_power_w": 6.0433,
+        "energy_j": 60.410035,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VCCBRAM": {
+        "avg_power_w": 0.062,
+        "energy_j": 0.619764,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VCCAUX": {
+        "avg_power_w": 0.35,
+        "energy_j": 3.49867,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VCC1V2": {
+        "avg_power_w": 0.025,
+        "energy_j": 0.249905,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VCC3V3": {
+        "avg_power_w": 0.025,
+        "energy_j": 0.249905,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VADJ_FMC": {
+        "avg_power_w": 0.0,
+        "energy_j": 0.0,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "MGTAVCC": {
+        "avg_power_w": 0.025,
+        "energy_j": 0.249905,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "MGTAVTT": {
+        "avg_power_w": 0.025,
+        "energy_j": 0.249905,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VCCPSINTFP": {
+        "avg_power_w": 0.9793,
+        "energy_j": 9.789704,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VCCPSINTLP": {
+        "avg_power_w": 0.675,
+        "energy_j": 6.747434,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VCCPSAUX": {
+        "avg_power_w": 0.025,
+        "energy_j": 0.249905,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VCCPSPLL": {
+        "avg_power_w": 0.037,
+        "energy_j": 0.369859,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "MGTRAVCC": {
+        "avg_power_w": 0.037,
+        "energy_j": 0.369859,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "MGTRAVTT": {
+        "avg_power_w": 0.025,
+        "energy_j": 0.249905,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VCCO_PSDDR_504": {
+        "avg_power_w": 0.1977,
+        "energy_j": 1.976583,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      },
+      "VCCOPS": {
+        "avg_power_w": 0.0293,
+        "energy_j": 0.292694,
+        "n_samples": 499,
+        "duration_s": 9.9962
+      }
+    },
+    "idle_board_total_avg_w": 8.5976,
+    "idle_pmbus_rails": {
+      "DDR4_DIMM_VDDQ": {
+        "avg_power_w": 0.4797,
+        "energy_j": 4.78687,
+        "n_samples": 250,
+        "duration_s": 9.9795
+      },
+      "UTIL_3V3": {
+        "avg_power_w": 1.9126,
+        "energy_j": 19.086464,
+        "n_samples": 250,
+        "duration_s": 9.9795
+      },
+      "UTIL_5V0": {
+        "avg_power_w": 0.0001,
+        "energy_j": 0.000859,
+        "n_samples": 250,
+        "duration_s": 9.9795
+      }
+    },
+    "idle_board_total_extended_avg_w": 10.99
+  }
+}
