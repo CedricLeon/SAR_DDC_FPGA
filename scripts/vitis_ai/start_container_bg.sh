@@ -6,7 +6,7 @@
 # the background and can be targeted with `docker exec` from deploy.py.
 #
 # Can be run from any directory:
-#   ./scripts/vitis-ai-automation/start_container_bg.sh
+#   ./scripts/vitis_ai/start_container_bg.sh
 
 set -e
 

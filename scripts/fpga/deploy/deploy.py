@@ -3,7 +3,7 @@
 
 Runs from the DDC_FPGA project root with the SAR_DDC conda environment:
 
-    python scripts/fpga/deploy.py [options]
+    python scripts/fpga/deploy/deploy.py [options]
 
 Phases:
     0 — Container health  : ensure vai_container is running and GPU-healthy
@@ -60,8 +60,8 @@ VAI_IMAGE = "xilinx/vitis-ai-pytorch-gpu:3.5.0.001-1eed93cde"
 CONTAINER_NAME = "vai_container"
 
 ARCH_JSON_LOOKUP = {
-    "ZCU102": "DDC_FPGA/scripts/fpga/DPU_archs/ZCU102_DPUCZDX8G_ISA1_B4096_arch.json",
-    "Leopard": "DDC_FPGA/scripts/fpga/DPU_archs/KP-Labs_Leopard_DPUCZDX8G_ISA1_B1024_arch.json",
+    "ZCU102": "DDC_FPGA/scripts/fpga/deploy/DPU_archs/ZCU102_DPUCZDX8G_ISA1_B4096_arch.json",
+    "Leopard": "DDC_FPGA/scripts/fpga/deploy/DPU_archs/KP-Labs_Leopard_DPUCZDX8G_ISA1_B1024_arch.json",
 }
 TARGET_LOOKUP = {
     "ZCU102": "DPUCZDX8G_ISA1_B4096",
@@ -86,12 +86,12 @@ PHASE1_VERBOSE = False  # Docker / Vitis-AI compile output (very verbose)
 PHASE3_VERBOSE = True  # FPGA inference output
 
 # ---- Paths (absolute, resolved relative to this file's location) ----
-# deploy.py lives at DDC_FPGA/scripts/fpga/deploy.py
-PROJECT_ROOT = Path(__file__).resolve().parents[2]  # .../DDC_FPGA/
+# deploy.py lives at DDC_FPGA/scripts/fpga/deploy/deploy.py
+PROJECT_ROOT = rootutils.find_root(__file__, indicator=".project-root")  # .../DDC_FPGA/
 VITIS_AI_ROOT = PROJECT_ROOT.parent  # .../Vitis-AI/
 
 ACTIVE_MODEL_LINK = PROJECT_ROOT / "results" / "fpga" / "active_model"
-START_CONTAINER_SCRIPT = PROJECT_ROOT / "scripts" / "vitis-ai-automation" / "start_container_bg.sh"
+START_CONTAINER_SCRIPT = PROJECT_ROOT / "scripts" / "vitis_ai" / "start_container_bg.sh"
 FPGA_CPP_SRC_LOCAL = PROJECT_ROOT / "inference_cpp" / "src"
 
 # ============================================================
@@ -205,7 +205,7 @@ def _export_entropy_params(ckpt_path: Path, output_path: Path, cfg: DictConfig) 
     ``"gc_scale_table" in data`` so the same filename is safe for both topologies.
     """
     # Deferred src imports — only valid in SAR_DDC env
-    _project_root = Path(__file__).resolve().parents[2]
+    _project_root = PROJECT_ROOT
     if str(_project_root) not in sys.path:
         sys.path.insert(0, str(_project_root))
 
@@ -585,7 +585,7 @@ def phase_compile(
     print(f"  Wrapper : {dpu_wrapper_name}")
 
     # Paths relative to /workspace (used for container commands)
-    model_quant_cmd = f"python DDC_FPGA/scripts/fpga/model_quant.py --run_dir {run_dir}"
+    model_quant_cmd = f"python DDC_FPGA/scripts/fpga/deploy/model_quant.py --run_dir {run_dir}"
     xmodel_int = f"quantize_result/{dpu_wrapper_name}_int.xmodel"
     compiled_dir_rel = f"{dpu_wrapper_name}_pt"
 

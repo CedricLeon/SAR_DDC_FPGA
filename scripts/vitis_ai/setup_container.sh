@@ -1,8 +1,8 @@
 #!/bin/bash
-# Run as: user@bart:~/dev/Vitis-AI/DDC_FPGA$ ./scripts/vitis-ai-automation/setup_container.sh
+# Run as: user@bart:~/dev/Vitis-AI/DDC_FPGA$ ./scripts/vitis_ai/setup_container.sh
 
 # 1. Determine the Vitis-AI root directory
-# Assuming this script is located at DDC_FPGA/scripts/vitis-ai-automation/setup_container.sh
+# Assuming this script is located at DDC_FPGA/scripts/vitis_ai/setup_container.sh
 # We need to go up 3 levels to reach Vitis-AI root where docker_run.sh is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 # Adjust the level of '..' based on where you actually put this script relative to Vitis-AI root

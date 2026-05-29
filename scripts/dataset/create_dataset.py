@@ -22,18 +22,18 @@ import argparse
 import gc
 import json
 import logging
-import sys
 from datetime import datetime
 from pathlib import Path
 
 import h5py
 import hydra
 import numpy as np
+import rootutils
 import torch
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=False)
 from src.models.merlin_module import MerlinModule
 from src.models.sar_ddc_module import SARDDCModule
 from src.utils.constants import AMP_MAX, AMP_MIN

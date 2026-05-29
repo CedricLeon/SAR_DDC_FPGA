@@ -11,7 +11,7 @@ Runs on the HOST.  For each model:
 
 Usage:
     conda activate DDC_FPGA
-    python scripts/fpga/benchmark_sweep.py [options]
+    python scripts/fpga/benchmark/benchmark_sweep.py [options]
 
 Options:
     --models M1,M2,...  comma-separated model names  [default: all 4 below]
@@ -34,8 +34,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS_DIR = Path(__file__).resolve().parent
+import rootutils
+
+REPO_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=False)
+SCRIPTS_DIR = (
+    Path(__file__).resolve().parent
+)  # scripts/fpga/benchmark/ (run_benchmarks.py, collect_roofline.py)
+DEPLOY_DIR = SCRIPTS_DIR.parent / "deploy"  # scripts/fpga/deploy/ (deploy.py)
 BOARD = "ZCU102"
 BOARD_ROOT = "/home/root/SAR_DDC"
 
@@ -129,7 +134,7 @@ def main():
         run(
             [
                 sys.executable,
-                str(SCRIPTS_DIR / "deploy.py"),
+                str(DEPLOY_DIR / "deploy.py"),
                 "--model-name",
                 model,
                 "--skip-compile",

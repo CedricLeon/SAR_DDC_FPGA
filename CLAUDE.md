@@ -60,13 +60,13 @@ python src/train.py experiment=<name> debug=fdr   # fast dev run (1 batch smoke 
 ### FPGA Deploy (single model)
 
 ```bash
-python scripts/fpga/deploy.py --run-dir DDC_FPGA/logs/train/sar_ddc/hyperprior/runs/<date>/<id>
+python scripts/fpga/deploy/deploy.py --run-dir DDC_FPGA/logs/train/sar_ddc/hyperprior/runs/<date>/<id>
 # Skip phases selectively:
-python scripts/fpga/deploy.py --run-dir <...> --skip-compile --skip-transfer  # infer + fetch only
+python scripts/fpga/deploy/deploy.py --run-dir <...> --skip-compile --skip-transfer  # infer + fetch only
 # Rebuild C++ binary on board before inference (Phase 3 always uses the C++ binary):
-python scripts/fpga/deploy.py --run-dir <...> --skip-compile --rebuild-cpp
+python scripts/fpga/deploy/deploy.py --run-dir <...> --skip-compile --rebuild-cpp
 # Skip 100-patch test-set sweep, run only Hamburg tile eval (fast tile re-evaluation):
-python scripts/fpga/deploy.py --run-dir <...> --skip-compile --skip-test-set
+python scripts/fpga/deploy/deploy.py --run-dir <...> --skip-compile --skip-test-set
 ```
 
 ### C++ Build on Board (manual)
@@ -153,7 +153,7 @@ build_cpp/benchmark_hardware \
     --output /path/to/s0_compress.json
 
 # Full sweep for all 4 archs (host-side, ~30-40 min):
-python scripts/fpga/benchmark_sweep.py
+python scripts/fpga/benchmark/benchmark_sweep.py
 # Options: --models ResSHyp-relu_s0_L1000_pt,FP-relu_s0_L1000_pt
 #          --skip-ceiling  --skip-roofline  --rebuild-cpp  --force
 

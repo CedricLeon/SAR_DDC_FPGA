@@ -52,7 +52,7 @@ Since the skill always selects an already-compiled model by name, always add `--
 not the selected model — which is wrong and wastes ~1 min of compile time.)
 
 ```bash
-python scripts/fpga/deploy.py \
+python scripts/fpga/deploy/deploy.py \
     --model-name <model> \
     [--skip-compile] \
     --skip-infer \

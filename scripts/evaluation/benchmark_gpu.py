@@ -18,7 +18,7 @@ By default the script runs both GPU and CPU measurements sequentially.
 Use ``--no-gpu`` or ``--no-cpu`` to skip one.
 
 Usage:
-    python scripts/benchmark_gpu.py --ckpt <path/to/checkpoint.ckpt> --scenario full [options]
+    python scripts/evaluation/benchmark_gpu.py --ckpt <path/to/checkpoint.ckpt> --scenario full [options]
 
 Output: ``results/<ckpt_name>/benchmark_<device>_<scenario>.json``
 """
@@ -43,9 +43,7 @@ import rootutils
 import torch
 from torch import Tensor
 
-PROJECT_ROOT = rootutils.setup_root(
-    Path(__file__).resolve().parent.parent, indicator=".project-root", pythonpath=True
-)
+PROJECT_ROOT = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from omegaconf import DictConfig, OmegaConf  # noqa: E402
 

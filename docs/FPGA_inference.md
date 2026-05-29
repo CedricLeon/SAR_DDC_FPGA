@@ -28,9 +28,9 @@ metrics (bpp/PSNR/SSIM/ENL/EPD), and writes `metrics.json` + reconstructions.
 | `inference_cpp/src/` | All C++ inference sources (see §6) |
 | `build_cpp/inference_hybrid` | The inference binary on the board |
 | `inference_cpp/src/rans/` | pybind11-free rANS fork (entropy codec) |
-| `scripts/fpga/deploy.py` | Host orchestrator: quantize → compile → export params → transfer → run C++ → fetch |
-| `scripts/fpga/batch_deploy.py` | Batch wrapper over `deploy.py` (rebuilds the C++ binary once per batch) |
-| `scripts/fpga/model_quant.py` | PTQ (calibration + deploy xmodel) inside the Vitis-AI Docker |
+| `scripts/fpga/deploy/deploy.py` | Host orchestrator: quantize → compile → export params → transfer → run C++ → fetch |
+| `scripts/fpga/deploy/batch_deploy.py` | Batch wrapper over `deploy.py` (rebuilds the C++ binary once per batch) |
+| `scripts/fpga/deploy/model_quant.py` | PTQ (calibration + deploy xmodel) inside the Vitis-AI Docker |
 
 The deployable model lives in `active_model/` on the board: the `.xmodel` + an `entropy_params/`
 directory of individual `.npy` CDF tables.
@@ -195,6 +195,11 @@ rANS collapsed the entropy cost. Full numbers: `python_to_cpp_migration_journal.
 - **NEON-vectorize `normalize` + `denorm`** (`patch_transforms.hpp`): ~18.7 ms/patch of scalar
   `std::log`/`exp` (131K calls), now ~10% of the full pipeline (much larger share for FP). Highest-value
   CPU optimization.
+- **Datatype/precision audit (inference + benchmark).** `denorm_to_lina()` runs in **double** to match
+  the Python float64 reference (§4/§8) — but it is unclear we need that precision. Study the dtypes used
+  throughout the C++ pipeline (input data, intermediate buffers, denorm math) and check whether float32
+  (or NEON-friendly types) gives the same metrics within tolerance while saving compute. Small,
+  self-contained study; pairs naturally with the NEON work above.
 - **Full-image streaming inference**: accept a full SAR image (arbitrary size), pad to ×256, extract
   an overlapping patch grid, run a producer-consumer pipeline (overlap patch N+1 DPU with patch N
   entropy), blend, report quality + throughput — the realistic "receive image → compress → transmit

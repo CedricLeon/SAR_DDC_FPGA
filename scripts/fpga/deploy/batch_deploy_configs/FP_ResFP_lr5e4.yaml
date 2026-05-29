@@ -5,7 +5,7 @@
 # lr=5e-5 mini-sweep (tagged "lr_search").
 #
 # Usage:
-#   python scripts/fpga/batch_deploy.py --config FP_ResFP_lr5e4 --tag fp_resfp_lr5e4_cpp
+#   python scripts/fpga/deploy/batch_deploy.py --config FP_ResFP_lr5e4 --tag fp_resfp_lr5e4_cpp
 
 description: "FP + ResFP — lr=5e-4 retrain (120 models)"
 

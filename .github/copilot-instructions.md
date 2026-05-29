@@ -30,7 +30,7 @@ Three environments are used. Each has a distinct Python version and set of tasks
 - Python 3.11 features are fine here.
 
 ### 2. Quantization & Compilation — Vitis-AI Docker (Python 3.8)
-- **Managed automatically** by `scripts/fpga/deploy.py` — no need to start the container manually.
+- **Managed automatically** by `scripts/fpga/deploy/deploy.py` — no need to start the container manually.
 - **Tasks**: PTQ quantization, DPU compilation, `xir` graph manipulation, entropy model export, file packaging for the board.
 - **Python 3.8 strict** — any code that runs here must be compatible:
   - ✅ `from typing import Union, Optional, List, Tuple`

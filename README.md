@@ -16,7 +16,7 @@ Implementation of [Amao-Oliva et al. (2024)](https://www.sciencedirect.com/scien
 
 ### Code quality / housekeeping
 
-- [ ] Reorganize `scripts/` root: `benchmark_gpu.py`, `debug_training.py`, `schedule_*.sh`, `update_wandb_runs.py`, `compare_FPGA_to_GPU/` are scattered at the top level. Should be grouped into subdirectories (e.g., `scripts/training/`, `scripts/eval/`).
+- [x] Reorganize `scripts/` into `dataset/`, `training/`, `evaluation/`, `fpga/{deploy,benchmark}/`, `vitis_ai/`.
 
 ### Planned experiments
 
@@ -47,13 +47,13 @@ DDC_FPGA/
 │       ├── active_model -> ...    # Symlink to the currently deployed model
 │       └── compiled_models/       # Compiled xmodels + inference results, one dir per model
 ├── scripts/
-│   ├── update_wandb_runs.py       # Evaluation & W&B run sync (replaces deprecated src/evaluate.py)
-│   ├── benchmark_gpu.py           # GPU latency benchmark
-│   ├── (+ other scattered scripts — TODO: reorganize)
 │   ├── dataset/                   # create_dataset.py, compute_stats.py, convert_h5_to_np.py
-│   ├── fpga/                      # deploy.py, batch_deploy.py, model_quant.py (deploy);
-│   │                              #   benchmark_sweep.py, run_benchmarks.py, collect_roofline.py (benchmark)
-│   └── vitis-ai-automation/       # Docker container management scripts
+│   ├── training/                  # debug_training.py, schedule_training.sh
+│   ├── evaluation/                # benchmark_gpu.py, update_wandb_runs.py
+│   ├── fpga/
+│   │   ├── deploy/                # deploy.py, batch_deploy.py, model_quant.py, DPU_archs/, batch_deploy_configs/
+│   │   └── benchmark/             # benchmark_sweep.py, run_benchmarks.py, collect_roofline.py
+│   └── vitis_ai/                  # Docker container management scripts
 ├── src/                           # Training source code
 │   ├── train.py                   # Main training entry point (Hydra)
 │   ├── data/                      # LightningDataModule
@@ -126,23 +126,23 @@ See [docs/Method.md](docs/Method.md) for model architecture, training strategy, 
 
 ### 3 · FPGA deployment — single run
 
-**Script**: `scripts/fpga/deploy.py`
+**Script**: `scripts/fpga/deploy/deploy.py`
 **When**: Compile + transfer + infer a single training checkpoint to the ZCU102.
 **Requires**: Vitis-AI Docker container (started automatically), passwordless SSH to ZCU102.
 
 ```bash
 # Full pipeline (compile → transfer → infer → fetch)
-python scripts/fpga/deploy.py --run-dir DDC_FPGA/logs/train/sar_ddc/hyperprior/runs/<date>/<id>
+python scripts/fpga/deploy/deploy.py --run-dir DDC_FPGA/logs/train/sar_ddc/hyperprior/runs/<date>/<id>
 
 # Skip phases selectively
-python scripts/fpga/deploy.py --run-dir <...> \
+python scripts/fpga/deploy/deploy.py --run-dir <...> \
     --skip-compile          # skip quantization + xmodel generation
     --skip-transfer         # skip SCP to board
     --skip-infer            # skip board inference
     --skip-fetch            # skip fetching results back
 
 # Optional compile flags
-python scripts/fpga/deploy.py --run-dir <...> \
+python scripts/fpga/deploy/deploy.py --run-dir <...> \
     --arch ZCU102           # or Leopard (default: ZCU102)
     --inspect               # run DPU inspector before calibration
     --eval-float            # evaluate float model
@@ -158,21 +158,21 @@ See [docs/FPGA_inference.md](docs/FPGA_inference.md) for the on-board inference 
 
 ### 4 · FPGA deployment — batch
 
-**Script**: `scripts/fpga/batch_deploy.py`
+**Script**: `scripts/fpga/deploy/batch_deploy.py`
 **When**: Compile + deploy a set of W&B runs matching filters defined in `FILTERS_CONFIG`.
 
 ```bash
 # Preview matched runs (dry run)
-python scripts/fpga/batch_deploy.py --tag <label> --dry-run
+python scripts/fpga/deploy/batch_deploy.py --tag <label> --dry-run
 
 # Deploy all matching runs (skips already-compiled models)
-python scripts/fpga/batch_deploy.py --tag <label>
+python scripts/fpga/deploy/batch_deploy.py --tag <label>
 
 # Deploy specific run IDs directly (bypasses FILTERS_CONFIG)
-python scripts/fpga/batch_deploy.py --tag <label> --run-ids <id1> <id2>
+python scripts/fpga/deploy/batch_deploy.py --tag <label> --run-ids <id1> <id2>
 
 # Force recompile even if model already exists
-python scripts/fpga/batch_deploy.py --tag <label> --force-recompile
+python scripts/fpga/deploy/batch_deploy.py --tag <label> --force-recompile
 ```
 
 Supports all phase-skip and compile flags from `deploy.py` (`--skip-transfer`, `--arch`, `--eval-float`, etc.).
@@ -185,20 +185,20 @@ See [docs/FPGA_inference.md](docs/FPGA_inference.md) for the on-board inference 
 See [docs/FPGA_benchmark.md](docs/FPGA_benchmark.md) for the complete technical reference
 (hardware, configs, methodology, results, future work).
 
-**Script**: `scripts/fpga/benchmark_sweep.py` (host-side; drives the C++ `benchmark_hardware` binary).
+**Script**: `scripts/fpga/benchmark/benchmark_sweep.py` (host-side; drives the C++ `benchmark_hardware` binary).
 **When**: Measure FPGA latency, throughput, per-stage breakdown, and power across all 4 architectures.
 **Requires**: compiled models in `results/fpga/compiled_models/`; SSH alias `ZCU102` configured.
 
 ```bash
 # Full FPGA sweep — all 4 archs (deploy + benchmark + roofline + fetch), ~30-40 min
-python scripts/fpga/benchmark_sweep.py
+python scripts/fpga/benchmark/benchmark_sweep.py
 
 # Subset / options
-python scripts/fpga/benchmark_sweep.py --models ResSHyp-relu_s0_L1000_pt,FP-relu_s0_L1000_pt \
+python scripts/fpga/benchmark/benchmark_sweep.py --models ResSHyp-relu_s0_L1000_pt,FP-relu_s0_L1000_pt \
     --skip-ceiling --skip-roofline --rebuild-cpp --force
 ```
 
-> GPU/CPU benchmarking (`scripts/benchmark_gpu.py`) and unified cross-platform comparison are
+> GPU/CPU benchmarking (`scripts/evaluation/benchmark_gpu.py`) and unified cross-platform comparison are
 > legacy/pending — see [docs/GPU_benchmark.md](docs/GPU_benchmark.md) and the unified-runner TODO
 > in [docs/FPGA_benchmark.md](docs/FPGA_benchmark.md).
 

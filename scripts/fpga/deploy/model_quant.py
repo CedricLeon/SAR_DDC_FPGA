@@ -5,7 +5,7 @@ container). Never imported directly — the subprocess / CLI boundary is intenti
 this script depends on pytorch_nndct, which is only available inside the container.
 
 Usage (via deploy.py / docker exec):
-    python DDC_FPGA/scripts/fpga/model_quant.py --run_dir <RUN_DIR> --quant_mode calib ...
+    python DDC_FPGA/scripts/fpga/deploy/model_quant.py --run_dir <RUN_DIR> --quant_mode calib ...
 
 Modes:
     float  — evaluate float model (optionally inspect for DPU compatibility)
@@ -32,7 +32,9 @@ from tqdm import tqdm
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 # ---- Project root setup (must happen before src imports) ----
-project_root = Path(__file__).resolve().parent.parent.parent
+# NOTE: manual .project-root walk (not rootutils) — this script runs INSIDE the Vitis-AI Docker
+# container, which does not have rootutils installed (see CONTAINER_PIP_DEPS in deploy.py).
+project_root = next(p for p in Path(__file__).resolve().parents if (p / ".project-root").exists())
 os.environ["PROJECT_ROOT"] = str(project_root)
 sys.path.append(str(project_root))
 from src.models.components.dpu_wrapper import (  # noqa: E402

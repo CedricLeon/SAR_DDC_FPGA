@@ -10,11 +10,10 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import rootutils
 
-# Add parent directory to path to import from src
-project_root = Path(__file__).resolve().parent.parent.parent
-print(f"Adding {project_root} to sys.path for imports")
-sys.path.append(str(project_root))
+# Set + add project root to sys.path (rootutils auto-detects the .project-root marker)
+project_root = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=False)
 from src.utils.sar_utils import load_cosar, symmetrize  # noqa: E402
 
 

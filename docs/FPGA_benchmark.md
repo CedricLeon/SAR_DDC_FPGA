@@ -68,7 +68,7 @@ wide 256-channel kernels. **Per-patch DPU calls: 6** (g_a×2, h_a, h_s, g_s×2) 
 **Memory per subgraph** (bytes): g_a CONST 3.56 MB / WORKSPACE 6.0 MB; g_s 3.14 MB / 7.87 MB;
 h_a 4.70 MB / 20 KB; h_s 3.01 MB / 20 KB. Total weights ~14.4 MB — negligible vs 4 GB DDR4.
 
-**Collection:** `scripts/fpga/collect_roofline.py` (board) runs `xdputil benchmark` + parses
+**Collection:** `scripts/fpga/benchmark/collect_roofline.py` (board) runs `xdputil benchmark` + parses
 `xdputil xmodel -l` per subgraph → `results/benchmark_hardware/_roofline/<model>_xmodel_info.json`
 (`peak_fps`, `workload_ops`, `const/workspace/input/output_bytes`, `fixpos_*`, totals). Consumed by
 `benchmark_hardware_analysis.ipynb` for the Williams roofline (arithmetic intensity × throughput vs
@@ -107,7 +107,7 @@ empirically (concurrent wall-time ≈ serial/N). **S1 creation-order is critical
 build_cpp/benchmark_hardware --xmodel active_model/*.xmodel --params active_model/entropy_params \
     --data data/test_sub500_seed42.npy --config s0 --scenario compress \
     --warmup 5 --iters 50 [--power --idle-baseline-s 10] --output out.json
-# host-side sweep over all 4 archs: scripts/fpga/benchmark_sweep.py
+# host-side sweep over all 4 archs: scripts/fpga/benchmark/benchmark_sweep.py
 ```
 
 ---

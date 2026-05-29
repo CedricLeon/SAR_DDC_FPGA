@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Batch FPGA deployment: fetch W&B runs matching filters and deploy each via deploy.py.
 
-    python scripts/fpga/batch_deploy.py --config scripts/fpga/batch_deploy_configs/<cfg>.yaml --tag <label> [options]
-    python scripts/fpga/batch_deploy.py --config scripts/fpga/batch_deploy_configs/<cfg>.yaml --tag <label> --dry-run
-    python scripts/fpga/batch_deploy.py --tag <label> --run-ids abc123 def456 ...
+    python scripts/fpga/deploy/batch_deploy.py --config scripts/fpga/deploy/batch_deploy_configs/<cfg>.yaml --tag <label> [options]
+    python scripts/fpga/deploy/batch_deploy.py --config scripts/fpga/deploy/batch_deploy_configs/<cfg>.yaml --tag <label> --dry-run
+    python scripts/fpga/deploy/batch_deploy.py --tag <label> --run-ids abc123 def456 ...
 
-Pass --config with a path to a YAML filter config (see scripts/fpga/batch_deploy_configs/).
+Pass --config with a path to a YAML filter config (see scripts/fpga/deploy/batch_deploy_configs/).
 Either --config or --run-ids must be provided.
 For each run:
   - If compiled model already exists in compiled_models/ → skip compile (default).
@@ -64,7 +64,7 @@ def load_filters_config(config_path: str) -> Tuple[str, List[Tuple]]:
     """Load a YAML filter config and return (description, filters_as_tuples).
 
     ``config_path`` must be a path to a YAML file (absolute or relative to CWD).
-    Filter configs live in scripts/fpga/batch_deploy_configs/.
+    Filter configs live in scripts/fpga/deploy/batch_deploy_configs/.
 
     Each YAML filter entry has keys ``field``, ``op``, ``value`` and is
     converted to the tuple ``(field, op, value)`` expected by
@@ -279,7 +279,7 @@ def _print_summary(results: List[RunResult]) -> None:
         print(f"\n  \033[31mFailed run IDs ({len(failed)}):\033[0m")
         print(f"    {ids_str}")
         print("  \u2192 Redeploy with:")
-        print(f"    python scripts/fpga/batch_deploy.py --tag <tag> --run-ids {ids_str}")
+        print(f"    python scripts/fpga/deploy/batch_deploy.py --tag <tag> --run-ids {ids_str}")
 
 
 # ============================================================
@@ -309,7 +309,7 @@ def main() -> None:
         default=None,
         help=(
             "Path to a YAML filter config (absolute or relative to CWD). "
-            "Configs live in scripts/fpga/batch_deploy_configs/. "
+            "Configs live in scripts/fpga/deploy/batch_deploy_configs/. "
             "Required unless --run-ids is given."
         ),
     )
