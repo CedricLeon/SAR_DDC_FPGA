@@ -48,7 +48,7 @@ Patches are stored **raw** (no normalization). Log-amplitude normalisation is ap
 
 ### 3. Convert test split to NumPy for FPGA evaluation
 
-`scripts/dataset/convert_h5_to_np.py` extracts the test-split patches from an HDF5 file into a single `.npy` array — the format expected by the FPGA inference scripts (`scripts/fpga/inference_hybrid.py`).
+`scripts/dataset/convert_h5_to_np.py` extracts the test-split patches from an HDF5 file into a single `.npy` array — the format expected by the FPGA inference binary (`build_cpp/inference_hybrid`).
 
 ```bash
 python scripts/dataset/convert_h5_to_np.py \

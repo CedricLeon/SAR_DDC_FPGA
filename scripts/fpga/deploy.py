@@ -194,11 +194,11 @@ def _get_dpu_wrapper_name(cfg: DictConfig) -> str:
 
 
 def _export_entropy_params(ckpt_path: Path, output_path: Path, cfg: DictConfig) -> None:
-    """Export entropy model parameters to a .npz file for FPGA inference.
+    """Export entropy model parameters as individual .npy files for FPGA inference.
 
     Instantiates the correct model class from the pre-loaded Hydra config, calls .update() to
-    populate the CDF/quantile tables, then saves the tables required by
-    entropy_models_inference.py on the FPGA.
+    populate the CDF/quantile tables, then saves the tables (as `entropy_params/*.npy`) required
+    by the C++ inference binary.
 
     Both model families write EB params (always present). GC params are written only for
     ResidualScaleHyperpriorPatched. inference_hybrid.py gates GC loading on
@@ -278,11 +278,8 @@ def _export_entropy_params(ckpt_path: Path, output_path: Path, cfg: DictConfig) 
             gc_offset=gc_offset,
         )
 
-    np.savez(output_path, **save_dict)
-    print(f"Entropy parameters saved to {output_path}.")
-
-    # Also write individual .npy files in entropy_params/ directory so the C++
-    # inference binary can load them without an NPZ parser.
+    # Write individual .npy files into entropy_params/ — the C++ inference binary loads these
+    # directly (no NPZ archive: the Python pipeline that consumed entropy_params.npz is removed).
     npy_dir = output_path.parent / "entropy_params"
     npy_dir.mkdir(parents=True, exist_ok=True)
     for name, arr in save_dict.items():
@@ -650,7 +647,7 @@ def phase_compile(
     print("\n--- 1.8: Export entropy parameters (host) ---")
     _export_entropy_params(
         ckpt_path=run_dir_host / "checkpoints" / "last.ckpt",
-        output_path=compiled_dir_abs / "entropy_params.npz",
+        output_path=compiled_dir_abs / "entropy_params",
         cfg=cfg,
     )
 
@@ -704,37 +701,12 @@ def _set_active_model_symlink(model_name: str) -> None:
 # ============================================================
 
 
-def _ensure_entropy_params_dir(model_dir: Path) -> None:
-    """Unpack entropy_params.npz into entropy_params/ if the directory is absent.
-
-    Older compiled models were exported before the per-file .npy step was added. The C++ inference
-    binary requires individual .npy files, so we unpack on demand.
-    """
-    npy_dir = model_dir / "entropy_params"
-    npz_path = model_dir / "entropy_params.npz"
-    if npy_dir.exists():
-        return
-    if not npz_path.exists():
-        raise FileNotFoundError(
-            f"Neither entropy_params/ nor entropy_params.npz found in {model_dir}"
-        )
-    print(f"  entropy_params/ missing — unpacking {npz_path.name} ...")
-    npy_dir.mkdir()
-    data = np.load(npz_path)
-    for name in data.files:
-        np.save(npy_dir / f"{name}.npy", data[name])
-    print(f"  Unpacked {len(data.files)} arrays into {npy_dir}/")
-
-
 def phase_transfer(model_name: str) -> None:
     """Transfer the compiled model from the host to the FPGA using scp."""
     print_header(f"Phase 2: Transfer to FPGA ({FPGA_HOST})")
     print(f"  Model     : {model_name}")
     print(f"  Local src : {ACTIVE_MODEL_LINK}")
     print(f"  Remote dst: {FPGA_HOST}:{FPGA_BASE_DIR}/active_model/")
-
-    # Ensure entropy_params/ dir exists (old models only have the .npz archive).
-    _ensure_entropy_params_dir(ACTIVE_MODEL_LINK.resolve())
 
     # Wipe old model from FPGA to prevent stale artifacts from previous runs.
     # The C++ binary cleans its own results/ dir, but model files (xmodel,

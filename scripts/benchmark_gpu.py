@@ -2,8 +2,9 @@
 """Performance Benchmark for GPU and CPU Inference.
 
 Measures per-component latency, throughput, and (optionally) power consumption
-for the SAR DDC model on CUDA GPU and/or host CPU.  Designed to produce JSON
-output directly comparable to ``scripts/fpga/benchmark_fpga.py``.
+for the SAR DDC model on CUDA GPU and/or host CPU.  Produces JSON output for
+cross-platform GPU/CPU-vs-FPGA comparison (a unified runner reconciling this with the
+C++ ``benchmark_hardware`` schema is future work — see docs/FPGA_benchmark.md).
 
 Scenarios
 ---------
@@ -51,7 +52,7 @@ from omegaconf import DictConfig, OmegaConf  # noqa: E402
 from src.utils.constants import AMP_MAX, AMP_MIN, EPS  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Constants (must match FPGA benchmark / inference_utils.py)
+# Constants (must match the FPGA inference pipeline)
 # ---------------------------------------------------------------------------
 IMAGE_SIZE = 256
 C_MAIN = 128

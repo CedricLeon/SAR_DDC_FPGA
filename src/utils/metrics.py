@@ -178,7 +178,7 @@ def epd(
     → edge attenuation.
 
     Uses a central-difference gradient for NumPy-only / Python-3.8 compatibility (consistent with
-    the FPGA-side implementation in inference_utils.py).
+    the FPGA-side C++ implementation in ``inference_cpp/``).
     """
 
     def _arr(x: Union[Tensor, np.ndarray]) -> np.ndarray:

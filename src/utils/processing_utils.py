@@ -54,8 +54,8 @@ def patch_infer(
     no context outside each patch. This function solves that by using overlapping windows and
     blending the results in the overlap zones with smooth feathering ramps.
 
-    The GPU/CPU counterpart of ``patch_infer_fpga()`` in
-    ``scripts/fpga/inference_utils.py``. The tiling strategy and blending logic are
+    The GPU/CPU counterpart of the FPGA-side overlap-blended tiling (now implemented in the
+    C++ inference binary, ``inference_cpp/``). The tiling strategy and blending logic are
     identical; the differences below reflect the PyTorch training environment.
 
     **Input format: NCHW.**  PyTorch models and LightningModules work in

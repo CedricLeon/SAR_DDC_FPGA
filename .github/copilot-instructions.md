@@ -38,7 +38,7 @@ Three environments are used. Each has a distinct Python version and set of tasks
 
 ### 3. Hardware — Xilinx ZCU102 (Python 3.9)
 - **Hardware**: ZCU102 evaluation kit — Zynq UltraScale+ MPSoC with FPGA fabric + quad-core ARM Cortex-A53, access via `ssh ZCU102`.
-- **Tasks**: on-board inference via `inference_hybrid.py`, real bitstream benchmark, codec quality evaluation.
+- **Tasks**: on-board inference via the C++ `build_cpp/inference_hybrid` binary, real bitstream benchmark, codec quality evaluation.
 - The user manages board access, SSH, and dataset transfers. Only proceed with board operations when explicitly asked.
 
 ## ⚙️ Codebase Conventions & Practices
