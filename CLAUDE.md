@@ -153,5 +153,4 @@ python3 /home/root/SAR_DDC/collect_roofline.py ResSHyp-relu_s0_L1000_pt
 - **Markdown tables**: always `| --- | --- |` with spaces (markdownlint MD055/MD056).
 - **C++ decisions**: provide clear explanations and context in chat.
 - **Destructive actions**: always ask before deleting files, force-pushing, or anything irreversible.
-- **Regressions**: run `make test` after Python edits to catch regressions.
 - **Errors over silent fallbacks**: if code expects a file, field, or format that should always be present (e.g. `manifest.json`, a specific JSON key, a model name pattern), throw an explicit error when it is missing or malformed — never silently fall back to a default. A missed fallback produces wrong results that may go unnoticed; a hard error forces an immediate fix.

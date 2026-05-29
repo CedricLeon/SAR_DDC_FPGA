@@ -4,9 +4,7 @@ The statistics are computed over the pre-processed data, i.e., each image is loa
 squared, and log-transformed (natural basis).
 """
 
-import sys
 import time
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np

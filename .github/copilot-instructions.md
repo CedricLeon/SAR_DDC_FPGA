@@ -84,7 +84,7 @@ These apply to any model code that will be quantized and compiled for the DPU:
 2.  **Planning**: Use `manage_todo_list` for multi-step tasks. Mark one item in-progress at a time; mark it completed immediately after finishing.
 3.  **Editing**: Keep changes minimal and focused. Do not reformat unrelated files. Skip changes that are purely cosmetic — ruff handles formatting automatically.
 4.  **Documentation consistency**: After any change, check the relevant documentation files and update them if needed. Skip if the change is minor and does not affect the overall understanding.
-5.  **Verification**: After editing Python files, run `make test` (fast suite) to catch regressions. Report the result briefly.
+5.  **Verification**: This codebase has no meaningful automated test suite — verify changes by running the affected script/notebook and checking its output, not `make test`.
 6.  **Reversibility**: Ask before deleting files, force-pushing, dropping datasets, or any action that cannot be undone. Local edits and test runs are fine without asking.
 7.  **Markdown tables**: Always use spaces around separators — `| --- | --- |` not `|---|---|` (markdownlint MD055/MD056).
 8.  **C++ explanation**: When dealing with C++ code, provide clear explanations and context in the chat.

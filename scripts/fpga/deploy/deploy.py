@@ -26,7 +26,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List
+from typing import List
 
 import numpy as np
 import rootutils
@@ -201,7 +201,7 @@ def _export_entropy_params(ckpt_path: Path, output_path: Path, cfg: DictConfig) 
     by the C++ inference binary.
 
     Both model families write EB params (always present). GC params are written only for
-    ResidualScaleHyperpriorPatched. inference_hybrid.py gates GC loading on
+    ResidualScaleHyperpriorPatched. The C++ inference binary gates GC loading on
     ``"gc_scale_table" in data`` so the same filename is safe for both topologies.
     """
     # Deferred src imports — only valid in SAR_DDC env
@@ -624,18 +624,14 @@ def phase_compile(
     # 1.6. Compile xmodel with vai_c_xir (always)
     print("\n--- 1.6: Compile xmodel (vai_c_xir) ---")
     run_in_container(
-        f"vai_c_xir"
-        f" -x {xmodel_int}"
-        f" -a {arch_json}"
-        f" -o {compiled_dir_rel}"
-        f" -n {dpu_wrapper_name}_pt"
+        f"vai_c_xir -x {xmodel_int} -a {arch_json} -o {compiled_dir_rel} -n {dpu_wrapper_name}_pt"
     )
 
     # 1.7. Generate SVG graph (optional)
     if image_graph:
         print("\n--- 1.7: Generate SVG graph ---")
         run_in_container(
-            f"xdputil xmodel {xmodel_int}" f" -s quantize_result/{dpu_wrapper_name}_graph.svg"
+            f"xdputil xmodel {xmodel_int} -s quantize_result/{dpu_wrapper_name}_graph.svg"
         )
 
     # Fix permissions: vai_c_xir runs as root inside the container, so the compiled

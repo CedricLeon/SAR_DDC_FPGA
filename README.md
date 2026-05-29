@@ -17,6 +17,7 @@ Implementation of [Amao-Oliva et al. (2024)](https://www.sciencedirect.com/scien
 ### Code quality / housekeeping
 
 - [x] Reorganize `scripts/` into `dataset/`, `training/`, `evaluation/`, `fpga/{deploy,benchmark}/`, `vitis_ai/`.
+- [ ] Clean `inference_cpp/` headers that say "C++ port of scripts/fpga/<deleted>.py", it was a (historical attribution to the now-removed Python files. They have an accurate provenance, but recoverable via the python-legacy-snapshot/cpp-migration-notebook tags).
 
 ### Planned experiments
 

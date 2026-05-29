@@ -206,6 +206,7 @@ and far more on h_a/h_s (fixed overhead dominates their sub-ms compute).
 ## 10. Future work / TODOs
 
 **Pipelining (not implemented; scope closed at M3):**
+
 - **M4 — P0 coarse pipe:** patch-level DPU‖entropy overlap. Modest ceiling — DPU dominates (~1.16×
   compress / ~1.28× full for ResSHyp; FP bounded by its ~15% CPU fraction). SHyp `h_s` needs
   `z_hat` from `eb_decompress` → no clean single-patch DPU‖CPU split; overlap unit is patch-level.
@@ -215,10 +216,31 @@ and far more on h_a/h_s (fixed overhead dominates their sub-ms compute).
   creation order, validate concurrent pairs on distinct cores). Gated on P0/P2 data.
 
 **Other:**
+
 - **[E] Unified GPU/CPU/FPGA runner** *(design needed)* — `benchmark_hardware` is FPGA-only;
   `run_full_benchmark.py` (the old GPU+FPGA orchestrator) is removed. Need a common runner + unified
-  JSON schema driving `benchmark_gpu.py` and `benchmark_hardware`, reconciling scenarios/schemas and
-  the 1-patch vs 20-patch-cycle difference. See `GPU_benchmark.md` for the legacy tooling.
+  JSON schema driving `benchmark_gpu.py` and `benchmark_hardware`. **Schema reconciliation is the crux:**
+  - *Scenario/config mismatch.* Legacy (`benchmark_gpu.py`, kept) uses flat scenarios
+    `full/compress/decompress/nn_only/entropy_only`; the C++ benchmark uses `config` (s0/s1/nn_only/
+    entropy_only) × `scenario` (compress/full). `decompress` is standalone in legacy but folded into
+    `full` in C++. **`nn_only`/`entropy_only` mean different things**: legacy = *component isolation*
+    (NN-only / entropy-only latency); C++ = *data-parallel ceilings* (`--dpu-cores`/`--entropy-threads`
+    sweeps). They must not be plotted as the same axis.
+  - *No s0/s1 on GPU/CPU.* The S0/S1 (DPU-core) distinction has no GPU/CPU analogue — the unified
+    schema needs a `platform` field and a per-platform notion of "parallelism config".
+  - *Per-stage keys differ.* Legacy `latency_breakdown{step:{mean_s,…}}` vs C++ `stages{stage:{mean_ms,…}}`;
+    units differ (s vs ms). The Python↔C++ stage-name map is in the migration journal §5 / the (removed)
+    `compare_benchmark_s0.py` logic.
+  - *Workload mismatch.* GPU/CPU run FP32 batch-amortised; C++ FPGA cycles a 20-patch subset, INT8 — normalise per-image and compare energy/inference (fairness notes in `GPU_benchmark.md`).
+  - **Two design options:** (a) keep `benchmark_gpu.py`'s legacy schema and write an *adapter* that
+    re-maps C++ `benchmark_hardware` output into it, or (b) re-emit both platforms in a new common
+    schema (`platform`, `config`, `scenario`, `throughput_fps`, canonical stage names). (b) is cleaner
+    long-term; (a) reuses the legacy plotting notebooks as-is.
+  - **Assets to reuse:** the frozen `results/benchmark/<model>/` JSONs (legacy cross-platform data, a
+    reference set) and the legacy plotting notebooks `benchmark_analysis.ipynb` (cross-platform) +
+    `hardware_model_comparison.ipynb` (cross-model) — both now banner-marked LEGACY. Quality (RD) GPU-vs-FPGA
+    already works independently via `compare_gpu_fpga.ipynb` (W&B + `metrics.json`); the unified runner
+    is **latency/throughput/power only**, not quality. See `GPU_benchmark.md` for the legacy tooling dump.
 - **NEON-vectorize normalize/denorm** (~18.7 ms/patch scalar `log`/`exp`) — see `FPGA_inference.md` §9.
 - **vaitrace** for DPU-level hardware timing (validate wall-clock); **tile-level** benchmarking on
   512²/1024²; **thermal** characterization (DPU junction temp under sustained load); **external USB
