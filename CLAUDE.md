@@ -109,58 +109,38 @@ Code compiled for the DPU must follow these rules:
 
 ---
 
-## Current Focus: Hardware Benchmarking and C++ Parallelism
+## Current Status: C++ inference + benchmark — COMPLETE
 
-`inference_hybrid` is complete and validated. Next phase is `benchmark_hardware` — latency profiling and parallelism design. **Do not implement parallelism without a design discussion first** (see `docs/FPGA_benchmark.md` §10).
+The Python→C++ migration is done; **C++ is the only inference path** (no Python on the board).
 
-### `inference_hybrid` Status (2026-05) — COMPLETE
+- **`inference_hybrid`** — board-validated: 100/100 patches pass the gate
+  `|PSNR_cpp_vs_MERLIN − PSNR_py_vs_MERLIN| < 0.1 dB` (mean Δ = +0.083 dB; C++ ≥ Python vs MERLIN).
+  Architecture + run reference → `docs/FPGA_inference.md`; bug archive → `docs/python_to_cpp_migration_journal.md` §6.
+- **`benchmark_hardware`** — M1–M3 board-verified: S0 per-stage baseline, native INA226/PMBus power
+  sampler, S1 channel-parallel (g_a 1.95× / g_s 1.96×, byte-identical to S0), data-parallel ceilings
+  (nn_only/entropy_only ~1.97× at N=2). Hardware, methodology, results → `docs/FPGA_benchmark.md`.
+- Python legacy removed; `scripts/` reorganised into `dataset/ training/ evaluation/ fpga/{deploy,benchmark}/ vitis_ai/`.
 
-| Item | Status |
-| --- | --- |
-| Build system, NPY loader, DPU wrappers | ✅ done |
-| rANS C++ fork (pybind11-free) + unit tests | ✅ done |
-| EntropyBottleneck + GaussianConditional | ✅ done |
-| Full pipeline (SHyp + FP paths), Hamburg tile blending | ✅ done |
-| Bug 4 — 9 patches had pixel diff vs Python | ✅ closed — C++ is closer to MERLIN; not a bug |
-| Bug 5 — FP `_run_fp` y block layout | ✅ fixed — NHWC interleaved, consistent with SHyp |
-| `--debug-patch N` broken in C++ | ✅ fixed — all guards now use `Logger::is_verbose()` |
-| **On-board validation: 100/100 patches pass** | ✅ **DONE** — mean Δpm = +0.083 dB (C++ ≥ Python vs MERLIN) |
-| Bug 6 — Hamburg tile pure noise (float64) | ✅ fixed — `sym_Noisy.npy` is float64; added `to_float32_vec()` with dtype-aware cast |
+**Scope closed at M3.** Pipelining (M4 P0, M5 P2, P3) and the unified GPU/CPU/FPGA runner are
+**future work, not implemented** — documented in `docs/FPGA_benchmark.md` §10.
+*Do not implement parallelism without a design discussion first.*
 
-**Validation gate**: `|PSNR_cpp_vs_MERLIN − PSNR_py_vs_MERLIN| < 0.1 dB` per patch. This replaced the former pixel_tol=0.5 gate — see the bug archive in `docs/python_to_cpp_migration_journal.md` §6.
+### Benchmark run commands
 
-### Phase 2: `benchmark_hardware` binary
-
-Profile the sequential pipeline first to get a latency breakdown (DPU vs CPU entropy vs overhead). Design and methodology are documented in `docs/FPGA_benchmark.md`.
-
-**M1 (S0 + stage_timer)**: ✅ complete and board-verified (2026-05-23).
-**M3 (S1 + ceilings)**: ✅ complete and board-verified (2026-05-24). g_a 1.95× speedup; g_s 1.96× (both pairs on distinct DPU cores after creation-order fix). Byte-identical to S0. nn_only N=2: 1.96× throughput; entropy_only N=2: 1.97× CPU scaling.
-
-Binary: `build_cpp/benchmark_hardware`. Build: same `make -j4` in `build_cpp/` as `inference_hybrid`.
-
-**Canonical results storage**: `results/benchmark_hardware/<model_name>/<config>_<scenario>[_dpuN][_entN].json`
-
-Arch is auto-detected from `active_model/manifest.json` (`model_name` field prefix).
-Throws an error if manifest is absent or `model_name` format is unexpected.
+**Canonical results**: `results/benchmark_hardware/<model_name>/<config>_<scenario>[_dpuN][_entN].json`.
+Arch is auto-detected from `active_model/manifest.json` (errors if absent/malformed).
 
 ```bash
-# Single run (manual, on board)
-build_cpp/benchmark_hardware \
-    --xmodel active_model/*.xmodel \
-    --params active_model/entropy_params \
-    --data   data/test_sub500_seed42.npy \
-    --config s0 --scenario compress --warmup 5 --iters 50 \
-    --output /path/to/s0_compress.json
-
-# Full sweep for all 4 archs (host-side, ~30-40 min):
+# Full sweep, all 4 archs (host-side, ~30-40 min): deploy + benchmark + roofline + fetch
 python scripts/fpga/benchmark/benchmark_sweep.py
-# Options: --models ResSHyp-relu_s0_L1000_pt,FP-relu_s0_L1000_pt
-#          --skip-ceiling  --skip-roofline  --rebuild-cpp  --force
+#   --models ResSHyp-relu_s0_L1000_pt,FP-relu_s0_L1000_pt  --skip-ceiling --skip-roofline --rebuild-cpp --force
 
-# Manual single-model sweep (on board after deploying):
+# Single run (manual, on board)
+build_cpp/benchmark_hardware --xmodel active_model/*.xmodel --params active_model/entropy_params \
+    --data data/test_sub500_seed42.npy --config s0 --scenario compress --warmup 5 --iters 50 --output out.json
+
+# On board, single model: benchmark sweep + roofline collection
 python3 /home/root/SAR_DDC/run_benchmarks.py ResSHyp-relu_s0_L1000_pt
-
-# Roofline only (on board, ~4 min for SHyp, ~2 min for FP):
 python3 /home/root/SAR_DDC/collect_roofline.py ResSHyp-relu_s0_L1000_pt
 ```
 
