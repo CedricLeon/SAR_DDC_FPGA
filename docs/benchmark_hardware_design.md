@@ -369,7 +369,7 @@ physical core count, architecture, and clock frequency — see
 query core count, so the warning is documentation-level only. No further action needed unless
 the binary is ported to different hardware.
 
-**[B] Refactor deinterleave / interleave duplicates** *(planned for pre-M4 cleanup)*
+**[B] Refactor deinterleave / interleave duplicates** *(✅ done — `channel_split` / `interleave_and_abs` / `deinterleave_yhat` / `pack_recon` extracted to `bench_pipeline.cpp` anon namespace; no `Same as stage_` markers remain)*
 `stage_ga` and `stage_ga_s1` share identical deinterleave + interleave + `|y|` loops;
 `stage_gs` and `stage_gs_s1` share identical deinterleave + pack loops. Currently noted
 with `// Same as stage_X` comments.
@@ -396,7 +396,7 @@ Three options considered:
 - **Flat CLI + guards** (current): simplest; extend with validation (see [D]).
 **Decision**: add guards [D] now; defer subcommand refactor to pre-M5 cleanup.
 
-**[D] Argument safeguards for nonsensical combinations** *(medium priority — correctness)*
+**[D] Argument safeguards for nonsensical combinations** *(✅ done — `warn_ignored` block in `main_benchmark.cpp` emits soft `[warn]` for inapplicable flags)*
 Several config/flag combinations silently ignore or misapply arguments:
 - `--config s0 --dpu-cores N>1` → silently ignored
 - `--config s1 --dpu-cores N>1` → silently ignored (S1 always uses exactly 2 runners/pair)
@@ -405,3 +405,12 @@ Several config/flag combinations silently ignore or misapply arguments:
 Add a post-parse validation block in `main_benchmark.cpp` that emits `[warn]` for each
 inapplicable non-default flag (soft warning, not a hard error, to allow scripted sweeps
 that pass a fixed flag set).
+
+**[E] Unified GPU/CPU/FPGA benchmark runner** *(future — design needed)*
+The old Python `run_full_benchmark.py` was the only thing that ran the GPU/CPU benchmark
+(`benchmark_gpu.py`) alongside the FPGA benchmark across all scenarios; it is removed in the
+Python-legacy cleanup. `benchmark_hardware` is **FPGA-only**, so GPU/CPU-vs-C++ comparability was
+never re-established. **Needed:** a common runner + unified JSON schema driving `benchmark_gpu.py`
+(GPU/CPU) and `benchmark_hardware` (FPGA), verifying metric compatibility across platforms (different
+scenarios, output schemas, and the 1-patch vs 20-patch-cycle difference noted in the migration
+journal). Requires a short design pass before implementation.
