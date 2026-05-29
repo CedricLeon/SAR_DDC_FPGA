@@ -178,7 +178,7 @@ figure (`MPSoC`).  The busy-wait fix removes a confounding source of PS idle pow
 inflation.  Together, these changes make the dynamic power numbers (`ΔPL`, `ΔPS`,
 `ΔMPSoC`) more accurate and directly comparable to datasheet estimates.
 
-See `docs/performance_benchmark_implementation.md` §4 for the complete technical
+See `docs/FPGA_benchmark.md` §6 for the complete technical
 details, including INA226 register decoding, I2C topology, and paper-ready
 measurement descriptions.
 

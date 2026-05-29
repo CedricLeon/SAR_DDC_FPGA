@@ -50,7 +50,7 @@ logger:
 
 # The task name determines the logs path, by convention use <task>/<dataset>/<model>
 task_name: train/sar_ddc/factorizedprior
-tags: ["TSX_SSC", "hyperprior", "lr_5e-4"]
+tags: ["TSX_SSC", "factorized", "lr_5e-4"]
 seed: 42
 
 # Flatten the lmbda value because W&B custom chart expressions do not support nested dicts

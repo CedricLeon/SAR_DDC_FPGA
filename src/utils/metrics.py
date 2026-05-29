@@ -178,7 +178,7 @@ def epd(
     → edge attenuation.
 
     Uses a central-difference gradient for NumPy-only / Python-3.8 compatibility (consistent with
-    the FPGA-side implementation in inference_utils.py).
+    the FPGA-side C++ implementation in ``inference_cpp/``).
     """
 
     def _arr(x: Union[Tensor, np.ndarray]) -> np.ndarray:
@@ -279,17 +279,17 @@ class MerlinRDLoss(nn.Module):
 
         # Denorm the reconstructions before computing losses
         log_hat_R = 2 * (output["x_hat"] * (AMP_MAX - AMP_MIN) + AMP_MIN)
-        # print_statistics("      Predicted Reflectivity log_hat_R", log_hat_R)
+
         # ----- Classic MERLIN Loss (0.5 * log(r) + b^2 / r) -----
-        hat_R = torch.exp(log_hat_R) + 1e-6  # must be non-zero
-        # print_statistics("      Predicted Reflectivity hat_R", hat_R)
+        # Early training has some heavy instability during the first step that can lead to the max value of x_hat exploding (for example max(x_hat) = 140 instead of x_hat ∈ [0, 1]).
+        # In such a case, applying exp() creates a float overflow (exp(x) = Inf for x > ~88).
+        # This further degenerates into NaNs everywhere as the Merlin loss computes Inf/Inf² = NaN.
+        # Therefore, we clamp log_hat_R before exp to prevent float32 overflow, clamping to 83 still creates extremely large loss values, but it does not matter as gradient clippings ensure stable training and after a few steps the network stabilizes.
+        # A valid x_hat ∈ [0, 1] maps log_hat_R to [9.2, 21.5], so the clamp never activates for a well-trained model.
+        hat_R = torch.exp(log_hat_R.clamp(max=85.0)) + 1e-6  # must be non-zero
+
         b_square = torch.square(target)
-        # print_statistics("      b_square", b_square)
         merlin_loss = 0.5 * log_hat_R + b_square / hat_R
-        # ----- In Log-Scale MERLIN Loss (0.5 * log_r + exp(2*log_b - log_r)) -----
-        # log_b = torch.log(torch.square(target) + EPS)
-        # print_statistics("      Target (square + log )", log_b)
-        # merlin_loss = 0.5 * log_hat_R + torch.exp(2 * log_b - log_hat_R)
 
         out["merlin"] = torch.mean(merlin_loss)
 

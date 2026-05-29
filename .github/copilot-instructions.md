@@ -12,7 +12,7 @@ Read **only** the document(s) relevant to your current task — do not load all 
 | Model architecture, MERLIN theory, loss, signal equations | [docs/Method.md](../docs/Method.md) |
 | Data source, preprocessing pipeline, HDF5 schema, normalisation | [docs/Data.md](../docs/Data.md) |
 | FPGA inference pipeline, DPU runners, entropy models, known issues | [docs/FPGA_inference.md](../docs/FPGA_inference.md) |
-| ZCU102 hardware specs, benchmark methodology, power measurement | [docs/performance_benchmark_implementation.md](../docs/performance_benchmark_implementation.md) |
+| Benchmark: ZCU102 hardware, methodology, power, results, future work | [docs/FPGA_benchmark.md](../docs/FPGA_benchmark.md) |
 | Deployment journal, resolved/open Vitis-AI issues, changelog | [docs/Vitis-AI_journey.md](../docs/Vitis-AI_journey.md) |
 
 > Before deep-diving an FPGA-related bug, check `docs/Vitis-AI_journey.md` — the issue may already be documented.
@@ -30,7 +30,7 @@ Three environments are used. Each has a distinct Python version and set of tasks
 - Python 3.11 features are fine here.
 
 ### 2. Quantization & Compilation — Vitis-AI Docker (Python 3.8)
-- **Managed automatically** by `scripts/fpga/deploy.py` — no need to start the container manually.
+- **Managed automatically** by `scripts/fpga/deploy/deploy.py` — no need to start the container manually.
 - **Tasks**: PTQ quantization, DPU compilation, `xir` graph manipulation, entropy model export, file packaging for the board.
 - **Python 3.8 strict** — any code that runs here must be compatible:
   - ✅ `from typing import Union, Optional, List, Tuple`
@@ -38,7 +38,7 @@ Three environments are used. Each has a distinct Python version and set of tasks
 
 ### 3. Hardware — Xilinx ZCU102 (Python 3.9)
 - **Hardware**: ZCU102 evaluation kit — Zynq UltraScale+ MPSoC with FPGA fabric + quad-core ARM Cortex-A53, access via `ssh ZCU102`.
-- **Tasks**: on-board inference via `inference_hybrid.py`, real bitstream benchmark, codec quality evaluation.
+- **Tasks**: on-board inference via the C++ `build_cpp/inference_hybrid` binary, real bitstream benchmark, codec quality evaluation.
 - The user manages board access, SSH, and dataset transfers. Only proceed with board operations when explicitly asked.
 
 ## ⚙️ Codebase Conventions & Practices
@@ -84,7 +84,7 @@ These apply to any model code that will be quantized and compiled for the DPU:
 2.  **Planning**: Use `manage_todo_list` for multi-step tasks. Mark one item in-progress at a time; mark it completed immediately after finishing.
 3.  **Editing**: Keep changes minimal and focused. Do not reformat unrelated files. Skip changes that are purely cosmetic — ruff handles formatting automatically.
 4.  **Documentation consistency**: After any change, check the relevant documentation files and update them if needed. Skip if the change is minor and does not affect the overall understanding.
-5.  **Verification**: After editing Python files, run `make test` (fast suite) to catch regressions. Report the result briefly.
+5.  **Verification**: This codebase has no meaningful automated test suite — verify changes by running the affected script/notebook and checking its output, not `make test`.
 6.  **Reversibility**: Ask before deleting files, force-pushing, dropping datasets, or any action that cannot be undone. Local edits and test runs are fine without asking.
 7.  **Markdown tables**: Always use spaces around separators — `| --- | --- |` not `|---|---|` (markdownlint MD055/MD056).
 8.  **C++ explanation**: When dealing with C++ code, provide clear explanations and context in the chat.

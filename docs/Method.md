@@ -2,6 +2,8 @@
 
 *Theoretical background, signal model, and key equations for the SAR DDC pipeline. See [Data.md](Data.md) for data formats and normalisation, and [FPGA_inference.md](FPGA_inference.md) for FPGA deployment details.*
 
+@TODO: To be renamed MOdel and focus on the model theory and math. So far it's only about MERLIN it should be completed.
+
 ## Method
 
 The pipeline relies on Pytorch Ligthning on [Compressai](https://github.com/InterDigitalInc/CompressAI) [2] to implement Hyper-autoencoders solutions based on Johannes Ballé's work [3-5].

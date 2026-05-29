@@ -5,6 +5,8 @@ docker_run.sh
 # FPGA-specific files
 results/
 context/
+# C++ inference build directories (build_local, build_aarch64, etc.)
+inference_cpp/build*/
 
 # ----- Lightning-Hydra-Template -----
 configs/local/default.yaml
