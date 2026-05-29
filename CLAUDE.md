@@ -39,9 +39,10 @@ Read only what's relevant to the task at hand.
 | --- | --- |
 | Model architecture, MERLIN theory, loss, signal equations | `docs/Method.md` |
 | Data source, preprocessing, HDF5 schema, normalisation | `docs/Data.md` |
-| FPGA pipeline, DPU runners, entropy models | `docs/FPGA_inference.md` (C++ is now the primary inference path; Python pipeline kept as reference) |
-| **C++ port design, decisions, open bugs** | **`docs/cpp_inference_design.md`** ← read first for inference work |
-| ZCU102 hardware, benchmark methodology, power measurement | `docs/performance_benchmark_implementation.md` |
+| FPGA inference pipeline (C++), DPU runners, entropy models | `docs/FPGA_inference.md` ← read first for inference work |
+| Benchmark: ZCU102 hardware, methodology, power, results, future work + journal | `docs/FPGA_benchmark.md` |
+| Why/how we ported Python→C++, before/after numbers, bug archive | `docs/python_to_cpp_migration_journal.md` |
+| GPU/CPU benchmark tooling (legacy, raw — pending unified-runner refactor) | `docs/GPU_benchmark.md` |
 | Vitis-AI issues, deployment journal | `docs/Vitis-AI_journey.md` (check here before debugging Vitis-AI issues) |
 
 ---
@@ -95,7 +96,7 @@ Code compiled for the DPU must follow these rules:
 - No `GDN` activations — use `ReLU`
 - No `LowerBoundFunction` — use `torch.clamp` or `torch.max`
 - `ConvTranspose2d` must have `output_padding=0`
-- Entropy coding: real rANS bitstream (C++ `ans.so`) for all evaluation — not the likelihood-estimation path used during training
+- Entropy coding: real rANS bitstream (C++ rANS coder in `inference_cpp/src/rans/`) for all evaluation — not the likelihood-estimation path used during training
 
 ---
 
@@ -110,7 +111,7 @@ Code compiled for the DPU must follow these rules:
 
 ## Current Focus: Hardware Benchmarking and C++ Parallelism
 
-`inference_hybrid` is complete and validated. Next phase is `benchmark_hardware` — latency profiling and parallelism design. **Do not implement parallelism without a design discussion first** (see `docs/cpp_inference_design.md` §9).
+`inference_hybrid` is complete and validated. Next phase is `benchmark_hardware` — latency profiling and parallelism design. **Do not implement parallelism without a design discussion first** (see `docs/FPGA_benchmark.md` §10).
 
 ### `inference_hybrid` Status (2026-05) — COMPLETE
 
@@ -126,11 +127,11 @@ Code compiled for the DPU must follow these rules:
 | **On-board validation: 100/100 patches pass** | ✅ **DONE** — mean Δpm = +0.083 dB (C++ ≥ Python vs MERLIN) |
 | Bug 6 — Hamburg tile pure noise (float64) | ✅ fixed — `sym_Noisy.npy` is float64; added `to_float32_vec()` with dtype-aware cast |
 
-**Validation gate**: `|PSNR_cpp_vs_MERLIN − PSNR_py_vs_MERLIN| < 0.1 dB` per patch. This replaced the former pixel_tol=0.5 gate — see §0 Q9 Bug 4 closure in `docs/cpp_inference_design.md`.
+**Validation gate**: `|PSNR_cpp_vs_MERLIN − PSNR_py_vs_MERLIN| < 0.1 dB` per patch. This replaced the former pixel_tol=0.5 gate — see the bug archive in `docs/python_to_cpp_migration_journal.md` §6.
 
 ### Phase 2: `benchmark_hardware` binary
 
-Profile the sequential pipeline first to get a latency breakdown (DPU vs CPU entropy vs overhead). Design is fully documented in `docs/benchmark_hardware_design.md`.
+Profile the sequential pipeline first to get a latency breakdown (DPU vs CPU entropy vs overhead). Design and methodology are documented in `docs/FPGA_benchmark.md`.
 
 **M1 (S0 + stage_timer)**: ✅ complete and board-verified (2026-05-23).
 **M3 (S1 + ceilings)**: ✅ complete and board-verified (2026-05-24). g_a 1.95× speedup; g_s 1.96× (both pairs on distinct DPU cores after creation-order fix). Byte-identical to S0. nn_only N=2: 1.96× throughput; entropy_only N=2: 1.97× CPU scaling.

@@ -8,11 +8,11 @@
 > **Scope.** Inference (`inference_hybrid`) **and** benchmarking (`benchmark_hardware`).
 > This is a *transition* record — it does **not** describe the current C++ implementation in detail
 > (see `FPGA_inference.md`) nor track forward-looking C++ work (see `FPGA_inference.md` and
-> `benchmark_hardware_design.md`).
+> `FPGA_benchmark.md`).
 >
-> **Companion docs.** `FPGA_inference.md` = how the C++ pipeline works *now* (reference + future work).
-> `benchmark_hardware_design.md` = benchmark development journal + remaining milestones.
-> `performance_benchmark_implementation.md` = ZCU102 hardware + benchmark methodology.
+> **Companion docs.** `FPGA_inference.md` = how the C++ inference pipeline works *now*.
+> `FPGA_benchmark.md` = benchmark hardware, methodology, results, future work + journal.
+> `GPU_benchmark.md` = legacy GPU/CPU benchmark tooling (raw, pending the unified-runner refactor).
 
 ## 1. Motivation — why port to C++
 
@@ -159,7 +159,7 @@ reproduces and extends this:
 the C++ benchmark cycles a **20-patch subset** while Python repeated the first patch; timing is over
 warmup + N iters in both; power is the native sampler vs Python reads. M3 (S0/S1 + ceilings) is
 board-verified; the pipelined configs that *use* these ceilings are future work (see
-`benchmark_hardware_design.md`).
+`FPGA_benchmark.md`).
 
 ## 6. Bugs found & fixed (archive — the nasty / recurring ones)
 
@@ -182,5 +182,5 @@ no `LowerBoundFunction` (use clamp), `ConvTranspose2d` must have `output_padding
 This journal supersedes `cpp_inference_design.md` (deleted). Current-state C++ pipeline description
 lives in `FPGA_inference.md` (rewritten as the C++ reference). Forward-looking work is tracked in
 `FPGA_inference.md` (inference: NEON normalize/denorm, full-image streaming) and
-`benchmark_hardware_design.md` (benchmark: M4/M5 pipelining, P3, unified GPU/CPU/FPGA runner) — kept
+`FPGA_benchmark.md` (benchmark: M4/M5 pipelining, P3, unified GPU/CPU/FPGA runner) — kept
 in those docs rather than duplicated here so the journal stays a fixed transition record.

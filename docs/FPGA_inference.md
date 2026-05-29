@@ -1,7 +1,8 @@
-# FPGA Inference — Architecture, Pipeline & Roadmap
+# FPGA Inference — C++ Pipeline Reference
 
-> Reference document for the on-board hybrid inference workflow on the Xilinx ZCU102.
-> Covers current state, known bottlenecks, and planned work on full-image streaming inference.
+> How on-board inference works **now**: the C++ `inference_hybrid` binary on the Xilinx ZCU102.
+> For *why* it was ported from Python and the before/after numbers, see
+> `python_to_cpp_migration_journal.md`. For benchmarking, see `FPGA_benchmark.md`.
 
 ---
 
@@ -9,35 +10,36 @@
 
 The compiled model runs in a **hybrid DPU+CPU** configuration:
 
-- **DPU** (DPUCZDX8G B4096, 300 MHz): runs the 4 neural-network subgraphs
-  (`g_a`, `h_a`, `h_s`, `g_s`) as INT8 operations.
-- **ARM A53 CPU**: handles all entropy coding (rANS via C++ `ans.so`), normalisation,
-  tensor splitting/concatenation, and metrics computation.
+- **DPU** (DPUCZDX8G **B4096 @ 300 MHz**, 3 cores): the four NN subgraphs (`g_a`, `h_a`, `h_s`,
+  `g_s`) as INT8.
+- **ARM A53 CPU** (×4): entropy coding (C++ rANS), log-amplitude normalization, tensor
+  interleave/deinterleave, denormalization, metrics.
 
-The code that implements this lives entirely in `scripts/fpga/` and is **only
-executable on the ZCU102 board** (requires `vart`, `xir`, and the `ans.so` extension).
-
----
-
-## 2. Relevant Files
-
-| File | Role |
-| ------ | ------ |
-| `inference_cpp/src/` | C++ inference binary (`build_cpp/inference_hybrid`) — primary inference path on board |
-| `scripts/fpga/inference_hybrid.py` | Legacy Python orchestrator (reference only; no longer used in deployment) |
-| `scripts/fpga/inference_utils.py` | DPU runners (`DPUSubgraphRunner`, `DPUJob`), subgraph identification, metrics, tiling utilities |
-| `scripts/fpga/entropy_models_inference.py` | Pure-NumPy + C++ rANS wrappers for `EntropyBottleneck` and `GaussianConditional` |
-| `scripts/fpga/benchmark_fpga.py` | Latency/power benchmarking (not quality evaluation) |
-| `scripts/fpga/deploy.py` | Host-side orchestrator: quantize → compile → rsync → run C++ binary → fetch results |
-| `scripts/fpga/deploy_cpp_entropy_coder/` | Build scripts for the `ans.so` C++ extension (cross-compile for aarch64) |
+Inference is a single native C++ binary, `build_cpp/inference_hybrid`, built on the board. There is
+no Python on the board. It processes the 256×256 test patches and the Hamburg tile, computes task
+metrics (bpp/PSNR/SSIM/ENL/EPD), and writes `metrics.json` + reconstructions.
 
 ---
 
-## 3. Data Formats
+## 2. Relevant files
 
-### 3.1 Test Patch Set (`*.npy`)
+| Path | Role |
+| --- | --- |
+| `inference_cpp/src/` | All C++ inference sources (see §6) |
+| `build_cpp/inference_hybrid` | The inference binary on the board |
+| `inference_cpp/src/rans/` | pybind11-free rANS fork (entropy codec) |
+| `scripts/fpga/deploy.py` | Host orchestrator: quantize → compile → export params → transfer → run C++ → fetch |
+| `scripts/fpga/batch_deploy.py` | Batch wrapper over `deploy.py` (rebuilds the C++ binary once per batch) |
+| `scripts/fpga/model_quant.py` | PTQ (calibration + deploy xmodel) inside the Vitis-AI Docker |
 
-Loaded by `load_npy_test_set()`:
+The deployable model lives in `active_model/` on the board: the `.xmodel` + an `entropy_params/`
+directory of individual `.npy` CDF tables.
+
+---
+
+## 3. Data formats
+
+### 3.1 Test patch set (`*.npy`)
 
 ```text
 Shape: [N, 256, 256, 4]
@@ -47,267 +49,163 @@ Shape: [N, 256, 256, 4]
   ch 3:  MERLIN ground truth   (linear amplitude)
 ```
 
-The noisy input (`ch 0–1`) is in raw complex amplitude. **Normalisation is done inside the pipeline** (in `_prepare_tile_input`), not in the dataset.
+Normalisation is done **inside the pipeline**, not in the dataset. Board path:
+`data/test_sub500_seed42.npy` (float32).
 
-### 3.2 Large Tile (`sym_Noisy.npy`)
+### 3.2 Large tile (`sym_Noisy.npy`)
 
-```text
-Shape: [H, W, 2]  — raw complex amplitude, H and W arbitrary (e.g. 1024×1024)
-```
-
-Located in `data/visualization/<Region>/sym_Noisy.npy`. Reference ground truths are `linA_MERLIN.npy`, `linA_ADAM_NOC.npy` etc. in the same folder.
+`[H, W, 2]` raw complex amplitude (e.g. 1024×1024), under `data/visualization/<Region>/`.
+Reference ground truths (`linA_MERLIN.npy`, `linA_ADAM_NOC.npy`) sit alongside.
+**Note:** `sym_Noisy.npy` is stored **float64** — the NPY loader casts dtype-aware
+(`to_float32_vec()`), never a raw reinterpret (see migration journal §6, Bug 6).
 
 ---
 
-## 4. Normalisation Convention
+## 4. Normalisation convention
 
-All models expect **log-scale, min-max normalised input**. The transform applied per tile is:
+All models expect **log-scale, min-max normalised** input:
 
-```python
-# In _prepare_tile_input (inference_hybrid.py)
-noisy_sq    = noisy**2                          # square: amplitude -> intensity
-noisy_logI  = log(noisy_sq + EPS)               # log intensity, EPS=1e-2
+```text
+noisy_sq    = noisy**2                          # amplitude -> intensity
+noisy_logI  = log(noisy_sq + EPS)               # EPS = 1e-2
 noisy_norm  = (noisy_logI - 2*AMP_MIN) / (2*AMP_MAX - 2*AMP_MIN)
 ```
 
-where:
+`AMP_MIN = 4.605170…`, `AMP_MAX = 10.742239…` (p5/p95 of `log(amp+EPS)`); the factor 2 comes from
+`log(a²) = 2·log(a)`. Single source of truth: `src/utils/constants.py` / `inference_cpp/src/constants.hpp`.
 
-- `AMP_MIN = 4.605170…`  (p5 of `log(amplitude + EPS)` over the full dataset)
-- `AMP_MAX = 10.742239…` (p95 of `log(amplitude + EPS)` over the full dataset)
-- The factor of 2 comes from squaring: `log(a²) = 2·log(a)`.
-
-Canonical values and derivation: `src/utils/constants.py` and [docs/Data.md](Data.md).
-
-The real and imag channels are processed **separately** through `g_a` and `g_s`.
-
-### Denormalisation (output)
-
-```python
-recon_logI = recon_norm * (AMP_MAX - AMP_MIN) + AMP_MIN
-recon_linI = exp(recon_logI)
-# MERLIN factor: average both reconstructions to recover reflectivity
-recon_linI = 0.5 * (recon_real**2 + recon_imag**2)
-recon_linA = sqrt(recon_linI)           # -> linear amplitude for metrics
-```
+Denormalisation (output): `recon_logI = recon_norm·(AMP_MAX−AMP_MIN) + AMP_MIN`; `recon_linI =
+exp(recon_logI)`; MERLIN reflectivity = `0.5·(recon_real² + recon_imag²)`; `recon_linA = sqrt(linI)`.
+Denorm runs in **double precision** internally to match the Python float64 reference (journal §6).
 
 ---
 
-## 5. Current Pipeline (Single Tile, Sequential)
+## 5. Pipeline (single tile, sequential)
 
-### 5.1 ScaleHyperprior topology (`process_single_tile_SHyp`)
-
-```text
-[CPU]   Normalise real/imag                       in: [H,W,2]       -> [1,1,H,W] x2
-[DPU]   g_a(real), g_a(imag)                      in: [1,1,256,256] -> [1,16,16,128]
-[CPU]   concat + abs                               -> y[1,16,16,256], y_abs[1,16,16,256]
-[DPU]   h_a(y_abs)                                -> z[1,2,2,256]
-[CPU]   EB.compress(z)                             -> z_strings (bytes)
-[CPU]   EB.decompress(z_strings)                  -> z_hat[1,2,2,256]
-[DPU]   h_s(z_hat)                                -> scales[1,16,16,256]
-[CPU]   GC.compress(y, scales, means=0)           -> y_strings (bytes)
-[CPU]   GC.decompress(y_strings, scales, means=0) -> y_hat[1,16,16,256]
-[CPU]   split y_hat                               -> y_hat_real/imag[1,16,16,128]
-[DPU]   g_s(y_hat_real), g_s(y_hat_imag)         -> recon[1,256,256,1] x2
-[CPU]   stack real/imag                           -> recon[256,256,2]
-```
-
-**Total DPU calls per tile: 6** (g_a×2, h_a×1, h_s×1, g_s×2).
-
-### 5.2 FactorizedPrior topology (`process_single_tile_FP`)
+### 5.1 ScaleHyperprior (SHyp / ResSHyp)
 
 ```text
-[CPU]   Normalise real/imag
-[DPU]   g_a(real), g_a(imag)                     -> y_real/imag[1,16,16,128]
-[CPU]   concat                                    -> y[1,16,16,256]
-[CPU]   EB.compress(y), EB.decompress(y_strings) -> y_hat[1,16,16,256]
-[CPU]   split                                     -> y_hat_real/imag[1,16,16,128]
-[DPU]   g_s(y_hat_real), g_s(y_hat_imag)         -> recon x2
-[CPU]   stack                                     -> recon[256,256,2]
+[CPU] normalize real/imag
+[DPU] g_a(real), g_a(imag)                      -> y       (NHWC interleaved, C = 2·C_MAIN)
+[CPU] concat + |y|                              -> y_abs
+[DPU] h_a(y_abs)                                -> z
+[CPU] EntropyBottleneck compress/decompress(z)  -> z_hat
+[DPU] h_s(z_hat)                                -> scales
+[CPU] GaussianConditional compress/decompress(y, scales) -> y_hat
+[CPU] deinterleave y_hat                        -> y_hat_real/imag
+[DPU] g_s(real), g_s(imag)                      -> recon
+[CPU] denormalize                               -> linear amplitude
 ```
 
-### 5.3 Large Image Inference (`patch_infer_fpga`)
+DPU calls per patch: **6** (g_a×2, h_a, h_s, g_s×2).
 
-Large tiles (e.g. 1024×1024) are split into overlapping 256×256 windows with a
-configurable stride (`patch_size - overlap`). Each patch goes through the single-tile
-pipeline above and results are blended using a sigmoid/linear/cosine feathering ramp
-in overlap zones to avoid visible seams.
+### 5.2 FactorizedPrior (FP / ResFP)
 
-Current call is **fully sequential**: patch 0 is processed end-to-end, then patch 1, etc.
+No `h_a`/`h_s`/GC: `normalize → g_a×2 → EB compress/decompress(y) → g_s×2 → denormalize`.
+DPU calls per patch: **4**.
+
+> **Channel layout (journal §6, Bug 2/5):** `y` is built **NHWC-interleaved** (`C = 2·C_MAIN`), not
+> as `[real_block│imag_block]` — otherwise each symbol pairs with the wrong CDF/scale.
+
+### 5.3 Large-image inference
+
+Large tiles are split into overlapping 256×256 windows (stride = patch − overlap); each window runs
+the single-tile pipeline; outputs are blended with a sigmoid feathering ramp in the overlap zones to
+avoid seams. (Currently sequential per window.)
 
 ---
 
-## 6. DPU Runner Abstraction
-
-### `DPUSubgraphRunner`
-
-Wraps a `vart.Runner` for a single compiled subgraph. Exposes:
-
-- `run(input_float) -> output_float` — blocking synchronous call (quantize → DPU → dequantize)
-- `submit(input_float) -> DPUJob` — non-blocking async dispatch (returns immediately)
-- `collect(job) -> output_float` — wait for a previously submitted job
-
-INT8 ↔ float conversion uses the fixed-point scale read from the xmodel tensor attributes
-(`fix_point`):
+## 6. Module layout (`inference_cpp/`)
 
 ```text
-input_int8 = float * 2^(+fix_point_in)
-output_float = int8 * 2^(-fix_point_out)
+src/
+  main.cpp                       CLI: --xmodel/--params/--data/--output/--subset/--verbose
+  inference_runner.{cpp,hpp}     InferenceRunner/Pipeline (SHyp+FP paths, tile blending, metrics.json)
+  dpu_runners.{cpp,hpp}          DPUSubgraphRunner + XModelLoader (VART/XIR, HAVE_DPU-gated)
+  entropy_models.{cpp,hpp}       EntropyBottleneck, GaussianConditional
+  metrics.{cpp,hpp}              PSNR / SSIM (OpenCV) / ENL / EPD / BPP
+  npy_io.{cpp,hpp}               NPY v1/v2 loader+writer (no deps; dtype-aware float32/float64)
+  patch_transforms.hpp           normalize / interleave / denorm pure fns (shared with benchmark)
+  constants.hpp, logger.hpp, scoped_timer.hpp
+  rans/                          pybind11-free rANS fork (rans_interface_cxx + rans64.h)
+  benchmark/                     benchmark_hardware sources (see FPGA_benchmark.md)
+tests/test_rans_roundtrip.cpp    host unit test (rANS encode↔decode)
 ```
 
-### `DPUJob`
+**Board libraries:** OpenCV 4.5.2 (incl. `opencv_quality` for SSIM), Eigen 3, nlohmann/json 3.10.2.
+spdlog is absent → custom `Logger`. **CMake options:** `HAVE_DPU` (default ON; needs VART/XIR +
+nlohmann/json), `WITHOUT_OPENCV` (stub SSIM for host syntax checks).
 
-Handle keeping both I/O buffers alive during async DMA. Must not be GC'd before `collect()`.
+### DPU runners & VART
 
-### Multi-core parallelism
+`DPUSubgraphRunner` wraps a `vart::Runner`: quantize float→INT8, `execute_async` + `wait`,
+dequantize INT8→float via the tensor `fix_point` (`input_int8 = float·2^{+fp_in}`,
+`output_float = int8·2^{−fp_out}`). `XModelLoader` finds the named subgraphs.
 
-`benchmark_fpga.py` already exploits the 3-core B4096 by dispatching `g_a(real)` and
-`g_a(imag)` in parallel via `ThreadPoolExecutor(2)`, achieving ~1.9× speedup on `g_a`.
-The key constraint is that VART assigns runners to cores **at creation time** (round-robin),
-so the creation order of runner instances determines which core they land on.
+> **VART core assignment (footgun):** `create_runner()` has no core index — VART assigns DPU cores
+> **round-robin at creation time**. Two runners on the same core run serially. For any parallel
+> scheme, runner **creation order** is the only lever; verify placement by timing. (Relevant to the
+> benchmark's S1/ceilings — see `FPGA_benchmark.md`.)
+
+### Entropy models (rANS)
+
+`EntropyBottleneck` / `GaussianConditional` mirror the CompressAI semantics on top of a
+**pybind11-free rANS fork** (`rans/`) — bit-compatible with the original Python `ans` encoder
+(roundtrip unit test). CDF tables load from `entropy_params/*.npy`
+(`eb_quantized_cdf`, `eb_cdf_length`, `eb_offset`, `eb_medians`, `gc_scale_table`,
+`gc_quantized_cdf`, `gc_cdf_length`, `gc_offset`). Rounding uses an explicit FPU-mode-independent
+`round_half_to_even()` to match numpy at half-integer boundaries (journal §6).
 
 ---
 
-## 7. Entropy Models
+## 7. Build & run (board)
 
-Both `EntropyBottleneck` and `GaussianConditional` are pure-Python/NumPy wrappers around
-the C++ rANS coder (`ans.so`). They are loaded from a pre-exported `.npz` file
-(`entropy_params.npz`) that contains the CDF tables baked at training time.
+```bash
+# build (native on the ZCU102; deploy.py --rebuild-cpp / batch_deploy.py automate this)
+rsync -av inference_cpp/src/ ZCU102:/home/root/SAR_DDC/inference_cpp/src/
+ssh ZCU102 "cd /home/root/SAR_DDC/build_cpp && make -j4"
 
-The key exported arrays are:
+# run (from /home/root/SAR_DDC on board)
+build_cpp/inference_hybrid \
+    --xmodel active_model/*.xmodel \
+    --params active_model/entropy_params \
+    --data   data/test_sub500_seed42.npy \
+    --subset 100 [--debug-patch N] [--verbose]
+```
 
-| Array | Shape | Description |
-| ------- | ------- | ------------- |
-| `eb_quantized_cdf` | `[C, cdf_size]` | Per-channel CDF tables for EB |
-| `eb_cdf_length` | `[C]` | Valid CDF entries per channel |
-| `eb_offset` | `[C]` | Symbol offset (so symbols can be negative) |
-| `eb_medians` | `[C]` | Per-channel medians used for quantisation |
-| `gc_scale_table` | `[n_scales]` | Discrete scale table for GC |
-| `gc_quantized_cdf` | `[n_scales, cdf_size]` | Per-scale CDF tables for GC |
-| `gc_cdf_length` | `[n_scales]` | Valid CDF entries per scale |
-| `gc_offset` | `[n_scales]` | Symbol offset for GC |
+Outputs in `<model>/results/`: `metrics.json` (averaged task metrics), `<tile>_metrics.json` +
+`<tile>_recon_linA.npy` per tile, visualization NPYs, `inference.log`, `inference_meta.json`.
 
-**The entropy coding is the primary latency bottleneck** for each tile (significantly
-slower than the DPU subgraph calls), particularly for `GaussianConditional` on `y`
-(`[1, 16, 16, 256]` = 65,536 symbols per channel pass).
+**DPU model constraints** (codified in `CLAUDE.md`): no `GDN` (use ReLU), no `LowerBoundFunction`
+(use clamp), `ConvTranspose2d` must have `output_padding=0`.
 
 ---
 
-## 8. Known Issues & Messiness
+## 8. Performance characteristic
 
-- `inference_hybrid.py` uses `tuple[...]` and `dict[...]` syntax (PEP 585) which is
-  **not Python 3.8 compatible** (e.g. `load_npy_test_set` return type).
-- The `log()` function references a global `log_file` variable — fragile.
-- Constants (`IMAGE_SIZE`, `C_MAIN`, `C_HYPER`, `S_MAIN`, `S_HYPER`) are duplicated
-  between `inference_hybrid.py` and `benchmark_fpga.py`.
-- `patch_infer_fpga` is in `inference_utils.py` but is a fairly large, self-contained
-  function — coupling is high.
-- The decompress/compress cycle in `process_single_tile_*` blocks the CPU entirely;
-  there is no way for the DPU to overlap with entropy coding in the current design.
+In C++ the pipeline is **DPU-dominated** for the residual models (ResSHyp ≈ 78% DPU, 12% entropy,
+10% normalize/denorm) and more balanced for the small models (FP ≈ 37% DPU; normalize/denorm and
+entropy dominate). This is the *reverse* of the Python era, where entropy coding dominated — the C++
+rANS collapsed the entropy cost. Full numbers: `python_to_cpp_migration_journal.md` §3 / `FPGA_benchmark.md`.
 
 ---
 
-## 9. Planned Work — Full Image Streaming Inference
+## 9. Future work (inference)
 
-### 9.1 Motivation
-
-Current inference operates on **pre-extracted 256×256 patches** (the test-set `.npy` file).
-The new workflow should accept a **full SAR image** (arbitrary size, e.g. 1024×1024 or
-larger), apply the DDC pipeline end-to-end, and report reconstruction quality + throughput.
-
-The goal is to answer: *what would end-to-end latency and quality look like in a realistic
-operational scenario where the FPGA receives a full image, compresses it, and transmits
-the bitstream to a host?*
-
-### 9.2 Target Execution Model
-
-The natural pipeline for one image has these **stages per patch**:
-
-```text
-Stage A  [CPU]  Extract + normalise patch
-Stage B  [DPU]  g_a (encoder)                ← DPU-bound, ~35 ms
-Stage C  [CPU]  concat/abs, then h_a input prep
-Stage D  [DPU]  h_a                           ← fast, ~1 ms
-Stage E  [CPU]  EB compress + decompress      ← CPU-bound bottleneck
-Stage F  [DPU]  h_s                           ← fast, ~1 ms
-Stage G  [CPU]  GC compress + decompress      ← CPU-bound bottleneck
-Stage H  [DPU]  g_s (decoder)                ← DPU-bound, ~35 ms
-Stage I  [CPU]  denormalise, write to canvas
-```
-
-With sequential execution the total per-patch cost is roughly:
-`~35 + ~35 + ~30 (entropy) ≈ 100 ms/patch`.
-
-With a **producer-consumer pipeline** across patches, we could overlap:
-
-- Patch N entropy coding (Stage E/G) with Patch N+1 DPU encoding (Stage B)
-- Patch N DPU decoding (Stage H) with Patch N+1 entropy coding (Stage E/G)
-
-### 9.3 Parallelisation Opportunities
-
-| Opportunity | Mechanism | Expected gain |
-| ------------- | ----------- | --------------- |
-| g_a real ‖ g_a imag (per patch) | `submit`/`collect` on 2 runners (already done in benchmark) | ~1.9× on g_a |
-| g_s real ‖ g_s imag (per patch) | same | ~1.9× on g_s |
-| Patch N DPU ‖ Patch N-1 entropy | Separate threads with a queue | up to 1× entropy effectively hidden |
-| C++ entropy instead of Python loops | Port Python loops in `EntropyBottleneck.compress` to C++ | 5–10× on entropy |
-
-### 9.4 Migration to C++
-
-The Python overhead in entropy coding comes from:
-
-1. `.tolist()` conversions of large numpy arrays before passing to `ans.encode_with_indexes`
-2. Python-level loops over batch items (N=1 always, so minor)
-3. The GIL preventing true concurrency in the Python wrapper
-
-A C++ wrapper around the existing `ans.so` (or a direct rANS reimplementation) would
-eliminate (1) and (3). The interface would be:
-
-```cpp
-std::vector<uint8_t> eb_compress(float* symbols, int H, int W, int C,
-                                  int32_t* cdf, int32_t* cdf_len, int32_t* offset,
-                                  float* medians);
-```
-
-### 9.5 New Script: `inference_fullimage.py`
-
-Proposed script (to be created) that wraps the full workflow:
-
-```text
-load_full_image(path)           # [H, W, 2] sym_Noisy.npy
-pad_to_multiple(image, 256)     # ensure divisibility
-extract_patch_grid(image, 256, overlap)
-for each patch:                 # producer-consumer pipeline
-    preprocess
-    DPU encode
-    entropy compress
-    entropy decompress
-    DPU decode
-    postprocess
-reconstruct_from_patches(blended)
-save output + metrics
-```
+- **NEON-vectorize `normalize` + `denorm`** (`patch_transforms.hpp`): ~18.7 ms/patch of scalar
+  `std::log`/`exp` (131K calls), now ~10% of the full pipeline (much larger share for FP). Highest-value
+  CPU optimization.
+- **Full-image streaming inference**: accept a full SAR image (arbitrary size), pad to ×256, extract
+  an overlapping patch grid, run a producer-consumer pipeline (overlap patch N+1 DPU with patch N
+  entropy), blend, report quality + throughput — the realistic "receive image → compress → transmit
+  bitstream" scenario. Would reuse the benchmark's pipelining work (`FPGA_benchmark.md`, M4+).
 
 ---
 
-## 10. Deployment Workflow (Recap)
+## 10. Deployment (recap)
 
-The host-side orchestrator `deploy.py` manages the full pipeline:
-
-```text
-[Host/Container]  quantize.sh → model_quant.py (calib + deploy xmodel)
-[Host/Container]  vai_c_xir   → compiled *.xmodel
-[Host]            export_entropy_params() → entropy_params.npz + entropy_params/*.npy
-[Host]            rsync --exclude=results active_model/ → ZCU102:/home/root/SAR_DDC/active_model/
-[ZCU102]          build_cpp/inference_hybrid --xmodel active_model/*.xmodel \
-                    --params active_model/entropy_params --data data/test_sub500_seed42.npy
-[Host]            scp results/ ← ZCU102
-```
-
-Python inference scripts (`inference_hybrid.py`, etc.) are no longer copied into each
-compiled model directory. The C++ binary (`build_cpp/inference_hybrid`) is built once and
-reused for all models. Use `deploy.py --rebuild-cpp` or `batch_deploy.py` (which rebuilds
-automatically) to push updated sources and recompile on the board.
-
-Results land in `results/fpga/active_model/results/`.
-
-For step-by-step deployment notes, environment-specific settings, and known issues encountered along the way, see [docs/Vitis-AI_journey.md](Vitis-AI_journey.md).
+`deploy.py` (host): quantize/compile in the Vitis-AI Docker (`model_quant.py` + `vai_c_xir`) →
+`export_entropy_params` writes `entropy_params/*.npy` → `rsync --exclude=results active_model/` →
+build/run the C++ binary on the board → fetch `results/`. `--rebuild-cpp` (or `batch_deploy.py`)
+pushes updated C++ sources and recompiles. Step-by-step notes + historical issues:
+`Vitis-AI_journey.md`.

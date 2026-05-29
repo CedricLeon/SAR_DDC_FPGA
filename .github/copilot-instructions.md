@@ -12,7 +12,7 @@ Read **only** the document(s) relevant to your current task — do not load all 
 | Model architecture, MERLIN theory, loss, signal equations | [docs/Method.md](../docs/Method.md) |
 | Data source, preprocessing pipeline, HDF5 schema, normalisation | [docs/Data.md](../docs/Data.md) |
 | FPGA inference pipeline, DPU runners, entropy models, known issues | [docs/FPGA_inference.md](../docs/FPGA_inference.md) |
-| ZCU102 hardware specs, benchmark methodology, power measurement | [docs/performance_benchmark_implementation.md](../docs/performance_benchmark_implementation.md) |
+| Benchmark: ZCU102 hardware, methodology, power, results, future work | [docs/FPGA_benchmark.md](../docs/FPGA_benchmark.md) |
 | Deployment journal, resolved/open Vitis-AI issues, changelog | [docs/Vitis-AI_journey.md](../docs/Vitis-AI_journey.md) |
 
 > Before deep-diving an FPGA-related bug, check `docs/Vitis-AI_journey.md` — the issue may already be documented.
