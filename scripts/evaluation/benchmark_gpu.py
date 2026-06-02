@@ -480,14 +480,126 @@ class RAPLPowerSampler:
 # ---------------------------------------------------------------------------
 # Data helpers
 # ---------------------------------------------------------------------------
-def make_dummy_input(device: torch.device) -> Tensor:
-    """Create a random normalised [1, 2, 256, 256] input (NCHW, already log-normalised)."""
-    return torch.randn(1, 2, IMAGE_SIZE, IMAGE_SIZE, device=device, dtype=torch.float32)
-
-
 def normalize_input(x_lin: Tensor) -> Tensor:
     """Normalise linear-amplitude [B, 2, H, W] to log-scale [0,1] as SARDDCModule.forward does."""
     return (torch.log(torch.square(x_lin) + EPS) - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
+
+
+def load_subset(data_path: Path, subset: int, device: torch.device) -> Tensor:
+    """Load the first `subset` real patches (real+imag), normalised, as [n, 2, 256, 256].
+
+    Cycles the SAME test subset the FPGA benchmark uses (data/test_sub500_seed42.npy, shape [N,
+    256, 256, 4] = real, imag, ADAM-NOC, MERLIN — raw amplitude) so latency, throughput AND
+    compressed-byte counts are comparable across platforms.
+    """
+    arr = np.load(data_path)
+    if arr.ndim != 4 or arr.shape[-1] < 2:
+        raise ValueError(f"Expected test array [N, 256, 256, >=2], got {tuple(arr.shape)}")
+    n = min(subset, arr.shape[0])
+    patches = arr[:n, :, :, 0:2]  # real, imag (raw amplitude)
+    x = torch.from_numpy(patches).float().permute(0, 3, 1, 2).contiguous()  # [n, 2, H, W]
+    return normalize_input(x).to(device)
+
+
+# ---------------------------------------------------------------------------
+# Aligned-schema helpers (mirror the C++ benchmark_hardware output)
+# ---------------------------------------------------------------------------
+# Canonical (FPGA-bare) entropy stage names; host-only ops get a `host_` prefix.
+_ENTROPY_STAGES = {"eb_compress", "eb_decompress", "gc_compress", "gc_decompress"}
+
+
+def _canonical_stage(label: str) -> str:
+    """Map an internal benchmark_gpu step label to the canonical FPGA-aligned stage name.
+
+    gpu_g_a / nn_g_a   -> g_a          (NN stages, bare) cpu_eb_compress    -> eb_compress (entropy
+    stages, bare) preprocess         -> normalize    (same CPU log-amp normalisation as the FPGA
+    stage) postprocess        -> denorm       (same CPU denormalisation as the FPGA stage)
+    cpu_concat_abs     -> host_concat_abs  (host-only reshaping, no FPGA stage equivalent)
+    """
+    for pfx in ("gpu_", "nn_"):
+        if label.startswith(pfx):
+            return label[len(pfx) :]
+    if label.startswith("cpu_"):
+        bare = label[len("cpu_") :]
+        return bare if bare in _ENTROPY_STAGES else f"host_{bare}"
+    if label == "preprocess":
+        return "normalize"
+    if label == "postprocess":
+        return "denorm"
+    return label
+
+
+def _to_aligned_stages(step_summary: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+    """Convert the seconds-based step summary to FPGA-aligned ms stages with canonical names."""
+    out: dict[str, dict[str, float]] = {}
+    for label, st in step_summary.items():
+        out[_canonical_stage(label)] = {
+            "mean_ms": st["mean_s"] * 1e3,
+            "std_ms": st["std_s"] * 1e3,
+            "median_ms": st["median_s"] * 1e3,
+            "p95_ms": st["p95_s"] * 1e3,
+            "min_ms": st["min_s"] * 1e3,
+            "max_ms": st["max_s"] * 1e3,
+            "n": st["n"],
+        }
+    return out
+
+
+def _aligned_power(
+    platform: str,
+    gpu_active: dict | None,
+    rapl_active: dict | None,
+    gpu_idle: dict | None,
+    rapl_idle: dict | None,
+    total_latency_mean_ms: float,
+) -> dict[str, Any]:
+    """Build the normalized cross-platform power block.
+
+    active_w  : GPU board (nvidia-smi) + CPU package/DRAM (RAPL) for `gpu`; RAPL only for `cpu`.
+    energy    : active_w (W) x total_latency_mean_ms (ms) = mJ per patch.
+    Values are None (not 0) when the underlying sampler is unavailable (e.g. RAPL needs root).
+    Scopes differ per platform (carried in `power_scope`) — compare energy/inference, with caveat.
+    """
+
+    def _rapl_total(d: dict | None) -> float | None:
+        if not d:
+            return None
+        return round(sum(v["avg_power_w"] for v in d.values()), 4)
+
+    def _combine(gpu_w: float | None, cpu_w: float | None) -> float | None:
+        parts = [w for w in (gpu_w, cpu_w) if w is not None]
+        return round(sum(parts), 4) if parts else None
+
+    gpu_a = gpu_active["avg_power_w"] if gpu_active else None
+    gpu_i = gpu_idle["avg_power_w"] if gpu_idle else None
+    cpu_a = _rapl_total(rapl_active)
+    cpu_i = _rapl_total(rapl_idle)
+
+    if platform == "gpu":
+        active_w, idle_w, scope = _combine(gpu_a, cpu_a), _combine(gpu_i, cpu_i), "GPU_board+RAPL"
+    else:
+        active_w, idle_w, scope = cpu_a, cpu_i, "RAPL_pkg+dram"
+
+    dynamic_w = (
+        round(active_w - idle_w, 4) if (active_w is not None and idle_w is not None) else None
+    )
+    energy = round(active_w * total_latency_mean_ms, 4) if active_w is not None else None
+    dyn_energy = round(dynamic_w * total_latency_mean_ms, 4) if dynamic_w is not None else None
+
+    return {
+        "power_scope": scope,
+        "active_w": active_w,
+        "idle_w": idle_w,
+        "dynamic_w": dynamic_w,
+        "energy_mj_per_patch": energy,
+        "dynamic_energy_mj_per_patch": dyn_energy,
+        "native": {  # raw sampler output, untouched
+            "gpu_active": gpu_active,
+            "rapl_active": rapl_active,
+            "gpu_idle": gpu_idle,
+            "rapl_idle": rapl_idle,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -945,19 +1057,24 @@ def run_benchmark_on_device(
     net: torch.nn.Module,
     device: torch.device,
     scenario: str,
+    arch: str,
+    data_path: Path,
+    subset: int,
     n_warmup: int,
     n_iters: int,
     measure_power: bool,
     power_poll_hz: float,
     idle_baseline_s: float = 10.0,
 ) -> dict[str, Any]:
-    """Run the benchmark on a single device and return the results dict."""
+    """Run the benchmark on a single device and return the aligned results dict."""
     is_gpu = device.type == "cuda"
-    platform = f"GPU_{torch.cuda.get_device_name(0).replace(' ', '_')}" if is_gpu else "CPU"
+    platform = "gpu" if is_gpu else "cpu"  # canonical platform key
+    accelerator = "GPU" if is_gpu else "none"
+    device_name = torch.cuda.get_device_name(0).replace(" ", "_") if is_gpu else "host_cpu"
     nn_prefix = "gpu" if is_gpu else "nn"
 
     print(f"\n{'='*60}")
-    print(f"  BENCHMARKING ON: {platform}")
+    print(f"  BENCHMARKING ON: {platform} ({device_name})")
     print(f"{'='*60}")
     print(f"  Scenario : {scenario}")
     print(f"  Warmup   : {n_warmup}")
@@ -967,9 +1084,10 @@ def run_benchmark_on_device(
     net = net.to(device)
     net.eval()
 
-    # ---- Prepare input ----
-    x = make_dummy_input(device)
-    print(f"  Input    : {list(x.shape)} on {device}")
+    # ---- Prepare input: cycle the same real subset the FPGA uses ----
+    xs = load_subset(data_path, subset, device)  # [n_sub, 2, 256, 256] normalised
+    n_sub = xs.shape[0]
+    print(f"  Input    : {n_sub} real patches cycled, {list(xs.shape[1:])} on {device}")
 
     # ---- Select scenario ----
     scenario_fn_map = {
@@ -981,11 +1099,12 @@ def run_benchmark_on_device(
     }
     scenario_fn = scenario_fn_map[scenario]
 
-    # Pre-compress for decompress scenario
-    cached: dict[str, Any] | None = None
+    # Pre-compress for decompress scenario (one cache per subset patch)
+    caches: list[dict[str, Any]] | None = None
     if scenario == "decompress":
-        print("  Pre-compressing for decompress scenario...")
-        cached = _precompress(x, net, device)
+        print("  Pre-compressing subset for decompress scenario...")
+        with torch.inference_mode():
+            caches = [_precompress(xs[i].unsqueeze(0), net, device) for i in range(n_sub)]
 
     # ---- Power setup ----
     gpu_power: NvidiaSmiPowerSampler | None = None
@@ -1029,11 +1148,12 @@ def run_benchmark_on_device(
     print(f"\n  Warmup ({n_warmup} iterations)...")
     warmup_timer = StepTimer()
     with torch.inference_mode():
-        for _ in range(n_warmup):
+        for i in range(n_warmup):
+            xi = xs[i % n_sub].unsqueeze(0)
             kwargs: dict[str, Any] = {}
             if scenario == "decompress":
-                kwargs["cached"] = cached
-            scenario_fn(x, net, warmup_timer, device, **kwargs)
+                kwargs["cached"] = caches[i % n_sub]
+            scenario_fn(xi, net, warmup_timer, device, **kwargs)
 
     # ---- Measured runs ----
     print(f"  Benchmarking ({n_iters} iterations)...")
@@ -1048,11 +1168,12 @@ def run_benchmark_on_device(
 
     wall_start = time.perf_counter()
     with torch.inference_mode():
-        for _ in range(n_iters):
+        for i in range(n_iters):
+            xi = xs[i % n_sub].unsqueeze(0)
             kwargs = {}
             if scenario == "decompress":
-                kwargs["cached"] = cached
-            nbytes = scenario_fn(x, net, timer, device, cuda_timer, **kwargs)
+                kwargs["cached"] = caches[i % n_sub]
+            nbytes = scenario_fn(xi, net, timer, device, cuda_timer, **kwargs)
             total_bytes_list.append(nbytes)
     wall_end = time.perf_counter()
 
@@ -1074,55 +1195,52 @@ def run_benchmark_on_device(
 
     iter_mean = timer.total_mean()
 
-    # Map FPGA-style field names
-    nn_label = "gpu" if is_gpu else "nn"
+    total_latency_mean_ms = iter_mean * 1000
+    avg_bytes = (
+        statistics.mean(total_bytes_list) if total_bytes_list and total_bytes_list[0] > 0 else None
+    )
+
+    # ---- Aligned result block (mirrors benchmark_hardware schema) ----
     results: dict[str, Any] = {
+        # identity / aligned with the C++ FPGA benchmark
         "platform": platform,
-        "device": str(device),
+        "accelerator": accelerator,
+        "config": "baseline",  # host has no s0/s1 axis
         "scenario": scenario,
-        "timestamp": datetime.now().isoformat(),
-        "n_warmup": n_warmup,
-        "n_iters": n_iters,
-        # Latency breakdown (wall-clock via perf_counter + sync)
-        "latency_breakdown": step_summary,
-        "latency_total_mean_s": iter_mean,
-        "latency_total_mean_ms": iter_mean * 1000,
-        f"latency_{nn_label}_total_mean_ms": nn_total_mean * 1000,
-        "latency_cpu_total_mean_ms": cpu_total_mean * 1000,
-        "latency_wall_total_s": wall_total,
-        # Throughput
+        "arch": arch,
+        "warmup": n_warmup,
+        "iters": n_iters,
+        "subset_patches": n_sub,
+        "wall_time_s": wall_total,
         "throughput_fps": n_iters / wall_total,
-        # Compression
-        "avg_compressed_bytes": (
-            statistics.mean(total_bytes_list)
-            if total_bytes_list and total_bytes_list[0] > 0
-            else None
-        ),
+        "total_latency_mean_ms": total_latency_mean_ms,
+        "evaluated_at": datetime.now().isoformat(),
+        "stages": _to_aligned_stages(step_summary),  # bare canonical names + host_*, ms
+        "bytes_per_iter": total_bytes_list,
+        # NN vs host(CPU) split — makes "GPU(+CPU)" vs "CPU-only" explicit
+        "nn_latency_mean_ms": nn_total_mean * 1000,
+        "host_latency_mean_ms": cpu_total_mean * 1000,
+        "avg_compressed_bytes": avg_bytes,
+        # ---- extras (host-specific, kept for debugging) ----
+        "device": str(device),
+        "device_name": device_name,
+        "latency_breakdown": step_summary,  # seconds-based, original labels
+        "latency_total_mean_s": iter_mean,
     }
-
-    # CUDA event timing (GPU only, more precise for NN steps)
     if cuda_step_summary:
-        results["latency_breakdown_cuda_events"] = cuda_step_summary
+        results["latency_breakdown_cuda_events"] = cuda_step_summary  # GPU, µs-precise
 
-    # Power
-    power_data: dict[str, Any] = {}
-    if gpu_power:
-        power_data["gpu"] = gpu_power.results()
-    if rapl_power:
-        power_data["cpu_rapl"] = rapl_power.results()
-    if idle_gpu_results:
-        power_data["idle_gpu"] = idle_gpu_results
-    if idle_rapl_results:
-        power_data["idle_cpu_rapl"] = idle_rapl_results
-
-    if power_data:
-        # Compute totals
-        if "gpu" in power_data:
-            power_data["gpu_avg_w"] = power_data["gpu"]["avg_power_w"]
-        if "cpu_rapl" in power_data:
-            rapl_total = sum(v["avg_power_w"] for v in power_data["cpu_rapl"].values())
-            power_data["cpu_rapl_total_avg_w"] = round(rapl_total, 4)
-        results["power"] = power_data
+    # ---- Power (normalized cross-platform block) ----
+    if measure_power:
+        results["power"] = _aligned_power(
+            platform=platform,
+            gpu_active=gpu_power.results() if gpu_power else None,
+            rapl_active=rapl_power.results() if rapl_power else None,
+            gpu_idle=idle_gpu_results,
+            rapl_idle=idle_rapl_results,
+            total_latency_mean_ms=total_latency_mean_ms,
+        )
+        results["power"]["idle_baseline_s"] = idle_baseline_s
 
     return results
 
@@ -1171,9 +1289,23 @@ def main() -> None:
     parser.add_argument("--no-gpu", action="store_true", help="Skip GPU benchmark.")
     parser.add_argument("--no-cpu", action="store_true", help="Skip CPU benchmark.")
     parser.add_argument(
-        "--output-dir", default=None, help="Output directory (default: results/<ckpt_name>/)"
+        "--data",
+        default="data/processed_hdf5/TSX_spatial_splits_5_256x256/test_sub500_seed42.npy",
+        help="Test .npy [N,256,256,4] cycled for fair comparison (same subset the FPGA uses).",
+    )
+    parser.add_argument(
+        "--subset", type=int, default=20, help="Patches to cycle (default: 20, matches FPGA)."
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Output directory (default: results/benchmark_unified/<model_name>/).",
     )
     args = parser.parse_args()
+    data_path = Path(args.data).resolve()
+    if not data_path.exists():
+        print(f"Error: test data not found at {data_path}")
+        sys.exit(1)
 
     # ---- Resolve checkpoint ----
     manifest: dict[str, Any] | None = None
@@ -1192,14 +1324,21 @@ def main() -> None:
             print(f"Error: checkpoint not found at {ckpt_path}")
             sys.exit(1)
 
-    # Determine output directory
+    # Resolve arch (errors over silent guesses — needed for cross-platform joins)
+    if not model_name:
+        print(
+            "Error: arch cannot be resolved without a compiled model name.\n"
+            "Use --model-dir (reads manifest.json) so the cross-platform comparison can "
+            "join GPU/CPU rows with the FPGA results by architecture."
+        )
+        sys.exit(1)
+    arch = model_name.split("-", 1)[0]  # e.g. "SHyp-relu_s1_L1000_pt" -> "SHyp"
+
+    # Determine output directory (unified tree; sibling to the FPGA results/benchmark_hardware/)
     if args.output_dir:
         out_dir = Path(args.output_dir)
-    elif model_name:
-        out_dir = Path("results") / "benchmark" / model_name
     else:
-        run_name = ckpt_path.parent.parent.name  # e.g. "2026-02-07_00-51-42"
-        out_dir = Path("results") / "benchmark" / run_name
+        out_dir = Path("results") / "benchmark_unified" / model_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- Load model ----
@@ -1218,6 +1357,9 @@ def main() -> None:
             net=net,
             device=torch.device("cuda"),
             scenario=args.scenario,
+            arch=arch,
+            data_path=data_path,
+            subset=args.subset,
             n_warmup=args.warmup,
             n_iters=args.iters,
             measure_power=args.power,
@@ -1227,7 +1369,7 @@ def main() -> None:
         gpu_results["hw_info"] = get_gpu_info()
         gpu_results["model_info"] = model_info
 
-        gpu_path = out_dir / f"benchmark_gpu_{args.scenario}.json"
+        gpu_path = out_dir / f"baseline_{args.scenario}_gpu.json"
         with open(gpu_path, "w") as f:
             json.dump(gpu_results, f, indent=2, default=str)
         print(f"\n  GPU results saved to {gpu_path}")
@@ -1241,6 +1383,9 @@ def main() -> None:
             net=net,
             device=torch.device("cpu"),
             scenario=args.scenario,
+            arch=arch,
+            data_path=data_path,
+            subset=args.subset,
             n_warmup=args.warmup,
             n_iters=args.iters,
             measure_power=args.power,
@@ -1250,7 +1395,7 @@ def main() -> None:
         cpu_results["hw_info"] = get_cpu_info()
         cpu_results["model_info"] = model_info
 
-        cpu_path = out_dir / f"benchmark_cpu_{args.scenario}.json"
+        cpu_path = out_dir / f"baseline_{args.scenario}_cpu.json"
         with open(cpu_path, "w") as f:
             json.dump(cpu_results, f, indent=2, default=str)
         print(f"\n  CPU results saved to {cpu_path}")
@@ -1264,14 +1409,11 @@ def _print_summary(label: str, results: dict[str, Any]) -> None:
     print(f"\n{'='*60}")
     print(f"  BENCHMARK SUMMARY — {label} — {results['scenario']}")
     print(f"{'='*60}")
-    print(f"  Total latency  : {results['latency_total_mean_ms']:.2f} ms / patch")
-
-    # Find the NN total key
-    for key in ("latency_gpu_total_mean_ms", "latency_nn_total_mean_ms"):
-        if key in results:
-            nn_label = "GPU" if "gpu" in key else "NN"
-            print(f"    {nn_label} time     : {results[key]:.2f} ms")
-    print(f"    CPU time     : {results['latency_cpu_total_mean_ms']:.2f} ms")
+    acc = results.get("accelerator", "none")
+    nn_label = acc if acc != "none" else "NN(CPU)"
+    print(f"  Total latency  : {results['total_latency_mean_ms']:.2f} ms / patch")
+    print(f"    {nn_label} time : {results['nn_latency_mean_ms']:.2f} ms")
+    print(f"    host(CPU) time : {results['host_latency_mean_ms']:.2f} ms")
     print(f"  Throughput     : {results['throughput_fps']:.2f} patches/s")
 
     if results.get("avg_compressed_bytes"):
@@ -1279,13 +1421,15 @@ def _print_summary(label: str, results: dict[str, Any]) -> None:
         print(f"  Avg BPP        : {bpp:.4f}")
 
     if "power" in results:
-        pdata = results["power"]
-        if "gpu_avg_w" in pdata:
-            print(f"  GPU power      : {pdata['gpu_avg_w']:.2f} W")
-        if "cpu_rapl_total_avg_w" in pdata:
-            print(f"  CPU power      : {pdata['cpu_rapl_total_avg_w']:.2f} W")
-        if "idle_gpu" in pdata:
-            print(f"  GPU idle       : {pdata['idle_gpu']['avg_power_w']:.2f} W")
+        p = results["power"]
+        aw, ew = p.get("active_w"), p.get("energy_mj_per_patch")
+        print(
+            f"  Active power   : {aw:.2f} W ({p.get('power_scope')})"
+            if aw is not None
+            else "  Active power   : unavailable (RAPL needs root)"
+        )
+        if ew is not None:
+            print(f"  Energy/patch   : {ew:.1f} mJ")
 
     print("\n  Per-step breakdown:")
     for step, stats in results["latency_breakdown"].items():
