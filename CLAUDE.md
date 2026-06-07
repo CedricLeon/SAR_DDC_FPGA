@@ -42,7 +42,7 @@ Read only what's relevant to the task at hand.
 | FPGA inference pipeline (C++), DPU runners, entropy models | `docs/FPGA_inference.md` ← read first for inference work |
 | Benchmark: ZCU102 hardware, methodology, power, results, future work + journal | `docs/FPGA_benchmark.md` |
 | Why/how we ported Python→C++, before/after numbers, bug archive | `docs/python_to_cpp_migration_journal.md` |
-| GPU/CPU benchmark tooling (legacy, raw — pending unified-runner refactor) | `docs/GPU_benchmark.md` |
+| GPU/CPU host benchmark + cross-platform (CPU/GPU/FPGA) comparison & unified runner | `docs/GPU_benchmark.md` |
 | Vitis-AI issues, deployment journal | `docs/Vitis-AI_journey.md` (check here before debugging Vitis-AI issues) |
 
 ---
@@ -142,6 +142,23 @@ build_cpp/benchmark_hardware --xmodel active_model/*.xmodel --params active_mode
 # On board, single model: benchmark sweep + roofline collection
 python3 /home/root/SAR_DDC/run_benchmarks.py ResSHyp-relu_s0_L1000_pt
 python3 /home/root/SAR_DDC/collect_roofline.py ResSHyp-relu_s0_L1000_pt
+```
+
+### Cross-platform benchmark (CPU / GPU / FPGA — one command)
+
+Host GPU/CPU benchmark locally + FPGA sweep over SSH, into one results tree
+(`results/benchmark_unified/` for host, `results/benchmark_hardware/` for FPGA). Pluggable backends —
+add new HW (e.g. Jetson) with a backend + `--no-<hw>` toggle. Analysis →
+`notebooks/benchmark_cross_platform_analysis.ipynb`. Full doc → `docs/GPU_benchmark.md`.
+
+```bash
+conda activate DDC_FPGA
+python scripts/benchmark/run_unified_benchmark.py --model-dir results/fpga/active_model/ --power
+#   --no-fpga (host only)  --no-gpu --no-cpu (FPGA only)  --scenarios compress,full  --rebuild-cpp
+
+# Host only, single device (CPU-only quick check, no board needed)
+python scripts/evaluation/benchmark_gpu.py --model-dir results/fpga/active_model/ \
+    --scenario compress --no-gpu --iters 100 --warmup 20 --power
 ```
 
 ---

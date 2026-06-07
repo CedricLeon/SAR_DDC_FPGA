@@ -199,9 +199,20 @@ python scripts/fpga/benchmark/benchmark_sweep.py --models ResSHyp-relu_s0_L1000_
     --skip-ceiling --skip-roofline --rebuild-cpp --force
 ```
 
-> GPU/CPU benchmarking (`scripts/evaluation/benchmark_gpu.py`) and unified cross-platform comparison are
-> legacy/pending — see [docs/GPU_benchmark.md](docs/GPU_benchmark.md) and the unified-runner TODO
-> in [docs/FPGA_benchmark.md](docs/FPGA_benchmark.md).
+Results: `results/benchmark_hardware/<model_name>/` as JSON.
+Analysis notebook: `notebooks/benchmark_hardware_analysis.ipynb`.
 
-Runs 5 scenarios: `full`, `compress`, `decompress`, `nn_only`, `entropy_only`.
-Results: `results/benchmark/<model_name>/` as JSON. Analysis notebook: `notebooks/benchmark_analysis.ipynb`.
+#### Cross-platform (CPU / GPU / FPGA)
+
+One command runs the host GPU/CPU benchmark locally and the FPGA sweep over SSH, into one results tree —
+see [docs/GPU_benchmark.md](docs/GPU_benchmark.md) for the full reference (platform semantics, aligned
+schema, power/energy).
+
+```bash
+conda activate DDC_FPGA
+python scripts/benchmark/run_unified_benchmark.py --model-dir results/fpga/active_model/ --power
+#   --no-fpga (host only)  --no-gpu --no-cpu (FPGA only)  --scenarios compress,full
+```
+
+Host results → `results/benchmark_unified/<model>/`; FPGA results → `results/benchmark_hardware/<model>/`.
+Analysis notebook: `notebooks/benchmark_cross_platform_analysis.ipynb`.

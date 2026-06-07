@@ -1,13 +1,18 @@
-"""_benchmark_hardware_loader.py — load C++ benchmark_hardware JSON results into DataFrames.
+"""_benchmark_loader.py — load benchmark JSON results into DataFrames (all platforms).
 
-Canonical storage layout expected by these functions:
-    results/benchmark_hardware/<model_name>/<config>_<scenario>[_dpuN][_entN].json
+ONE loader for both the FPGA-only notebook and the cross-platform notebook. It reads two trees:
+    results/benchmark_hardware/<model>/<config>_<scenario>[_dpuN][_entN].json   (FPGA, C++ benchmark_hardware)
+    results/benchmark_unified/<model>/baseline_<scenario>_<platform>.json        (host GPU/CPU, benchmark_gpu.py)
 
-Three public loader functions + one join utility:
-    load_runs(results_dir)             -> DataFrame (one row per benchmark run)
-    load_stage_breakdowns(results_dir) -> DataFrame (long format: one row per run x stage)
+Both emit the same aligned schema (config/scenario/stages{mean_ms}/throughput_fps/power/...).
+FPGA JSONs have no `platform` field → tagged `platform="fpga"`; host JSONs carry `platform` ("gpu"|"cpu").
+
+Public API:
+    load_runs(hardware_dir, unified_dir=None) -> DataFrame (one row per run; pass only hardware_dir for FPGA-only)
+    load_stage_breakdowns(hardware_dir, unified_dir=None) -> DataFrame (long: one row per run x stage)
     load_quality_metrics(compiled_dir) -> DataFrame (one row per compiled model)
     join_hw_quality(runs_df, quality_df) -> DataFrame (left join on model_name)
+Notebooks discard whatever columns they don't need after loading.
 """
 
 import json
@@ -20,45 +25,49 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # Identity columns — the composite key that must be unique in runs_df.
 # Never drop these in groupby; the hygiene check enforces their presence.
+# `platform` distinguishes fpga / gpu / cpu (and future HW).
 # ---------------------------------------------------------------------------
-IDENTITY_COLS = ["model_name", "config", "scenario", "dpu_cores", "entropy_threads"]
+IDENTITY_COLS = ["platform", "model_name", "config", "scenario", "dpu_cores", "entropy_threads"]
+
+# NN (accelerator) stages vs everything else (host/entropy/normalize) — for the nn/host split.
+_NN_STAGES = {"g_a", "h_a", "h_s", "g_s"}
 
 
-def load_runs(results_dir: Path | str) -> pd.DataFrame:
-    """Return one row per benchmark JSON found under results_dir/<model>/*.json.
+def _iter_run_jsons(*dirs: Path | str):
+    """Yield (json_path, model_name) over one or more results trees, skipping meta subdirs."""
+    for d in dirs:
+        if d is None:
+            continue
+        for json_path in sorted(Path(d).glob("*/*.json")):
+            if json_path.parent.name.startswith("_"):
+                continue  # skip _roofline and other meta subdirs
+            yield json_path, json_path.parent.name
 
+
+def load_runs(hardware_dir: Path | str, unified_dir: Path | str | None = None) -> pd.DataFrame:
+    """Return one row per benchmark JSON across the FPGA + (optional) host trees.
+
+    Backward-compatible: ``load_runs(benchmark_hardware_dir)`` loads FPGA-only.
     Raises ValueError if two rows share the same composite key (IDENTITY_COLS).
     """
-    results_dir = Path(results_dir)
-    rows = []
-    for json_path in sorted(results_dir.glob("*/*.json")):
-        if json_path.parent.name.startswith("_"):
-            continue  # skip _roofline and other meta subdirs
-        model_name = json_path.parent.name
-        row = _parse_run(json_path, model_name)
-        rows.append(row)
-
+    rows = [_parse_run(p, m) for p, m in _iter_run_jsons(hardware_dir, unified_dir)]
     if not rows:
         return pd.DataFrame()
-
     df = pd.DataFrame(rows)
-    _check_uniqueness(df, json_paths={r["_path"]: r for r in rows})
-    df = df.drop(columns=["_path"])
-    return df.reset_index(drop=True)
+    _check_uniqueness(df)
+    return df.drop(columns=["_path"]).reset_index(drop=True)
 
 
-def load_stage_breakdowns(results_dir: Path | str) -> pd.DataFrame:
-    """Return long-format DataFrame: one row per (run, stage) pair.
+def load_stage_breakdowns(
+    hardware_dir: Path | str, unified_dir: Path | str | None = None
+) -> pd.DataFrame:
+    """Return long-format DataFrame: one row per (run, stage) pair, across both trees.
 
-    Columns: IDENTITY_COLS + model_name, arch + stage, mean_ms, std_ms,
-             median_ms, p95_ms, min_ms, max_ms, n
+    Columns: IDENTITY_COLS + arch + stage, mean_ms, std_ms, median_ms, p95_ms, min_ms, max_ms, n.
+    Stage names are canonical/bare for both FPGA and host (host-only ops are `host_*`).
     """
-    results_dir = Path(results_dir)
     rows = []
-    for json_path in sorted(results_dir.glob("*/*.json")):
-        if json_path.parent.name.startswith("_"):
-            continue
-        model_name = json_path.parent.name
+    for json_path, model_name in _iter_run_jsons(hardware_dir, unified_dir):
         with open(json_path) as f:
             d = json.load(f)
         identity = _identity_from_json(d, model_name)
@@ -114,8 +123,12 @@ def load_quality_metrics(compiled_dir: Path | str) -> pd.DataFrame:
                 "bpp": merlin.get("bpp"),
                 "psnr_MERLIN": merlin.get("psnr"),
                 "ssim_MERLIN": merlin.get("ssim"),
+                "epd_MERLIN": merlin.get("epd"),
+                "mse_MERLIN": merlin.get("mse"),
                 "psnr_ADAM": adam.get("psnr"),
                 "ssim_ADAM": adam.get("ssim"),
+                "epd_ADAM": adam.get("epd"),
+                "mse_ADAM": adam.get("mse"),
                 "enl_recon": recon.get("enl"),
                 "ratio_enl_recon": recon.get("ratio_enl"),
             }
@@ -148,10 +161,15 @@ def join_hw_quality(runs_df: pd.DataFrame, quality_df: pd.DataFrame) -> pd.DataF
 
 
 def _identity_from_json(d: dict, model_name: str) -> dict:
-    """Extract identity columns from a benchmark JSON dict."""
+    """Extract identity columns from a benchmark JSON dict.
+
+    `platform` defaults to "fpga" (the C++ benchmark_hardware JSONs carry no platform field);
+    host JSONs (benchmark_gpu.py) set it to "gpu"/"cpu".
+    """
     m = _ARCH_FROM_MODEL.match(model_name)
     arch = m.group(1) if m else d.get("arch", "unknown")
     return {
+        "platform": d.get("platform", "fpga"),
         "model_name": model_name,
         "arch": arch,
         "config": d.get("config"),
@@ -161,6 +179,71 @@ def _identity_from_json(d: dict, model_name: str) -> dict:
     }
 
 
+def _norm_power(d: dict, platform: str, lat_ms: float) -> dict:
+    """Unified cross-platform power columns (identical names for every platform).
+
+    FPGA: scope = MPSoC SoC power (from power.active.groups.MPSoC); also keeps the FPGA-specific
+          VCCINT/DPU_fabric columns (NaN for host rows).
+    host: reads the normalized block benchmark_gpu.py emits (active_w/idle_w/...).
+    energy_mJ_per_patch = active_W (W) x total_latency_mean_ms (ms) = mJ/patch.
+    """
+    nan = float("nan")
+    power = d.get("power", {}) or {}
+    # FPGA-specific rails/groups (kept for the FPGA-only notebook; NaN for host)
+    fpga = {
+        "idle_VCCINT_W": nan,
+        "active_VCCINT_W": nan,
+        "idle_MPSoC_W": nan,
+        "active_MPSoC_W": nan,
+        "idle_DPU_fabric_W": nan,
+        "active_DPU_fabric_W": nan,
+    }
+
+    if platform == "fpga":
+        idle_g = power.get("idle", {}).get("groups", {})
+        act_g = power.get("active", {}).get("groups", {})
+        idle_r = power.get("idle", {}).get("rails", {})
+        act_r = power.get("active", {}).get("rails", {})
+        fpga.update(
+            idle_VCCINT_W=idle_r.get("VCCINT", {}).get("avg_power_w", nan),
+            active_VCCINT_W=act_r.get("VCCINT", {}).get("avg_power_w", nan),
+            idle_MPSoC_W=idle_g.get("MPSoC", nan),
+            active_MPSoC_W=act_g.get("MPSoC", nan),
+            idle_DPU_fabric_W=idle_g.get("DPU_fabric", nan),
+            active_DPU_fabric_W=act_g.get("DPU_fabric", nan),
+        )
+        active_w, idle_w, scope = fpga["active_MPSoC_W"], fpga["idle_MPSoC_W"], "SoC_MPSoC"
+    else:  # gpu / cpu — benchmark_gpu.py normalized block (None when RAPL unavailable)
+        active_w = power.get("active_w", nan)
+        idle_w = power.get("idle_w", nan)
+        scope = power.get("power_scope", "host")
+
+    active_w = nan if active_w is None else active_w
+    idle_w = nan if idle_w is None else idle_w
+    dynamic_w = active_w - idle_w if not (np.isnan(active_w) or np.isnan(idle_w)) else nan
+    energy = active_w * lat_ms if not (np.isnan(active_w) or np.isnan(lat_ms)) else nan
+    dyn_energy = dynamic_w * lat_ms if not (np.isnan(dynamic_w) or np.isnan(lat_ms)) else nan
+
+    return {
+        **fpga,
+        "power_scope": scope,
+        "active_W": active_w,
+        "idle_W": idle_w,
+        "dynamic_W": dynamic_w,
+        "energy_mJ_per_patch": energy,
+        "dynamic_energy_mJ_per_patch": dyn_energy,
+    }
+
+
+def _nn_host_split(d: dict) -> dict:
+    """Sum stage means into NN (accelerator) vs host(CPU/entropy/normalize) latency, from
+    stages."""
+    stages = d.get("stages", {}) or {}
+    nn = sum(s.get("mean_ms", 0.0) for k, s in stages.items() if k in _NN_STAGES)
+    host = sum(s.get("mean_ms", 0.0) for k, s in stages.items() if k not in _NN_STAGES)
+    return {"nn_latency_ms": nn or float("nan"), "host_latency_ms": host or float("nan")}
+
+
 def _parse_run(json_path: Path, model_name: str) -> dict:
     """Parse a single benchmark JSON file into a flat dict of metrics, prefixed by identity
     columns."""
@@ -168,35 +251,15 @@ def _parse_run(json_path: Path, model_name: str) -> dict:
         d = json.load(f)
 
     identity = _identity_from_json(d, model_name)
+    lat_ms = d.get("total_latency_mean_ms", float("nan"))
 
     # Bytes statistics (absent for nn_only / entropy_only)
     bpi = d.get("bytes_per_iter")
     if bpi:
         arr = np.array(bpi, dtype=float)
-        bytes_mean = float(arr.mean())
-        bytes_std = float(arr.std())
+        bytes_mean, bytes_std = float(arr.mean()), float(arr.std())
     else:
-        bytes_mean = float("nan")
-        bytes_std = float("nan")
-
-    # Power — nested: power.{idle,active}.groups.<name> (float) and .rails.<name>.avg_power_w
-    power = d.get("power", {})
-    idle = power.get("idle", {})
-    act = power.get("active", {})
-    idle_groups = idle.get("groups", {})
-    act_groups = act.get("groups", {})
-    idle_rails = idle.get("rails", {})
-    act_rails = act.get("rails", {})
-
-    idle_v = idle_rails.get("VCCINT", {}).get("avg_power_w", float("nan"))
-    act_v = act_rails.get("VCCINT", {}).get("avg_power_w", float("nan"))
-    idle_m = idle_groups.get("MPSoC", float("nan"))
-    act_m = act_groups.get("MPSoC", float("nan"))
-    idle_d = idle_groups.get("DPU_fabric", float("nan"))
-    act_d = act_groups.get("DPU_fabric", float("nan"))
-
-    lat_ms = d.get("total_latency_mean_ms", float("nan"))
-    energy = act_m * lat_ms if not (np.isnan(act_m) or np.isnan(lat_ms)) else float("nan")
+        bytes_mean = bytes_std = float("nan")
 
     return {
         **identity,
@@ -209,18 +272,13 @@ def _parse_run(json_path: Path, model_name: str) -> dict:
         "total_latency_mean_ms": lat_ms,
         "bytes_per_iter_mean": bytes_mean,
         "bytes_per_iter_std": bytes_std,
-        "idle_VCCINT_W": idle_v,
-        "active_VCCINT_W": act_v,
-        "idle_MPSoC_W": idle_m,
-        "active_MPSoC_W": act_m,
-        "idle_DPU_fabric_W": idle_d,
-        "active_DPU_fabric_W": act_d,
-        "energy_mJ_per_patch": energy,
+        **_nn_host_split(d),
+        **_norm_power(d, identity["platform"], lat_ms),
         "_path": str(json_path),
     }
 
 
-def _check_uniqueness(df: pd.DataFrame, json_paths: dict) -> None:
+def _check_uniqueness(df: pd.DataFrame) -> None:
     """Raise ValueError if any two rows share the same composite key (IDENTITY_COLS)."""
     dupes = df[df.duplicated(subset=IDENTITY_COLS, keep=False)]
     if dupes.empty:
