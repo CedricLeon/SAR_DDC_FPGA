@@ -123,8 +123,12 @@ def load_quality_metrics(compiled_dir: Path | str) -> pd.DataFrame:
                 "bpp": merlin.get("bpp"),
                 "psnr_MERLIN": merlin.get("psnr"),
                 "ssim_MERLIN": merlin.get("ssim"),
+                "epd_MERLIN": merlin.get("epd"),
+                "mse_MERLIN": merlin.get("mse"),
                 "psnr_ADAM": adam.get("psnr"),
                 "ssim_ADAM": adam.get("ssim"),
+                "epd_ADAM": adam.get("epd"),
+                "mse_ADAM": adam.get("mse"),
                 "enl_recon": recon.get("enl"),
                 "ratio_enl_recon": recon.get("ratio_enl"),
             }
