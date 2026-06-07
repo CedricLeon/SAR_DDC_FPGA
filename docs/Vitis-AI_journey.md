@@ -7,6 +7,12 @@ Once I understand the toolchain and its processes better, I'll make a step-by-st
 
 ## Benchmark Analysis — Figure Polish & Multi-Model Expansion (2026-05-01)
 
+> **Superseded (2026-06-07).** `benchmark_analysis.ipynb` and `hardware_model_comparison.ipynb`
+> (and the frozen Python-era `results/benchmark/` they read) were removed when the unified
+> GPU/CPU/FPGA runner landed. Current notebooks: `benchmark_hardware_analysis.ipynb` (FPGA) and
+> `benchmark_cross_platform_analysis.ipynb` (cross-platform) — see `docs/GPU_benchmark.md`. The
+> steps below are kept as a historical record of the original (now-removed) work.
+
 Tracking the cleanup and expansion of `notebooks/benchmark_analysis.ipynb`, creation of a shared
 color system, and design of a new cross-model notebook.
 
@@ -105,12 +111,12 @@ All sub-tasks below are part of a single editing pass on `benchmark_analysis.ipy
 
 ---
 
-### Notebook scope (stable)
+### Notebook scope (stable, updated 2026-06-07)
 
 | Notebook | Scope |
 | --- | --- |
-| `benchmark_analysis.ipynb` | Single-model deep-dive: latency, power, energy, throughput |
-| `hardware_model_comparison.ipynb` | Cross-model: latency/energy vs lambda, architecture |
+| `benchmark_hardware_analysis.ipynb` | FPGA deep-dive: stages, S0→S1, throughput, roofline, power, cost-vs-quality |
+| `benchmark_cross_platform_analysis.ipynb` | Cross-platform CPU/GPU/FPGA: latency, throughput, energy, EDP, quality-vs-cost |
 | `compare_gpu_fpga.ipynb` | Quality delta: GPU vs FPGA reconstruction quality |
 | `RD-curve_ablation.ipynb` | Training ablation: activation functions, output padding |
 

@@ -138,7 +138,7 @@ Every plot is **argument-driven** (`series=[...]`, `scenario=`, `qmetric=`, `siz
 
 ---
 
-## 7. Fairness caveats (always surface these)
+## 7. Fairness caveats
 
 - **FP32 vs INT8**: GPU/CPU run FP32, FPGA INT8 → quality differs (PSNR/SSIM not equal); always pair
   speed/energy plots with the quality-vs-cost view.
@@ -148,16 +148,7 @@ Every plot is **argument-driven** (`series=[...]`, `scenario=`, `qmetric=`, `siz
 
 ---
 
-## 8. Paper-ready power description (host)
-
-GPU power is the full board draw from `nvidia-smi` polled in a background thread; CPU package + DRAM
-power via Intel RAPL energy counters. A 10 s idle baseline (model loaded, no inference) is captured per
-run and subtracted to report dynamic power. For the GPU platform, total power = GPU board + CPU package
-(entropy coding runs on the host CPU). (FPGA INA226/PMBus description: `FPGA_benchmark.md` §6.)
-
----
-
-## 9. Future work
+## 8. Future work
 
 - **Seed-averaged quality** (mean±std over the 6 compiled seeds) on the quality-vs-cost plots.
 - **Throughput-per-watt** and **full-scenario** cross-platform figures.
