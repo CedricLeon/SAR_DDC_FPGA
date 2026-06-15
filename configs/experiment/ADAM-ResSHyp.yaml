@@ -17,9 +17,9 @@ data:
 
 model:
   net:
-    no_output_padding: False
+    no_output_padding: True
     no_residual_blocks: False
-    activation: "gdn"
+    activation: "relu"
   criterion:
     metric: "merlin" # "mse" or "ssim" or "ms_ssim"
     lmbda: 100
