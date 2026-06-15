@@ -511,6 +511,17 @@ def _is_container_running() -> bool:
     return CONTAINER_NAME in result.stdout
 
 
+def _container_exists() -> bool:
+    """Check if a container with CONTAINER_NAME exists in any state (running OR stopped)."""
+    result = subprocess.run(
+        ["docker", "ps", "-a", "--filter", f"name=^/{CONTAINER_NAME}$", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return CONTAINER_NAME in result.stdout
+
+
 def _is_gpu_healthy() -> bool:
     """Check if the GPU inside the container is healthy by running nvidia-smi."""
     result = subprocess.run(
@@ -542,6 +553,11 @@ def ensure_container_healthy() -> None:
             print("GPU healthy. Reusing existing container.")
             return
         print("GPU dead (NVML error). Killing and restarting container...")
+        run(["docker", "rm", "-f", CONTAINER_NAME])
+    elif _container_exists():
+        # A stopped container still holds the name, so `docker run --name` would fail
+        # with exit 125 ("name already in use"). Remove it before starting fresh.
+        print(f"Stale stopped container '{CONTAINER_NAME}' found. Removing it...")
         run(["docker", "rm", "-f", CONTAINER_NAME])
     else:
         print(f"Container '{CONTAINER_NAME}' not found.")
