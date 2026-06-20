@@ -402,6 +402,76 @@ def export_manuscript(fig: Figure, manuscript_name: str | None, *, save: bool = 
     print(f"{g}→ manuscript:{e} {dst.relative_to(ROOT_DIR)}")
 
 
+# ---- statistical comparison ----------------------------------------------------------
+def compare_at_lambda(
+    df_a: pd.DataFrame,
+    df_b: pd.DataFrame,
+    label_a: str,
+    label_b: str,
+    *,
+    lmbda: float = 1000.0,
+    lambda_col: str = "lambda",
+    metric_prefix: str = "",
+    bpp_col: str = "bpp_bitstream",
+) -> None:
+    """Compare two independent model groups at a fixed λ.
+
+    Reports mean±std for each group and mean±SE for the difference, where SE is the
+    Welch standard error of the difference of means for two independent samples:
+
+        SE(Δ) = sqrt(var_A / n_A + var_B / n_B)
+
+    Args:
+        df_a / df_b:      Pre-filtered DataFrames (one group each), one row per seed.
+        label_a / label_b: Display names (e.g. ``"GPU"``, ``"FPGA"``, ``"ResSH"``).
+        lmbda:            λ value to compare at.
+        lambda_col:       Column holding λ values. ``"lambda"`` in the tidy long df
+                          returned by ``load_quality_runs``; ``"lmbda"`` in raw W&B CSV.
+        metric_prefix:    Prefix prepended to default metric column names, including any
+                          separator (e.g. ``"test_sub500/"`` for raw CSV; ``""`` for tidy df).
+        bpp_col:          BPP column name, without prefix (e.g. ``"bpp_bitstream"``).
+    """
+    _METRICS = [
+        (f"{metric_prefix}psnr_merlin", "PSNR [dB]", ".3f"),
+        (f"{metric_prefix}ssim_merlin", "SSIM", ".4f"),
+        (f"{metric_prefix}{bpp_col}", "bpp", ".4f"),
+    ]
+    sub_a = df_a[df_a[lambda_col] == lmbda]
+    sub_b = df_b[df_b[lambda_col] == lmbda]
+    if sub_a.empty or sub_b.empty:
+        print(f"  No data at λ={int(lmbda)}")
+        return
+
+    col_w = 16
+    _b, _e = "\033[34m", "\033[0m"
+
+    def ms(m, s, f):
+        return f"{format(m, f)}±{format(s, f)}"
+
+    print(
+        f"\n{_b}{label_a} vs {label_b}  (λ={int(lmbda)},  n_A={len(sub_a)}  n_B={len(sub_b)}):{_e}"
+    )
+    print(
+        f"  {'metric':<10}  {label_a + ' mean±std':>{col_w}}  "
+        f"{label_b + ' mean±std':>{col_w}}  {'Δ mean±SE':>{col_w}}"
+    )
+    print(f"  {'-' * 10}  {'-' * col_w}  {'-' * col_w}  {'-' * col_w}")
+    for col, name, fmt in _METRICS:
+        if col not in sub_a.columns or col not in sub_b.columns:
+            continue
+        va = pd.to_numeric(sub_a[col], errors="coerce").dropna()
+        vb = pd.to_numeric(sub_b[col], errors="coerce").dropna()
+        if va.empty or vb.empty:
+            continue
+        mean_diff = va.mean() - vb.mean()
+        se_diff = np.sqrt(va.var(ddof=1) / len(va) + vb.var(ddof=1) / len(vb))
+        print(
+            f"  {name:<10}  {ms(va.mean(), va.std(), fmt):>{col_w}}"
+            f"  {ms(vb.mean(), vb.std(), fmt):>{col_w}}"
+            f"  {ms(mean_diff, se_diff, fmt):>{col_w}}"
+        )
+
+
 # ---- tile (reconstruction) rendering -------------------------------------------------
 def linA_to_logI(linA: np.ndarray, eps: float | None = None) -> np.ndarray:
     """Linear amplitude -> log-intensity.
@@ -420,6 +490,7 @@ def show_logI(
     logI: np.ndarray,
     title: str = "",
     subtitle: str = "",
+    subtitle_fontsize: float = 6.5,
     border_color: str | None = None,
     clip_factor: int = 3,
 ) -> None:
@@ -440,10 +511,10 @@ def show_logI(
             -0.03,
             subtitle,
             transform=ax.transAxes,
-            fontsize=6.5,
+            fontsize=subtitle_fontsize,
             ha="center",
             va="top",
-            color="dimgray",
+            color="gray",
         )
     ax.set_xticks([])
     ax.set_yticks([])
