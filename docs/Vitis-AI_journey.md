@@ -519,7 +519,7 @@ There are several ops that are not supported, mostly coming from the `th` (PyTor
 - `aten::ones_like`: **Tensor creation**. Used in internal helper functions for shape handling.
 - `aten::clone`: **Memory copy**. Used in `EntropyModel.quantize`.
 - `aten::round`: **Rounding**. Used in `EntropyModel.quantize` to simulate integer discrete quantization. DPU works on integer arithmetic but doesn't expose a "round float to int" layer for the graph logic itself.
-- `aten::erfc`: **Complementary Error Function**. Used in `GaussianConditional` to estimate the Cumulative Distribution Function (CDF) for bit-rate estimation. This is a complex statistical function (Probability Math) completely outside the scope of DPU acceleration.
+- `aten::erfc`: **Complementary Error Function**. Used in `GaussianConditional` to estimate the Cumulative Distribution Function (CDF) for bitrate estimation. This is a complex statistical function (Probability Math) completely outside the scope of DPU acceleration.
 
 Conclusion: Almost all unsupported ops come from **GDN** (Normalization) and **Entropy Modeling** (Probability/Quantization). The Convolutional layers themselves are fine.
 
