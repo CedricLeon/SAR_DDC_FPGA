@@ -13,11 +13,10 @@ Implementation of [Amao-Oliva et al. (2024)](https://www.sciencedirect.com/scien
 
 - [ ] EPD values > 1 in [RD-curve_ablation.ipynb cell 11](notebooks/RD-curve_ablation.ipynb). EPD should be ≤ 1.
 - [ ] Clarify exact Python version per environment (main conda env appears to use 3.11, Vitis-AI Docker 3.8, board may be 3.9). Update `copilot-instructions.md` and code once confirmed.
+- [ ]  Consider if FPGA reconstruction performance would be better if we only evaluated the compression/encoding on the FPGA, transferred the bitstreams to the Host and then ran the decompression (in floating-point precision) on the GPU for example.
 
-### Code quality / housekeeping
+### Code quality
 
-- [x] Reorganize `scripts/` into `dataset/`, `training/`, `evaluation/`, `fpga/{deploy,benchmark}/`, `vitis_ai/`.
-- [ ] Clean `inference_cpp/` headers that say "C++ port of scripts/fpga/<deleted>.py", it was a (historical attribution to the now-removed Python files. They have an accurate provenance, but recoverable via the python-legacy-snapshot/cpp-migration-notebook tags).
 
 ### Planned experiments
 
@@ -74,12 +73,13 @@ DDC_FPGA/
 | [docs/FPGA_benchmark.md](docs/FPGA_benchmark.md) | Benchmark: ZCU102 hardware, methodology, power, results, future work + journal |
 | [docs/python_to_cpp_migration_journal.md](docs/python_to_cpp_migration_journal.md) | Python→C++ migration: why, before/after numbers, bug archive |
 | [docs/GPU_benchmark.md](docs/GPU_benchmark.md) | GPU/CPU benchmark tooling (legacy, raw — pending unified-runner refactor) |
+| [docs/Notebooks.md](docs/Notebooks.md) | Analysis notebooks: purpose, data flow, shared modules (`_plotkit`, `_benchmark_loader`) |
 | [docs/Vitis-AI_journey.md](docs/Vitis-AI_journey.md) | Deployment journal, known issues, changelog |
 
 ## Workflows
 
 Quick reference for all recurring workflows. All commands run from the project root (`DDC_FPGA/`) unless noted.
-Conda environment: `SAR_DDC` for local work; Vitis-AI Docker container for FPGA quantization (handled transparently by `deploy.py`).
+Conda environment: `DDC_FPGA` for local work; Vitis-AI Docker container for FPGA quantization (handled transparently by `deploy.py`).
 
 ### 1 · Dataset creation
 
