@@ -339,37 +339,38 @@ def run_study(
 # ---------------------------------------------------------------------------
 # Aggregation across runs -> table
 # ---------------------------------------------------------------------------
-def aggregate(results_dir: Path) -> None:
-    """Print a compact table of PSNR/SSIM per variant across all JSON runs in `results_dir`."""
-    runs = sorted(results_dir.glob("*.json"))
+def aggregate(results_dir: Path, metric: str = "psnr", pattern: str = "*.json") -> None:
+    """Print a per-variant table of `metric` (mean) across matching runs, for both references.
+
+    metric  : one of DISTORTION_KEYS (mse / psnr / ssim / ms_ssim / enl / epd).
+    pattern : glob selecting runs, e.g. '*_full.json' to isolate the whole-scene sweep (otherwise
+              full-scene and cropped-region runs would be mixed into one table).
+    """
+    runs = sorted(results_dir.glob(pattern))
     if not runs:
-        print(f"No result JSONs in {results_dir}")
+        print(f"No result JSONs matching '{pattern}' in {results_dir}")
         return
-    print(f"Aggregating {len(runs)} run(s) from {results_dir}\n")
+    print(f"Aggregating {len(runs)} run(s) [{pattern}] — metric = {metric}\n")
     for ref in ("vs_whole", "vs_merlin"):
-        print(f"=== reference: {ref} ===")
-        header = f"{'model':28s} " + " ".join(f"{v:>18s}" for v in VARIANTS)
-        print(header + "   (PSNR dB / SSIM)")
+        print(f"=== {ref}  (mean {metric}; 'whole' has no vs_whole self-comparison) ===")
+        print(f"{'model':22s} " + " ".join(f"{v:>10s}" for v in VARIANTS))
         per_variant: dict[str, list[float]] = {v: [] for v in VARIANTS}
         for rp in runs:
             data = json.loads(rp.read_text())
             label = data.get("model", {}).get("label", rp.stem)
             cells = []
             for v in VARIANTS:
-                block = data.get("variants", {}).get(v, {}).get(ref, {})
-                psnr_s, ssim_s = block.get("psnr"), block.get("ssim")
-                if psnr_s and ssim_s:
-                    cells.append(f"{psnr_s['mean']:7.2f}/{ssim_s['mean']:.3f}")
-                    per_variant[v].append(psnr_s["mean"])
+                stat = data.get("variants", {}).get(v, {}).get(ref, {}).get(metric)
+                if stat:
+                    cells.append(f"{stat['mean']:10.4f}")
+                    per_variant[v].append(stat["mean"])
                 else:
-                    cells.append(f"{'--':>18s}")
-            print(f"{label:28s} " + " ".join(f"{c:>18s}" for c in cells))
-        avg = "  ".join(
-            f"{v}:{np.mean(per_variant[v]):.2f}±{np.std(per_variant[v]):.2f}"
-            for v in VARIANTS
-            if per_variant[v]
+                    cells.append(f"{'--':>10s}")
+            print(f"{label:22s} " + " ".join(cells))
+        summary = "  ".join(
+            f"{v}={np.mean(per_variant[v]):.4f}" for v in VARIANTS if per_variant[v]
         )
-        print(f"{'MEAN PSNR across models':28s} {avg}\n")
+        print(f"{'mean across models':22s} {summary}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +382,15 @@ def main() -> None:
     )
     p.add_argument(
         "--aggregate", metavar="DIR", help="Aggregate result JSONs in DIR into a table and exit."
+    )
+    p.add_argument(
+        "--metric",
+        default="psnr",
+        choices=DISTORTION_KEYS,
+        help="Metric for --aggregate (default: psnr).",
+    )
+    p.add_argument(
+        "--pattern", default="*.json", help="Glob to filter --aggregate runs, e.g. '*_full.json'."
     )
     p.add_argument("--arch", choices=sorted(ARCH_ALIASES), help="Model architecture.")
     p.add_argument("--lambda", dest="lmbda", type=int, help="Rate-distortion lambda (e.g. 1000).")
@@ -409,7 +419,7 @@ def main() -> None:
     args = p.parse_args()
 
     if args.aggregate:
-        aggregate(Path(args.aggregate))
+        aggregate(Path(args.aggregate), args.metric, args.pattern)
         return
 
     # ---- resolve model ----
