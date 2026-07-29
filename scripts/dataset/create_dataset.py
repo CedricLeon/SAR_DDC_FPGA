@@ -34,10 +34,8 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=False)
-from src.models.merlin_module import MerlinModule
-from src.models.sar_ddc_module import SARDDCModule
-from src.utils.constants import AMP_MAX, AMP_MIN
 from src.utils.processing_utils import extract_short_name_from_TSX_filepath
+from src.utils.reconstruction import predict_linA
 from src.utils.sar_utils import (
     extract_patches,
     load_cosar,
@@ -139,40 +137,12 @@ def _instantiate_model_and_load_weights(train_cfg, ckpt_path: Path) -> torch.nn.
 
 @torch.no_grad()
 def _predict_linA(model: torch.nn.Module, batch: torch.Tensor) -> torch.Tensor:
-    """Run model on batches of normalized real/imag and return linear amplitude reconstructions.
+    """Raw [B,2,H,W] -> linear-amplitude reconstruction [B,H,W].
 
-    Inputs:
-      - model: SARDDCModule or MerlinModule.
-      - batch: tensor [B,2,H,W] normalized in model domain.
-    Returns:
-      - recon_amp: tensor [B,1,H,W] in linear amplitude domain.
+    Thin wrapper over the canonical `src.utils.reconstruction.predict_linA` (single source of truth,
+    shared with `src/evaluate.py` and the symmetrization study).
     """
-    if isinstance(model, SARDDCModule):
-        # ADAM forward passes in evaluation takes input with 2 channels
-        output = model(batch)
-        recon_real = output["x_hat"][:, 0, :, :]  # [B,H,W]
-        recon_imag = output["x_hat"][:, 1, :, :]
-    elif isinstance(model, MerlinModule):
-        # While MERLIN takes one channel at a time
-        recon_real = model(batch[:, 0:1, :, :])
-        recon_imag = model(batch[:, 1:2, :, :])
-        recon_real = recon_real[:, 0, :, :]
-        recon_imag = recon_imag[:, 0, :, :]
-    # Type guard for linters
-    assert isinstance(
-        recon_real, torch.Tensor
-    ), "Model output must be a Tensor or dict with 'x_hat'"
-    assert isinstance(
-        recon_imag, torch.Tensor
-    ), "Model output must be a Tensor or dict with 'x_hat'"
-
-    # Denormalize, average, return linear amplitude
-    recon_real_lin = torch.exp(recon_real * (AMP_MAX - AMP_MIN) + AMP_MIN)
-    recon_imag_lin = torch.exp(recon_imag * (AMP_MAX - AMP_MIN) + AMP_MIN)
-    recon_linA = torch.sqrt(
-        0.5 * (torch.square(recon_real_lin) + torch.square(recon_imag_lin))
-    )  # [B,H,W]
-    return recon_linA
+    return predict_linA(model, batch)
 
 
 def add_metadata_to_dataset(
