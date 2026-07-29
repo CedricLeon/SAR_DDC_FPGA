@@ -1,0 +1,39 @@
+# FP and ResFP models — full retrain with lr=5e-4
+#
+# 120 runs: 2 archs (FP, ResFP) × 6 seeds × 10 lambda values.
+# These runs are tagged "lr_5e-4" to distinguish them from the earlier
+# lr=5e-5 mini-sweep (tagged "lr_search").
+#
+# Usage:
+#   python scripts/fpga/deploy/batch_deploy.py --config FP_ResFP_lr5e4 --tag fp_resfp_lr5e4_cpp
+
+description: "FP + ResFP — lr=5e-4 retrain (120 models)"
+
+filters:
+  # "FP" matches both "FP-relu_..." and "ResFP-relu_..." run names.
+  - field: run.name
+    op: contains
+    value: FP
+
+  # DPU-compatible activation and output-padding fix.
+  - field: model.net.activation
+    op: "=="
+    value: relu
+
+  - field: model.net.no_output_padding
+    op: "=="
+    value: true
+
+  # Full sweep: 6 seeds × 10 lambda values.
+  - field: seed
+    op: "in"
+    value: [0, 1, 2, 3, 4, 5]
+
+  - field: model.criterion.lmbda
+    op: "in"
+    value: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
+
+  # Only the full retrained lr=5e-4 sweep — excludes the earlier lr_search mini-sweeps.
+  - field: run.tags
+    op: contains
+    value: lr_5e-4

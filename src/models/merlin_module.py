@@ -14,6 +14,8 @@ import lightning
 import torch
 from torch import Tensor
 
+from src.utils.constants import AMP_MAX, AMP_MIN, EPS
+
 
 class MerlinModule(lightning.LightningModule):
     """Lightning Module for SAR Despeckling using the MERLIN framework."""
@@ -48,28 +50,26 @@ class MerlinModule(lightning.LightningModule):
         self.criterion = criterion
 
     def _random_switch_Re_Im(self, batch: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-        # Get real and imaginary parts (already squared and normalized)
-        real_squared, imag_squared = batch["real"], batch["imag"]
+        # Get real and imaginary parts
+        real, imag = batch["real"], batch["imag"]
 
         # Deterministic random switching of inputs/targets using seeded generator
         if torch.rand(1).item() > 0.5:
-            input_data, target_data = real_squared, imag_squared
+            input_data, target_data = real, imag
         else:
-            input_data, target_data = imag_squared, real_squared
+            input_data, target_data = imag, real
 
         return input_data, target_data
 
     def forward(self, x: Tensor):
-        """Forward pass through the network."""
+        """Normalize x and forward pass through the network."""
+        x = (torch.log(torch.square(x) + EPS) - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
         return self.net(x)
 
     def _log_metrics(self, prefix: str, criterion: Dict[str, Any]) -> None:
         """Log training, validation, or test metrics."""
         log_info = {
             f"{prefix}/loss": criterion["loss"].item(),
-            f"{prefix}/loss_denorm": criterion["loss_denorm"].item(),
-            f"{prefix}/loss_term1": criterion["loss_term1"].item(),
-            f"{prefix}/loss_term2": criterion["loss_term2"].item(),
             f"{prefix}/mse": criterion["mse"].item(),
             f"{prefix}/ssim": criterion["ssim"].item(),
             f"{prefix}/ms_ssim": criterion["ms_ssim"].item(),

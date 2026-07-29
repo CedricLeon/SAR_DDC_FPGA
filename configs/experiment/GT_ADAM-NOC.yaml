@@ -1,0 +1,42 @@
+# @package _global_
+
+defaults:
+  - override /data: tsx_ssc.yaml
+  - override /model: res_scale_hyperprior.yaml
+  - override /callbacks: tsx_ddc.yaml
+  - override /logger: wandb.yaml
+  - override /trainer: gpu.yaml
+  - override /hydra: default.yaml
+
+model:
+  criterion:
+    lmbda: -1 # Set to -1 to deactivate the rate in the loss and get NO Compression (NOC)
+
+callbacks:
+  compare_recon_to_gt:
+    patch_dir: ${paths.data_dir}
+    log_every_n_epochs: 1
+    verbose: True
+  monitor_val_recon:
+    log_every_n_epochs: 1
+    num_images: 5
+    verbose: True
+
+trainer:
+  min_epochs: 1
+  max_epochs: 30
+  deterministic: True
+  detect_anomaly: False
+  log_every_n_steps: 1
+
+logger:
+  wandb:
+    project: "SAR_DDC_FPGA"
+
+# The task name determines the logs path, by convention use <task>/<dataset>/<model>
+task_name: train/sar_ddc/adam_noc
+tags: ["TSX_SSC", "ADAM_NOC"]
+seed: 42
+
+# Flatten the lmbda value because W&B custom chart expressions do not support nested dicts
+lambda: ${model.criterion.lmbda}

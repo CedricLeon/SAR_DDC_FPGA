@@ -3,8 +3,9 @@ _target_: src.models.sar_ddc_module.SARDDCModule
 net:
   _target_: src.models.components.res_scale_hyperprior_dpu.ResidualScaleHyperpriorPatched
   nb_channels_main: 128  # Number of channels for main transform
-  activation: "gdn"   # gdn | relu | leaky_relu | silu | gelu | gn_relu | identity
-  no_output_padding: true
+  activation: "gdn"   # gdn | relu | gdn1 (GDN Simplified) | identity (no activation)
+  no_output_padding: False
+  no_residual_blocks: False  # If True, ResidualBlocks in g_a/g_s are replaced by nn.Identity
   export_dpu: False # Always false, only set when quantizing the network with Vitis-AI
 
 criterion:
@@ -29,14 +30,6 @@ scheduler:
   _partial_: true
   milestones: [4, 20]  # Reduce LR at epochs 4 and 20
   gamma: 0.1           # Multiply LR by 0.1 at each milestone
-
-# scheduler:
-#   _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
-#   _partial_: true
-#   mode: min
-#   factor: 0.1         # Default: 0.1, compressai: 0.5
-#   patience: 5         # Default: 10, compressai: 20
-#   threshold: 0.001     # Default: 1e-4
 
 gradient_clip_norm: 1.0 # https://github.com/ali-zafari/TBTC/blob/master/lit_model.py
 compile: False          # compile model for faster training with pytorch 2.0

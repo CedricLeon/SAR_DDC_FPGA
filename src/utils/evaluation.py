@@ -1,0 +1,115 @@
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import numpy as np
+import torch
+from lightning import LightningModule, Trainer
+from torch.utils.data import DataLoader, Dataset
+
+
+class NumpyDataset(Dataset):
+    """Dataset for loading image patches from a .npy file.
+
+    Expects data shape [N, H, W, 2].
+    """
+
+    def __init__(self, data_path: Path):
+        super().__init__()
+        self.data_path = data_path
+        self.data = np.load(str(data_path))  # [N, H, W, 4]
+        self.data = self.data.astype(np.float32)
+
+    def __len__(self):
+        """Return the number of patches in the dataset."""
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        """Get a patch from the dataset."""
+        patch = self.data[idx]  # [H, W, 4]
+        return {
+            "real": torch.from_numpy(patch[..., 0]).unsqueeze(0),  # [1, H, W]
+            "imag": torch.from_numpy(patch[..., 1]).unsqueeze(0),  # [1, H, W]
+            "adam_noc_ref": torch.from_numpy(patch[..., 2]).unsqueeze(0),  # [1, H, W]
+            "merlin_ref": torch.from_numpy(patch[..., 3]).unsqueeze(0),  # [1, H, W]
+        }
+
+
+def run_dual_evaluation(
+    trainer: Trainer,
+    model: LightningModule,
+    datamodule: Any = None,
+    dataloaders: Any = None,
+    ckpt_path: Optional[str] = None,
+    hdf5_dir: Optional[str] = None,
+    batch_size: int = 1,
+    num_workers: int = 0,
+    skip_full_test: bool = False,
+) -> Dict[str, float]:
+    """
+    Runs evaluation on two sets:
+    1. Full Test Set (from datamodule/dataloaders) -> Prefix: "test"
+    2. Subset (from .npy file in hdf5_dir) -> Prefix: "test_sub500"
+
+    Returns combined metrics dictionary.
+    """
+    final_metrics = {}
+    # Temporarily set prefix on model (Requires model to support test_prefix attribute)
+    original_prefix = getattr(model, "test_prefix", "test")
+
+    # --- 1. Standard Test (Full Dataset) ---
+    if not skip_full_test:
+        print("    Running test on FULL dataset...")
+        model.test_prefix = "test"
+
+        if datamodule:
+            results_full = trainer.test(
+                model=model, datamodule=datamodule, ckpt_path=ckpt_path, verbose=False
+            )
+        else:
+            results_full = trainer.test(
+                model=model, dataloaders=dataloaders, ckpt_path=ckpt_path, verbose=False
+            )
+
+        if results_full:
+            final_metrics.update(results_full[0])
+            # print(f"    Full Test Metrics: {results_full[0]}")
+
+    # --- 2. Subset Test (from .npy) ---
+    print("    Running test on SUBSET dataset (from .npy)...")
+
+    if hdf5_dir:
+        npy_files = list(Path(hdf5_dir).glob("test_sub500*.npy"))
+        if npy_files:
+            npy_path = npy_files[0]
+            print(f"    Found subset file: {npy_path}.\n    Running test on this subset...")
+            dataset = NumpyDataset(npy_path)
+            subset_loader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                shuffle=False,
+                pin_memory=True,
+            )
+
+            model.test_prefix = "test_sub500"
+            # Important: Do not reload the checkpoint here (ckpt_path=None).
+            # The model is already loaded and initialized (buffers resized via update()) from the first test run.
+            # Reloading the original checkpoint (which has empty buffers) would cause a size mismatch error.
+            results_sub = trainer.test(
+                model=model, dataloaders=subset_loader, ckpt_path=None, verbose=False
+            )
+            if results_sub:
+                final_metrics.update(results_sub[0])
+                # print(f"    Subset Test Metrics: {results_sub[0]}")
+        else:
+            print(
+                "    WARNING: Subset file matching 'test_sub500*.npy' not found. Skipping test_sub500."
+            )
+    else:
+        print("    WARNING: hdf5_dir not provided. Skipping test_sub500.")
+
+    # Reset prefix
+    # model.test_prefix = original_prefix
+    setattr(model, "test_prefix", original_prefix)
+
+    return final_metrics

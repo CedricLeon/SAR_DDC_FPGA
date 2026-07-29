@@ -1,4 +1,3 @@
-import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import hydra
@@ -43,6 +42,8 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # more info: https://github.com/ashleve/rootutils
 # ------------------------------------------------------------------------------------ #
 
+
+from src.utils.evaluation import run_dual_evaluation
 from src.utils.instantiators import (  # noqa: E402
     instantiate_callbacks,
     instantiate_loggers,
@@ -127,7 +128,16 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         if ckpt_path == "":
             log.warning("Best ckpt not found! Using current weights for testing...")
             ckpt_path = None
-        trainer.test(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
+        run_dual_evaluation(
+            trainer=trainer,
+            model=model,
+            datamodule=datamodule,
+            ckpt_path=ckpt_path,
+            hdf5_dir=cfg.data.get("hdf5_dir", None),
+            batch_size=cfg.data.get("batch_size", 1),
+            num_workers=cfg.data.get("num_workers", 0),
+        )
+
         log.info(f"Best ckpt path: {ckpt_path}")
 
     test_metrics = trainer.callback_metrics

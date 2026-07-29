@@ -1,0 +1,57 @@
+# @package _global_
+
+# to execute this experiment run:
+# python src/train.py experiment=sar_ddc
+
+defaults:
+  - override /data: tsx_ssc.yaml
+  - override /model: res_scale_hyperprior.yaml
+  - override /callbacks: tsx_ddc.yaml
+  - override /logger: wandb.yaml
+  - override /trainer: gpu.yaml
+  - override /hydra: default.yaml
+
+data:
+  batch_size: 12 # Or 8. Seems way more stable than 16 or 32
+  num_workers: 11
+
+model:
+  net:
+    no_output_padding: True
+    no_residual_blocks: True
+    activation: "relu"
+  criterion:
+    metric: "merlin" # "mse" or "ssim" or "ms_ssim"
+    lmbda: 100
+  net_optimizer:
+    lr: 5e-5
+
+callbacks:
+  compare_recon_to_gt:
+    patch_dir: ${paths.data_dir}
+    log_every_n_epochs: 2
+    verbose: True
+  monitor_val_recon:
+    log_every_n_epochs: 2
+    num_images: 4
+    verbose: True
+
+trainer:
+  min_epochs: 1
+  max_epochs: 10
+  deterministic: True
+  detect_anomaly: False
+  log_every_n_steps: 10
+
+logger:
+  wandb:
+    project: "SAR_DDC_FPGA" # "SAR_DDC-RD-curve"
+    offline: False
+
+# The task name determines the logs path, by convention use <task>/<dataset>/<model>
+task_name: train/sar_ddc/hyperprior
+tags: ["TSX_SSC", "hyperprior"]
+seed: 42
+
+# Flatten the lmbda value because W&B custom chart expressions do not support nested dicts
+lambda: ${model.criterion.lmbda}

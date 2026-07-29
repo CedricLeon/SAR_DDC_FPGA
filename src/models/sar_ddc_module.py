@@ -6,9 +6,18 @@ import torchmetrics.functional as TMF
 import torchmetrics.functional.image as F
 from torch import Tensor
 
-from src.utils.constants import amp_max, amp_min
-
-EPS = 1e-2
+from src.utils.constants import AMP_MAX, AMP_MIN, EPS
+from src.utils.metrics import (
+    compute_bitstream_bpp,
+    enl,
+    epd,
+    ms_ssim,
+    mse,
+    psnr,
+    ratio_enl,
+    ratio_mean,
+    ssim,
+)
 
 
 class SARDDCModule(lightning.LightningModule):
@@ -51,22 +60,8 @@ class SARDDCModule(lightning.LightningModule):
         # Activate manual optimization, because we have two optimizers.
         self.automatic_optimization = False
 
-    # def on_fit_start(self):
-    #     """Called at the beginning of fit."""
-    #     # Set up wandb watch to monitor parameters and gradients
-    #     if isinstance(self.trainer.logger, WandbLogger):
-    #         print("----------------------The WandB logger should watch gradient")
-    #         self.trainer.logger.watch(
-    #             self.net,
-    #             log="all",  # Track both gradients and parameters
-    #             log_freq=100,  # Log every 100 batches
-    #             log_graph=False,  # Disable logging model graph
-    #         )
-
-    # def on_train_end(self):
-    #     # Remove the hooks added by watch() to the model
-    #     if isinstance(self.trainer.logger, WandbLogger):
-    #         wandb.unwatch(self.net)
+        # Each run is possibly evaluated on different test sets. We use a dynamic prefix to distinguish metrics for different test sets. Default is "test".
+        self.test_prefix = "test"
 
     def _random_switch_Re_Im(self, batch: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         """Randomly switch between real and imaginary parts as input and target.
@@ -85,7 +80,8 @@ class SARDDCModule(lightning.LightningModule):
         return input_data, target_data
 
     def forward(self, x: Tensor):
-        """Forward pass through the network."""
+        """Normalize x and forward pass through the network."""
+        x = (torch.log(torch.square(x) + EPS) - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
         return self.net(x)
 
     def _log_metrics(
@@ -95,16 +91,8 @@ class SARDDCModule(lightning.LightningModule):
         aux_loss: float,
     ) -> None:
         """Log training, validation, or test metrics."""
-        log_info = {
-            f"{prefix}/loss": criterion["loss"].item(),
-            f"{prefix}/bpp": criterion["bpp"].item(),
-            f"{prefix}/mse": criterion["mse"].item(),
-            f"{prefix}/ssim": criterion["ssim"].item(),
-            f"{prefix}/ms_ssim": criterion["ms_ssim"].item(),
-            f"{prefix}/merlin": criterion["merlin"].item(),
-            f"{prefix}/psnr": criterion["psnr"].item(),
-            f"{prefix}/aux": aux_loss,
-        }
+        log_info = {f"{prefix}/{key}": value for key, value in criterion.items()}
+        log_info[f"{prefix}/aux"] = aux_loss
 
         # Configure per prefix (e.g. train/valid/test) logging **kwargs.
         on_step, on_epoch, prog_bar, sync_dist = None, None, False, True
@@ -139,7 +127,7 @@ class SARDDCModule(lightning.LightningModule):
         # Forward pass
         input, target = self._random_switch_Re_Im(batch)
         output = self.forward(input)
-        criterion = self.criterion(output, target)
+        criterion = self.criterion(output, target)  # Noise2Noise: target is the other channel
 
         # Backward pass for the main loss
         self.manual_backward(criterion["loss"])
@@ -174,14 +162,16 @@ class SARDDCModule(lightning.LightningModule):
         # Log metrics
         self._log_metrics("train", criterion, aux_loss.item())
 
+    def on_test_epoch_start(self) -> None:
+        """Update the entropy bottleneck tables before testing."""
+        self.net.update(force=True)
+
     def validation_step(self, batch, batch_idx):
         """Validation step with optimized processing of both real and imaginary parts."""
         # input, target = self._random_switch_Re_Im(batch)
         input = torch.cat((batch["real"], batch["imag"]), dim=1).contiguous()
         output = self.forward(input)
-        criterion = self.criterion(
-            output, target=input
-        )  # Noise2Noise: target is the other channel
+        criterion = self.criterion(output, target=input)
         aux_loss = self.net.aux_loss()
         self._log_metrics("valid", criterion, aux_loss.item())
 
@@ -192,58 +182,117 @@ class SARDDCModule(lightning.LightningModule):
         - Additionally, when batch contains 'adam_ref' and 'merlin_ref', computes reconstruction
           from both real and imag inputs, converts to log-intensity, and logs PSNR/SSIM/MS-SSIM/MSE
           against each reference.
+        - Also computes actual bitstream BPP by running compress/decompress.
         """
         input = torch.cat((batch["real"], batch["imag"]), dim=1).contiguous()
-        output = self.forward(input)
+
+        # Preprocess for network input (log-scale normalization)
+        x = (torch.log(torch.square(input) + EPS) - 2 * AMP_MIN) / (2 * AMP_MAX - 2 * AMP_MIN)
+
+        # 1. Forward pass (for likelihood estimation metrics)
+        output = self.net(x)
+
+        # 2. Real compression (for actual bitstream BPP)
+        out_enc = self.net.compress(x)
+        out_dec = self.net.decompress(out_enc["strings"], out_enc["shape"])
+
+        # Use decompressed output for reconstruction metrics to be as close to FPGA as possible.
+        # Sanitize x_hat: high-lambda GDN models can produce NaN (from GDN(inf)=inf/inf when large
+        # latents overflow inside g_s) as well as finite out-of-range values.
+        # nan_to_num replaces NaN/±inf first, then clamp enforces [0,1].
+        x_hat_raw = out_dec
+        if False:
+            has_nan = torch.isnan(x_hat_raw).any().item()
+            has_inf = not torch.isfinite(x_hat_raw).all().item()
+            is_out_of_range = bool(
+                (x_hat_raw[torch.isfinite(x_hat_raw)].numel() > 0)
+                and (
+                    x_hat_raw[torch.isfinite(x_hat_raw)].max() > 1.0
+                    or x_hat_raw[torch.isfinite(x_hat_raw)].min() < 0.0
+                )
+            )
+            if has_nan or has_inf or is_out_of_range:
+                print(
+                    f"[test_step] batch_idx={batch_idx}: x_hat abnormal "
+                    f"(nan={has_nan}, inf={has_inf}, out_of_range={is_out_of_range}). Sanitizing."
+                )
+        output["x_hat"] = torch.nan_to_num(x_hat_raw, nan=0.0, posinf=1.0, neginf=0.0).clamp(
+            0.0, 1.0
+        )
 
         # Compute normal losses with Noise2Noise approach
         criterion = self.criterion(output, target=input)
+        prefix = getattr(self, "test_prefix", "test_unknown")
         all_metrics = {
-            "test/bpp": criterion["bpp"].item(),
-            "test/loss": criterion["loss"].item(),
-            "test/aux": self.net.aux_loss(),
-            "test/mse": criterion["mse"].item(),
-            "test/ssim": criterion["ssim"].item(),
-            "test/ms_ssim": criterion["ms_ssim"].item(),
-            "test/psnr": criterion["psnr"].item(),
+            f"{prefix}/{key}": value
+            for key, value in criterion.items()
+            if key in ["bpp", "merlin", "loss"]
         }
+        all_metrics[f"{prefix}/aux"] = self.net.aux_loss().item()
 
-        output = output["x_hat"]
+        # Calculate and log real bitstream BPP
+        N, C, H, W = input.shape
+        bpp_bits = compute_bitstream_bpp(out_enc["strings"], H, W, N)
+        all_metrics[f"{prefix}/bpp_bitstream"] = bpp_bits
 
-        # Convert to log-intensity like in evaluation
-        recon_lin = torch.exp(output * (amp_max - amp_min) + amp_min)
-        recon_lin = 0.5 * (recon_lin[:, :1, :, :] + recon_lin[:, 1:, :, :])
-        recon_logI = torch.log(recon_lin + EPS)  # [B,1,H,W]
+        # Convert to linear amplitude
+        recon_denorm = output["x_hat"] * (AMP_MAX - AMP_MIN) + AMP_MIN
+        recon_lin = torch.exp(recon_denorm)
+        clean_im_real = torch.square(recon_lin[:, 0, :, :])
+        clean_im_imag = torch.square(recon_lin[:, 1, :, :])
+        clean_im = torch.sqrt(0.5 * (clean_im_real + clean_im_imag)).unsqueeze(1)
+
+        # ── SAR quality metrics (reference-free / noisy-paired) ─────────────────────
+        # noisy_linA: MERLIN convention — average Re²+Im² power, then sqrt
+        noisy_linA = torch.sqrt(0.5 * (torch.square(batch["real"]) + torch.square(batch["imag"])))
+        all_metrics[f"{prefix}/mse_noisy"] = mse(clean_im, noisy_linA)
+        all_metrics[f"{prefix}/psnr_noisy"] = psnr(clean_im, noisy_linA)
+        all_metrics[f"{prefix}/ssim_noisy"] = ssim(clean_im, noisy_linA)
+        all_metrics[f"{prefix}/ms_ssim_noisy"] = ms_ssim(clean_im, noisy_linA)
+        all_metrics[f"{prefix}/enl_recon"] = enl(clean_im)
+        all_metrics[f"{prefix}/ratio_mean"] = ratio_mean(clean_im, noisy_linA)
+        all_metrics[f"{prefix}/ratio_enl"] = ratio_enl(clean_im, noisy_linA)
 
         # Load GTs references
-        adam_noc_ref = batch["adam_noc_ref"]
-        merlin_ref = batch["merlin_ref"]
-        data_range = float((recon_logI.max() - recon_logI.min()).detach().cpu())
+        if "adam_noc_ref" in batch and "merlin_ref" in batch:
+            adam_noc_ref = batch["adam_noc_ref"]
+            merlin_ref = batch["merlin_ref"]
+            peak = float(torch.max(clean_im))
 
-        # MSE
-        all_metrics["test/mse_adam_noc"] = TMF.mean_squared_error(recon_logI, adam_noc_ref)
-        all_metrics["test/mse_merlin"] = TMF.mean_squared_error(recon_logI, merlin_ref)
-        # PSNR
-        all_metrics["test/psnr_adam_noc"] = F.peak_signal_noise_ratio(
-            recon_logI, adam_noc_ref, data_range=data_range
-        )
-        all_metrics["test/psnr_merlin"] = F.peak_signal_noise_ratio(
-            recon_logI, merlin_ref, data_range=data_range
-        )
-        # SSIM
-        all_metrics["test/ssim_adam_noc"] = F.structural_similarity_index_measure(
-            recon_logI, adam_noc_ref, data_range=data_range
-        )
-        all_metrics["test/ssim_merlin"] = F.structural_similarity_index_measure(
-            recon_logI, merlin_ref, data_range=data_range
-        )
-        # MS-SSIM
-        all_metrics["test/ms_ssim_adam_noc"] = F.multiscale_structural_similarity_index_measure(
-            recon_logI, adam_noc_ref, data_range=data_range
-        )
-        all_metrics["test/ms_ssim_merlin"] = F.multiscale_structural_similarity_index_measure(
-            recon_logI, merlin_ref, data_range=data_range
-        )
+            # MSE
+            all_metrics[f"{prefix}/mse_adam_noc"] = mse(clean_im, adam_noc_ref)
+            all_metrics[f"{prefix}/mse_merlin"] = mse(clean_im, merlin_ref)
+            # PSNR
+            all_metrics[f"{prefix}/psnr_adam_noc"] = psnr(
+                clean_im, adam_noc_ref, mse_value=all_metrics[f"{prefix}/mse_adam_noc"]
+            )
+            all_metrics[f"{prefix}/psnr_merlin"] = psnr(
+                clean_im, merlin_ref, mse_value=all_metrics[f"{prefix}/mse_merlin"]
+            )
+            # SSIM
+            all_metrics[f"{prefix}/ssim_adam_noc"] = F.structural_similarity_index_measure(
+                clean_im, adam_noc_ref, data_range=peak
+            )
+            all_metrics[f"{prefix}/ssim_merlin"] = F.structural_similarity_index_measure(
+                clean_im, merlin_ref, data_range=peak
+            )
+            # MS-SSIM
+            all_metrics[f"{prefix}/ms_ssim_adam_noc"] = (
+                F.multiscale_structural_similarity_index_measure(
+                    clean_im, adam_noc_ref, data_range=peak
+                )
+            )
+            all_metrics[f"{prefix}/ms_ssim_merlin"] = (
+                F.multiscale_structural_similarity_index_measure(
+                    clean_im, merlin_ref, data_range=peak
+                )
+            )
+            # EPD (Edge Preservation Degree, linA)
+            all_metrics[f"{prefix}/epd_adam_noc"] = epd(clean_im, adam_noc_ref)
+            all_metrics[f"{prefix}/epd_merlin"] = epd(clean_im, merlin_ref)
+        else:
+            # Just skip metrics if references are not available (e.g. testing only on .npy patches)
+            pass
 
         # Log extra metrics
         self.log_dict(

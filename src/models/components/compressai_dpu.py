@@ -10,11 +10,11 @@ Provided classes:
   - GDNPatched
   - EntropyModelPatched
   - EntropyBottleneckPatched
-  - src/models/components/res_scale_hyperprior_dpu.py
 """
 
 from __future__ import annotations
 
+import math
 import warnings
 from typing import Any, Callable, List, Optional, Tuple, Union
 
@@ -26,6 +26,18 @@ import torch.nn.functional as F
 from compressai._CXX import pmf_to_quantized_cdf as _pmf_to_quantized_cdf
 from compressai.entropy_models.entropy_models import _EntropyCoder
 from torch import Tensor
+
+
+def get_scale_table(min: float = 0.11, max: float = 256, levels: int = 64) -> Tensor:
+    """Returns table of logarithmically scales.
+
+    Mirrors `compressai.models.base.get_scale_table` default behavior.
+
+    This helper is used to generate the default scale table for GaussianConditional
+    when it hasn't been persisted in the checkpoint (which is common, as standard
+    training uses continuous approximation and doesn't populate the table).
+    """
+    return torch.exp(torch.linspace(math.log(min), math.log(max), levels))
 
 
 # -------------------------------------------------------------------------
@@ -41,7 +53,7 @@ class LowerBoundPatched(nn.Module):  # (no custom autograd.Function)
     Note: During *training*, CompressAI's original LowerBound uses a custom
     gradient that still passes gradients when moving towards the bound. If you
     need identical training behavior, use the original implementation from
-    `context/compressai_original.py` instead of this patched version.
+    `compressai.ops.bound_ops` instead of this patched version.
     """
 
     bound: Tensor
@@ -51,7 +63,8 @@ class LowerBoundPatched(nn.Module):  # (no custom autograd.Function)
         self.register_buffer("bound", torch.tensor(float(bound)))
 
     def forward(self, x: Tensor) -> Tensor:
-        return torch.max(x, self.bound)
+        return F.relu(x - self.bound) + self.bound
+        # return torch.max(x, self.bound)
 
 
 # -------------------------------------------------------------------------
@@ -139,7 +152,56 @@ class GDNPatched(nn.Module):
         return out
 
 
-# Copilot rewrote half of the original CompressAI code, I don't trust it, so for the moment its just the original one commented out.
+class GDN1Patched(nn.Module):
+    r"""Simplified GDN layer.
+
+    Introduced in `"Computationally Efficient Neural Image Compression"
+    <http://arxiv.org/abs/1912.08771>`_, by Johnston Nick, Elad Eban, Ariel
+    Gordon, and Johannes Ballé, (2019).
+
+    .. math::
+
+        y[i] = \frac{x[i]}{\beta[i] + \sum_j(\gamma[j, i] * |x[j]|}
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        inverse: bool = False,
+        beta_min: float = 1e-6,
+        gamma_init: float = 0.1,
+    ):
+        super().__init__()
+
+        beta_min = float(beta_min)
+        gamma_init = float(gamma_init)
+        self.inverse = bool(inverse)
+
+        self.beta_reparam = NonNegativeParametrizerPatched(minimum=beta_min)
+        beta = torch.ones(in_channels)
+        beta = self.beta_reparam.init(beta)
+        self.beta = nn.Parameter(beta)
+
+        self.gamma_reparam = NonNegativeParametrizerPatched()
+        gamma = gamma_init * torch.eye(in_channels)
+        gamma = self.gamma_reparam.init(gamma)
+        self.gamma = nn.Parameter(gamma)
+
+    def forward(self, x: Tensor) -> Tensor:
+        _, C, _, _ = x.size()
+
+        beta = self.beta_reparam(self.beta)
+        gamma = self.gamma_reparam(self.gamma)
+        gamma = gamma.reshape(C, C, 1, 1)
+        # Replace torch.abs by manual implementation to avoid using `aten::abs`
+        norm = F.conv2d(torch.abs(x), gamma, beta)
+
+        if not self.inverse:
+            norm = 1.0 / norm
+
+        out = x * norm
+
+        return out
 
 
 def default_entropy_coder():
@@ -235,10 +297,12 @@ class EntropyModelPatched(nn.Module):
             return inputs
 
         outputs = inputs.clone()
+        # log_tensor_shape("EntropyModelPatched.quantize.inputs", inputs)
         if means is not None:
             outputs -= means
 
         outputs = torch.round(outputs)
+        # log_tensor_shape("EntropyModelPatched.quantize.outputs_rounded", outputs)
 
         if mode == "dequantize":
             if means is not None:
@@ -545,7 +609,7 @@ class EntropyBottleneckPatched(EntropyModelPatched):
         return likelihood, lower, upper
 
     def forward(self, x: Tensor, training: bool | None = None) -> tuple[Tensor, Tensor]:
-        """Comes directly from CompressAI."""
+        # log_tensor_shape("EntropyBottleneckPatched.x", x)
         if training is None:
             training = self.training
 
@@ -589,6 +653,8 @@ class EntropyBottleneckPatched(EntropyModelPatched):
         likelihood = likelihood.reshape(shape)
         likelihood = likelihood.permute(*inv_perm).contiguous()
 
+        # log_tensor_shape("EntropyBottleneckPatched.forward.outputs", outputs)
+        # log_tensor_shape("EntropyBottleneckPatched.forward.likelihood", likelihood)
         return outputs, likelihood
 
     @staticmethod
@@ -792,10 +858,17 @@ class GaussianConditionalPatched(EntropyModelPatched):
         """Comes directly from CompressAI."""
         if training is None:
             training = self.training
+        # log_tensor_shape("GaussianConditionalPatched.inputs", inputs)
+        # log_tensor_shape("GaussianConditionalPatched.scales", scales)
+        # if means is not None:
+        # log_tensor_shape("GaussianConditionalPatched.means", means)
         outputs = self.quantize(inputs, "noise" if training else "dequantize", means)
+        # log_tensor_shape("GaussianConditionalPatched.outputs", outputs)
         likelihood = self._likelihood(outputs, scales, means)
+        # log_tensor_shape("GaussianConditionalPatched.likelihood", likelihood)
         if self.use_likelihood_bound:
             likelihood = self.likelihood_lower_bound(likelihood)
+        # log_tensor_shape("GaussianConditionalPatched.likelihood_bound", likelihood)
         return outputs, likelihood
 
     def build_indexes(self, scales: Tensor) -> Tensor:

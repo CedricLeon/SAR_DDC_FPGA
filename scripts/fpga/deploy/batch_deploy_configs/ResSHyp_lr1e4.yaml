@@ -1,0 +1,38 @@
+# ResSHyp (residual blocks) — lr-tuned retrain at lr=1e-4.
+#
+# 60 runs: 6 seeds × 10 lambda. Tagged "lr_1e-4" (unique to these runs).
+# ResSH collapses at lr=5e-4 (low-rate SSIM ~0.48); 1e-4 is its best lr.
+#
+# Usage:
+#   python scripts/fpga/deploy/batch_deploy.py --config scripts/fpga/deploy/batch_deploy_configs/ResSHyp_lr1e4.yaml --tag lr_1e-4
+
+description: "ResSHyp — lr=1e-4 retrain (60 models)"
+
+filters:
+  - field: run.tags
+    op: contains
+    value: lr_1e-4
+
+  - field: model.net._target_
+    op: contains
+    value: ScaleHyperprior
+
+  - field: model.net.no_residual_blocks
+    op: "=="
+    value: false
+
+  - field: model.net_optimizer.lr
+    op: "=="
+    value: 0.0001  # NOT 1e-4 — PyYAML parses 1e-4 as a string, which breaks the == numeric match
+
+  - field: model.net.no_output_padding
+    op: "=="
+    value: true
+
+  - field: seed
+    op: "in"
+    value: [0, 1, 2, 3, 4, 5]
+
+  - field: model.criterion.lmbda
+    op: "in"
+    value: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]

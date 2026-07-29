@@ -12,7 +12,7 @@ from src.utils import pylogger, rich_utils
 log = pylogger.RankedLogger(__name__, rank_zero_only=True)
 
 
-def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
+def make_wandb_run_name(cfg: Dict[str, Any]) -> str:
     """Generate a descriptive run name based on important parameters.
 
     :param cfg: The configuration dictionary
@@ -20,9 +20,15 @@ def make_a_nice_run_name(cfg: Dict[str, Any]) -> str:
     """
     model = cfg.model.net.get("_target_", None)
     if "ResidualScaleHyperprior" in model:
-        model = "ResSHyp"
-    elif "ResidualSimpleAE" in model:
-        model = "ResAE"
+        if cfg.model.net.get("no_residual_blocks", False):
+            model = "SHyp"
+        else:
+            model = "ResSHyp"
+    elif "ResidualFactorizedPrior" in model:
+        if cfg.model.net.get("no_residual_blocks", False):
+            model = "FP"
+        else:
+            model = "ResFP"
     elif "Merlin" in model:
         model = "Merlin"
     else:
@@ -68,7 +74,7 @@ def early_wandb_initialization(cfg: DictConfig) -> None:
         wandb_osh.set_log_level("ERROR")  # for wandb_osh.__version__ >= 1.2.0
 
     run_name = (
-        make_a_nice_run_name(cfg)
+        make_wandb_run_name(cfg)
         if cfg.logger.wandb.get("run_name", None) is None
         else cfg.logger.wandb.get("run_name")
     )

@@ -1,0 +1,35 @@
+_target_: src.models.sar_ddc_module.SARDDCModule
+
+net:
+  _target_: src.models.components.res_factorized_prior_dpu.ResidualFactorizedPriorPatched
+  nb_channels_main: 128  # Number of channels for main transform
+  activation: "gdn"   # gdn | relu | gdn1 (GDN Simplified) | identity (no activation)
+  no_output_padding: False
+  no_residual_blocks: False  # If True, ResidualBlocks in g_a/g_s are replaced by nn.Identity
+  export_dpu: False # Always false, only set when quantizing the network with Vitis-AI
+
+criterion:
+  _target_: src.utils.metrics.MerlinRDLoss
+  metric: "merlin" # "ssim", "ms_ssim", or "mse"
+  lmbda: 100
+
+net_optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 5e-5
+  weight_decay: 0.0   # Default: 0.0
+
+aux_optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 0.0001          # Default: 0.001, compressai: 0.0001
+  weight_decay: 0.0   # Default: 0.0
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.MultiStepLR
+  _partial_: true
+  milestones: [4, 20]  # Reduce LR at epochs 4 and 20
+  gamma: 0.1           # Multiply LR by 0.1 at each milestone
+
+gradient_clip_norm: 1.0 # https://github.com/ali-zafari/TBTC/blob/master/lit_model.py
+compile: False          # compile model for faster training with pytorch 2.0
