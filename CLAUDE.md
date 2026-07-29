@@ -44,6 +44,7 @@ Read only what's relevant to the task at hand.
 | Benchmark: ZCU102 hardware, methodology, power, results, future work + journal | `docs/FPGA_benchmark.md` |
 | Why/how we ported Python→C++, before/after numbers, bug archive | `docs/python_to_cpp_migration_journal.md` |
 | GPU/CPU host benchmark + cross-platform (CPU/GPU/FPGA) comparison & unified runner | `docs/GPU_benchmark.md` |
+| Onboard streaming pipeline (receive→compress→downlink) — plan, feasibility, ZCU102 memory/storage facts, symmetrization study | `docs/onboard_pipeline.md` ← **planning** |
 | Analysis notebooks: purpose, data flow, shared modules (`_plotkit`, `_benchmark_loader`) | `docs/Notebooks.md` |
 | Vitis-AI issues, deployment journal | `docs/Vitis-AI_journey.md` (check here before debugging Vitis-AI issues) |
 
@@ -75,7 +76,6 @@ python scripts/fpga/deploy/deploy.py --run-dir <...> --skip-compile --skip-test-
 
 ```bash
 # Push sources and rebuild (done automatically by batch_deploy.py and --rebuild-cpp).
-# Use rsync (not scp -r): scp -r creates nested src/src/ when the remote dir already exists.
 rsync -av inference_cpp/src/ ZCU102:/home/root/SAR_DDC/inference_cpp/src/
 ssh ZCU102 "cd /home/root/SAR_DDC/build_cpp && make -j4"
 ```
@@ -87,6 +87,33 @@ build_cpp/inference_hybrid --xmodel active_model/*.xmodel \
   --params active_model/entropy_params \
   --data data/test_sub500_seed42.npy --subset 100 \
   [--debug-patch N] [--verbose]
+```
+
+### Benchmark run commands
+
+**Canonical results**: `results/benchmark_hardware/<model_name>/<config>_<scenario>[_dpuN][_entN].json`.
+Arch is auto-detected from `active_model/manifest.json` (errors if absent/malformed).
+
+```bash
+# Full sweep, all 4 archs (host-side): deploy + benchmark + roofline + fetch
+python scripts/fpga/benchmark/benchmark_sweep.py
+
+# Single run (manual, on board)
+build_cpp/benchmark_hardware --xmodel active_model/*.xmodel --params active_model/entropy_params \
+    --data data/test_sub500_seed42.npy --config s0 --scenario compress --warmup 5 --iters 50 --output out.json
+
+python3 /home/root/SAR_DDC/run_benchmarks.py ResSHyp-relu_s0_L1000_pt
+python3 /home/root/SAR_DDC/collect_roofline.py ResSHyp-relu_s0_L1000_pt
+```
+
+### Cross-platform benchmark (CPU / GPU / FPGA — one command)
+
+Full doc → `docs/GPU_benchmark.md`.
+
+```bash
+python scripts/benchmark/run_unified_benchmark.py --model-dir results/fpga/active_model/ --power
+python scripts/evaluation/benchmark_gpu.py --model-dir results/fpga/active_model/ \
+    --scenario compress --no-gpu --iters 100 --warmup 20 --power
 ```
 
 ---
@@ -104,7 +131,7 @@ Code compiled for the DPU must follow these rules:
 
 ## Data & Normalisation
 
-- Patches stored raw (unnormalised); log-amplitude normalisation applied at runtime inside LightningDataModule
+- Patches stored raw (unnormalised, but symetrized); log-amplitude normalisation applied at runtime inside LightningDataModule
 - Constants `AMP_MIN`, `AMP_MAX`, `EPS` — single source of truth: `src/utils/constants.py` — never duplicate
 - MERLIN reconstruction: average real + imag predictions (×0.5) when computing intensity for metrics
 - Visualisations → log-scale intensity; metrics (PSNR, ENL, …) → linear amplitude — never mix
@@ -128,41 +155,12 @@ The Python→C++ migration is done; **C++ is the only inference path** (no Pytho
 `docs/GPU_benchmark.md`). Pipelining (M4 P0, M5 P2, P3) remains **future work, not implemented** —
 documented in `docs/FPGA_benchmark.md` §10. *Do not implement parallelism without a design discussion first.*
 
-### Benchmark run commands
-
-**Canonical results**: `results/benchmark_hardware/<model_name>/<config>_<scenario>[_dpuN][_entN].json`.
-Arch is auto-detected from `active_model/manifest.json` (errors if absent/malformed).
-
-```bash
-# Full sweep, all 4 archs (host-side, ~30-40 min): deploy + benchmark + roofline + fetch
-python scripts/fpga/benchmark/benchmark_sweep.py
-#   --models ResSHyp-relu_s0_L1000_pt,FP-relu_s0_L1000_pt  --skip-ceiling --skip-roofline --rebuild-cpp --force
-
-# Single run (manual, on board)
-build_cpp/benchmark_hardware --xmodel active_model/*.xmodel --params active_model/entropy_params \
-    --data data/test_sub500_seed42.npy --config s0 --scenario compress --warmup 5 --iters 50 --output out.json
-
-# On board, single model: benchmark sweep + roofline collection
-python3 /home/root/SAR_DDC/run_benchmarks.py ResSHyp-relu_s0_L1000_pt
-python3 /home/root/SAR_DDC/collect_roofline.py ResSHyp-relu_s0_L1000_pt
-```
-
-### Cross-platform benchmark (CPU / GPU / FPGA — one command)
-
-Host GPU/CPU benchmark locally + FPGA sweep over SSH, into one results tree
-(`results/benchmark_unified/` for host, `results/benchmark_hardware/` for FPGA). Pluggable backends —
-add new HW (e.g. Jetson) with a backend + `--no-<hw>` toggle. Analysis →
-`notebooks/benchmark_cross_platform_analysis.ipynb`. Full doc → `docs/GPU_benchmark.md`.
-
-```bash
-conda activate DDC_FPGA
-python scripts/benchmark/run_unified_benchmark.py --model-dir results/fpga/active_model/ --power
-#   --no-fpga (host only)  --no-gpu --no-cpu (FPGA only)  --scenarios compress,full  --rebuild-cpp
-
-# Host only, single device (CPU-only quick check, no board needed)
-python scripts/evaluation/benchmark_gpu.py --model-dir results/fpga/active_model/ \
-    --scenario compress --no-gpu --iters 100 --warmup 20 --power
-```
+**Onboard streaming pipeline (NEW — planning).** The end-to-end "receive SLC tile → despeckle +
+compress → write downlink bitstream" scenario — which *realizes* the P0/P2 pipelining + streaming as
+the systems-paper contribution — is now in active design in `docs/onboard_pipeline.md` (this is the
+required design discussion). First step: an offline **symmetrization-granularity study (E1)** to
+decide whether symmetrization can live inside the per-patch/per-block pipeline. Nothing implemented
+on-board yet.
 
 ---
 
