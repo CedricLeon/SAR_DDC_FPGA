@@ -138,3 +138,32 @@ $$\text{amplitude} = \exp\!\bigl(x_\text{norm} \cdot (\text{AMP\_MAX} - \text{AM
 > The network reconstructs full reflectivity $r$ from a single input component. During evaluation, the Real and Imaginary network predictions are averaged (factor 0.5) to match the original intensity scale. **Metrics are computed in linear amplitude scale**; all visualisations use log-scale intensity.
 
 The constants were derived by running `scripts/dataset/compute_stats.py` over 5 TerraSAR-X `.cos` files.
+
+---
+
+## End-to-End Full Tile Projection
+
+Hypothetical cost of compressing the Cologne TerraSAR-X tile (21 036 × 29 828 px) with 16 px overlap between patches.
+
+**Patch grid** — patch size 256 × 256, stride = 256 − 16 = 240 px:
+
+```text
+n_h = ceil((21036 − 16) / 240) = 88
+n_w = ceil((29828 − 16) / 240) = 125
+total = 88 × 125 = 11 000 patches
+```
+
+Per-patch latency and energy are taken from `results/benchmark_hardware/` (FPGA, `s1_compress.json`, MPSoC active power × latency) and `results/benchmark_unified/` (CPU/GPU, `baseline_compress_{cpu,gpu}.json`, `active_w × latency`). MERLIN's ×2 real/imag factor is already included in the per-patch measurements.
+
+| Arch | Platform | lat/patch | total lat | nrg/patch | total energy |
+| --- | --- | --- | --- | --- | --- |
+| FP | FPGA s1 | 22.0 ms | 4.0 min | 214.5 mJ | 2.36 kJ |
+| SH | FPGA s1 | 29.1 ms | 5.3 min | 284.6 mJ | 3.13 kJ |
+| ResFP | FPGA s1 | 53.3 ms | 9.8 min | 659.5 mJ | 7.25 kJ |
+| ResSH | FPGA s1 | 61.4 ms | 11.3 min | 782.5 mJ | 8.61 kJ |
+| FP | CPU | 26.7 ms | 4.9 min | 2 341.8 mJ | 25.76 kJ |
+| FP | GPU | 7.4 ms | 1.4 min | 866.5 mJ | 9.53 kJ |
+| ResSH | CPU | 126.3 ms | 23.2 min | 12 360.7 mJ | 135.97 kJ |
+| ResSH | GPU | 15.1 ms | 2.8 min | 1 862.8 mJ | 20.49 kJ |
+
+CPU/GPU active board power is ~88–127 W vs. FPGA MPSoC ~10–13 W (~10×), so despite the GPU being ~4× faster in latency, it consumes ~4× more energy per tile than the FPGA.

@@ -18,6 +18,7 @@ Notebooks discard whatever columns they don't need after loading.
 import json
 import re
 from pathlib import Path
+from typing import List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -33,7 +34,7 @@ IDENTITY_COLS = ["platform", "model_name", "config", "scenario", "dpu_cores", "e
 _NN_STAGES = {"g_a", "h_a", "h_s", "g_s"}
 
 
-def _iter_run_jsons(*dirs: Path | str):
+def _iter_run_jsons(*dirs: Union[Path, str]):
     """Yield (json_path, model_name) over one or more results trees, skipping meta subdirs."""
     for d in dirs:
         if d is None:
@@ -44,7 +45,9 @@ def _iter_run_jsons(*dirs: Path | str):
             yield json_path, json_path.parent.name
 
 
-def load_runs(hardware_dir: Path | str, unified_dir: Path | str | None = None) -> pd.DataFrame:
+def load_runs(
+    hardware_dir: Union[Path, str], unified_dir: Optional[Union[Path, str]] = None
+) -> pd.DataFrame:
     """Return one row per benchmark JSON across the FPGA + (optional) host trees.
 
     Backward-compatible: ``load_runs(benchmark_hardware_dir)`` loads FPGA-only.
@@ -59,7 +62,7 @@ def load_runs(hardware_dir: Path | str, unified_dir: Path | str | None = None) -
 
 
 def load_stage_breakdowns(
-    hardware_dir: Path | str, unified_dir: Path | str | None = None
+    hardware_dir: Union[Path, str], unified_dir: Optional[Union[Path, str]] = None
 ) -> pd.DataFrame:
     """Return long-format DataFrame: one row per (run, stage) pair, across both trees.
 
@@ -96,7 +99,7 @@ def load_stage_breakdowns(
 _ARCH_FROM_MODEL = re.compile(r"^(ResSHyp|SHyp|ResFP|FP)")
 
 
-def load_quality_metrics(compiled_dir: Path | str) -> pd.DataFrame:
+def load_quality_metrics(compiled_dir: Union[Path, str]) -> pd.DataFrame:
     """Return one row per compiled model that has a results/metrics.json.
 
     compiled_dir should point to results/fpga/compiled_models/.
@@ -289,7 +292,7 @@ def _check_uniqueness(df: pd.DataFrame) -> None:
     raise ValueError("\n".join(msg_lines))
 
 
-def groupby_check(df: pd.DataFrame, groupby: list[str]) -> None:
+def groupby_check(df: pd.DataFrame, groupby: List[str]) -> None:
     """Raise if any IDENTITY_COL is silently dropped by the groupby spec."""
     missing = [c for c in IDENTITY_COLS if c not in groupby and c in df.columns]
     if missing:

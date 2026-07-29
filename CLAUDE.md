@@ -28,6 +28,7 @@ Three distinct environments — always use the right one.
 | Board active model | `ZCU102:/home/root/SAR_DDC/active_model/` (xmodel + entropy_params/) |
 | Board test data | `ZCU102:/home/root/SAR_DDC/data/test_sub500_seed42.npy` |
 | Active model (host) | `results/fpga/active_model/` (symlink) |
+| Manuscript figures | `LaTeX/SAR_DDC_FPGA_TGRS_2026/figures/images/` (PDF export target for notebook figures) |
 
 ---
 
@@ -43,6 +44,7 @@ Read only what's relevant to the task at hand.
 | Benchmark: ZCU102 hardware, methodology, power, results, future work + journal | `docs/FPGA_benchmark.md` |
 | Why/how we ported Python→C++, before/after numbers, bug archive | `docs/python_to_cpp_migration_journal.md` |
 | GPU/CPU host benchmark + cross-platform (CPU/GPU/FPGA) comparison & unified runner | `docs/GPU_benchmark.md` |
+| Analysis notebooks: purpose, data flow, shared modules (`_plotkit`, `_benchmark_loader`) | `docs/Notebooks.md` |
 | Vitis-AI issues, deployment journal | `docs/Vitis-AI_journey.md` (check here before debugging Vitis-AI issues) |
 
 ---
@@ -121,9 +123,10 @@ The Python→C++ migration is done; **C++ is the only inference path** (no Pytho
   (nn_only/entropy_only ~1.97× at N=2). Hardware, methodology, results → `docs/FPGA_benchmark.md`.
 - Python legacy removed; `scripts/` reorganised into `dataset/ training/ evaluation/ fpga/{deploy,benchmark}/ vitis_ai/`.
 
-**Scope closed at M3.** Pipelining (M4 P0, M5 P2, P3) and the unified GPU/CPU/FPGA runner are
-**future work, not implemented** — documented in `docs/FPGA_benchmark.md` §10.
-*Do not implement parallelism without a design discussion first.*
+**Scope closed at M3.** The unified GPU/CPU/FPGA runner **is implemented**
+(`scripts/benchmark/run_unified_benchmark.py` — see the Cross-platform benchmark section below and
+`docs/GPU_benchmark.md`). Pipelining (M4 P0, M5 P2, P3) remains **future work, not implemented** —
+documented in `docs/FPGA_benchmark.md` §10. *Do not implement parallelism without a design discussion first.*
 
 ### Benchmark run commands
 
@@ -171,3 +174,6 @@ python scripts/evaluation/benchmark_gpu.py --model-dir results/fpga/active_model
 - **C++ decisions**: provide clear explanations and context in chat.
 - **Destructive actions**: always ask before deleting files, force-pushing, or anything irreversible.
 - **Errors over silent fallbacks**: if code expects a file, field, or format that should always be present (e.g. `manifest.json`, a specific JSON key, a model name pattern), throw an explicit error when it is missing or malformed — never silently fall back to a default. A missed fallback produces wrong results that may go unnoticed; a hard error forces an immediate fix.
+- **Verified arithmetic**: compute every number (unit conversions, patch counts, totals, ratios, percentages) with a `python3`/Bash command before writing it into a file, message, or doc — never inline mental math. Wrong numbers silently end up in docs and need corrective passes.
+- **Project-root detection**: use `rootutils.setup_root(..., indicator=".project-root")` — never hand-rolled `__file__` parent walks. Exception: scripts that run inside the Vitis-AI Docker (e.g. `model_quant.py`), where rootutils is not installed → manual `.project-root` parent walk.
+- **Production-run filter (quality analysis)**: figures use only `_relu` activation + `no_output_padding=True` runs, enforced by `_plotkit.load_quality_runs(relu_only=True, nop_only=True)`. Never mix GDN or output-padded variants into production comparisons.
