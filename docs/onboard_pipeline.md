@@ -104,7 +104,7 @@ efficient wait — a blocking pop, not a busy-wait (a spin would pin an A53 and 
 | U1 | Symmetrization granularity (whole / none / patch / block) | ✔ **resolved (E1 §6, definitive): skip it.** Granularity irrelevant; cost ≤0.54 dB (λ1000) → ~0.03 dB (λ2), across ResSHyp/FP over the full 7 296-patch scene. Optional whole-image pre-pass reclaims it |
 | U2 | On-disk tile format (int16 `.cos` vs f32 `.npy`) | ⏳ open — `.cos` may be fragmented/awkward to parse; decide via E1 + an SD-read micro-bench. **Default f32 `[H,W,2]` first** |
 | U3 | Harness shape | ✔ **locked** — extend `benchmark_hardware` with named presets + gates (§8) |
-| U4 | `.ddc` container format | ✔ drafted (§7); still to verify round-trip once |
+| U4 | `.ddc` container format | ✔ **locked v1 + verified** (§7): `src/utils/ddc_format.py` codec + `ddc_selftest.py` pass on ResSHyp/FP (byte-exact round-trip, random access, lossless decode) |
 | U5 | Overlap | ⏳ later — harness will expose `--stream-overlap {0,4,8,16}` px to sweep overlap → reconstructed-image quality |
 
 ---
@@ -157,52 +157,38 @@ per-patch/per-block pipeline. E1 measures it.
 
 > **linA convention (single source of truth).** `x_hat` is 2-channel `[B,2,H,W]` (real, imag);
 > `linA = sqrt(0.5·(exp(x0·Δ+AMP_MIN)² + exp(x1·Δ+AMP_MIN)²))`, Δ = AMP_MAX−AMP_MIN — as in
-> `create_dataset.py::_predict_linA` (the code that generated the MERLIN/ADAM GT). `src/evaluate.py`
-> mishandles the two channels in both its paths — **pending fix**.
+> `create_dataset.py::_predict_linA` (the code that generated the MERLIN/ADAM GT), now extracted to
+> `src/utils/reconstruction.py` and shared by `evaluate.py` / `create_dataset.py` / the study — **fixed**.
 
 ---
 
-## 7. `.ddc` downlink product (detailed)
+## 7. `.ddc` downlink product (v1 — locked)
 
-The `.ddc` is the compressed tile as it would be queued for downlink: a small **header** (how to
-decode) + one **record per patch** (the rANS bitstreams). Nothing model-specific (CDF tables,
-weights) is embedded — those live in `entropy_params/` and are referenced by id.
+Reference codec: **`src/utils/ddc_format.py`** (authoritative spec-in-code); self-test:
+`scripts/evaluation/ddc_selftest.py`. Little-endian, positional. A `.ddc` = **header** (how to
+decode) + **body** of per-patch rANS bitstreams + optional **trailer** offset table. Nothing
+model-specific (CDF tables, weights) is embedded — the ground station has the decoder + CDFs; the
+header only *references* them.
 
-**Header** (once, at file start; ~50 B, negligible):
+- **Header** (46 fixed bytes + two length-prefixed UTF-8 strings): `magic "DDC1"` · `flags`
+  (bit0 = trailer present) · `arch_id` (0 FP/1 ResFP/2 SHyp/3 ResSHyp) · `N`/`M` · `patch`/`stride`
+  · `scene_H`/`scene_W` · `grid_r`/`grid_a` · `AMP_MIN/MAX/EPS` (f32) · `params_sha` (8 B guard) ·
+  `tile_id` (TSX product name) · `model_id`.
+- **Body** × (grid_r·grid_a), row-major: `len_z`(u32) · `z_bits` · `len_y`(u32) · `y_bits`
+  (FP: `len_z` = 0).
+- **Trailer** (if flags bit0): `grid_r·grid_a × u64` = byte offset of each patch record. Location is
+  **derived, not stored**: `table_start = filesize − n·8` (n from the header) → O(1) random access /
+  partial + prioritised downlink.
 
-| Field | Bytes | Meaning |
-| --- | --- | --- |
-| magic | 4 | ASCII `DDC1` — format + version |
-| arch_id | 1 | 0=FP 1=ResFP 2=SHyp 3=ResSHyp → selects EB-only vs EB+GC decode path |
-| N / M | 2+2 | main (128) / hyper (256) channels |
-| patch | 2 | patch size (256) |
-| grid_range / grid_azimuth | 2+2 | patch grid (57 × 128) → place patches back in the tile |
-| model_hash | 16 | id/hash of the `entropy_params` + weights that produced it |
-| AMP_MIN / MAX / EPS | 12 | denorm constants (f32 × 3) |
+**Locked decisions:** latent shapes are *derived* from patch+arch (a dummy forward), not stored;
+`params_sha` is a decodability *guard* (params shipped out-of-band, ground has the decoder+CDF);
+little-endian; scene bound by `tile_id`. **Verified** (self-test, ResSHyp + FP): header/body/trailer
+round-trip byte-exact, random access matches, decode(file) ≈ decode(direct) within float32 ε. bpp
+sanity 1.95 (ResSHyp λ1000) / 0.26 (FP λ20); container overhead ≈ header + 8·n bytes (negligible).
+The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python codec is the oracle.
 
-**Per-patch record** (× n_patches, row-major grid order):
-
-| Field | Bytes | Meaning |
-| --- | --- | --- |
-| len_z | 4 | byte length of the hyper stream (SHyp only; 0 for FP) |
-| z_bits | len_z | rANS bitstream for `z` (EntropyBottleneck) |
-| len_y | 4 | byte length of the main stream |
-| y_bits | len_y | rANS bitstream for `y` (GaussianConditional for SHyp, EB for FP) |
-
-Optional trailer: an offset table (`n_patches × u32`) for random access / partial downlink.
-
-**Why / gotchas:**
-
-- **`model_hash` is the decodability guard** — rANS needs the *exact* CDF tables; without a reference
-  to them the bytes are meaningless. #1 trap.
-- **`len_*` prefixes** — rANS output is variable-length per patch, so each stream must be delimited.
-- **Little-endian, fixed-width ints** — explicit and portable (board aarch64 + host x86 are both LE).
-- **`arch_id` + grid dims** are all a decoder needs to route the decode path and re-tile.
-- **Bitrate honesty:** `bpp = (Σ len_z + len_y) × 8 / (n_patches × 256²)`; report header/index
-  overhead separately from payload.
-
-**Verify (Q3):** `scripts/evaluation/ddc_decode.py` reads a `.ddc`, decompresses with the referenced
-params, reconstructs, and checks round-trip PSNR vs the on-board `inference_hybrid` output — run once.
+> **TODO (user review):** `src/utils/ddc_format.py` + `scripts/evaluation/ddc_selftest.py` were
+> committed unreviewed — independently sanity-check the byte layout and the self-test assertions.
 
 ---
 
@@ -224,7 +210,8 @@ params, reconstructs, and checks round-trip PSNR vs the on-board `inference_hybr
 - [x] Scene dims → patch count / footprints (§3).
 - [ ] SD sequential **read** throughput (tile load).
 - [ ] SD **write** throughput (`.ddc`).
-- [ ] E1 symmetrization study (§6).
+- [x] E1 symmetrization study (§6) — done; symmetrization dropped.
+- [x] `.ddc` format + Python codec/verifier (§7) — done; self-test passes on ResSHyp/FP.
 - [ ] per-patch patchify + normalize timing on the raw scene.
 - [ ] byte-identity gate harness.
 
@@ -232,9 +219,9 @@ params, reconstructs, and checks round-trip PSNR vs the on-board `inference_hybr
 
 ## 10. Staged plan
 
-1. **E1** (local GPU) — unblock symmetrization placement.
-2. **`.ddc` format + Python verifier** — lock the product + decode path.
-3. **`stream_seq`** on-board — read `.cos`/tile → full pipeline → write `.ddc`; gate vs `inference_hybrid`.
+1. ✅ **E1** (local GPU) — done; symmetrization dropped (§6).
+2. ✅ **`.ddc` format + Python codec/verifier** — done; v1 locked + verified (§7).
+3. **`stream_seq`** on-board (next) — read `.cos`/tile → full pipeline → write `.ddc`; gate vs `inference_hybrid`.
 4. **`stream_p0`** (2-lane) — throughput + tile latency; power.
 5. **`stream_fine`** + `--queue-depth`/`--entropy-threads` sweeps; full 7 296-patch scene streamed from SD.
 6. Overlap + reconstructed-tile quality.
