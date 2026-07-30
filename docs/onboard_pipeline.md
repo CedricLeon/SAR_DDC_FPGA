@@ -102,7 +102,7 @@ efficient wait — a blocking pop, not a busy-wait (a spin would pin an A53 and 
 | # | Question | Status |
 | --- | --- | --- |
 | U1 | Symmetrization granularity (whole / none / patch / block) | ✔ **resolved (E1 §6, definitive): skip it.** Granularity irrelevant; cost ≤0.54 dB (λ1000) → ~0.03 dB (λ2), across ResSHyp/FP over the full 7 296-patch scene. Optional whole-image pre-pass reclaims it |
-| U2 | On-disk tile format (int16 `.cos` vs f32 `.npy`) | ⏳ open — `.cos` may be fragmented/awkward to parse; decide via E1 + an SD-read micro-bench. **Default f32 `[H,W,2]` first** |
+| U2 | On-disk **file layout** + data type | ✔ (3.5) **row-major int16 `.npy`**, seek-streamed by `TileWindowReader` (header parsed once → byte offset of any patch/row computed from its coordinate; no per-patch file-open). Patchify (row-strided extract) = 0.4%, negligible. Patch-major `[n,256,256,2]` would zero patchify but fragments SD reads + complicates overlap → not worth it for in-order streaming. Data type: **int16** (4 B/px, likely the onboard SLC format). |
 | U3 | Harness shape | ✔ **locked** — extend `benchmark_hardware` with named presets + gates (§8) |
 | U4 | `.ddc` container format | ✔ **locked v1 + verified** (§7): `src/utils/ddc_format.py` codec + `ddc_selftest.py` pass on ResSHyp/FP (byte-exact round-trip, random access, lossless decode) |
 | U5 | Overlap | ⏳ later — harness will expose `--stream-overlap {0,4,8,16}` px to sweep overlap → reconstructed-image quality |
@@ -138,14 +138,25 @@ per-patch/per-block pipeline. E1 measures it.
 - **Result** — ResSHyp + FP × λ∈{2,20,1000}, seed 0, **whole scene (7 296 patches)**, vs MERLIN GT
   PSNR:
 
-  | model | whole | none | patch | block | Δ(skip) |
-  | --- | --- | --- | --- | --- | --- |
-  | ResSHyp λ1000 | 31.65 | 31.10 | 31.10 | 31.11 | 0.54 dB |
-  | ResSHyp λ20 | 28.61 | 28.36 | 28.41 | 28.42 | 0.25 dB |
-  | ResSHyp λ2 | 22.94 | 22.91 | 22.93 | 22.93 | 0.03 dB |
-  | FP λ1000 | 30.67 | 30.24 | 30.26 | 30.27 | 0.43 dB |
-  | FP λ20 | 28.87 | 28.64 | 28.65 | 28.66 | 0.22 dB |
-  | FP λ2 | 24.70 | 24.67 | 24.67 | 24.67 | 0.03 dB |
+  | model         | whole | none  | patch | block | Δ(skip) |
+  |---------------|-------|-------|-------|-------|---------|
+  | ResSHyp λ1000 | 31.65 | 31.10 | 31.10 | 31.11 | 0.54    |
+  | ResSHyp λ20   | 28.61 | 28.36 | 28.41 | 28.42 | 0.25    |
+  | ResSHyp λ2    | 22.94 | 22.91 | 22.93 | 22.93 | 0.03    |
+  | FP λ1000      | 30.67 | 30.24 | 30.26 | 30.27 | 0.43    |
+  | FP λ20        | 28.87 | 28.64 | 28.65 | 28.66 | 0.22    |
+  | FP λ2         | 24.70 | 24.67 | 24.67 | 24.67 | 0.03    |
+
+- SSIM:
+
+  | model         | whole  | none   | patch  | block  | Δ(skip) |
+  |---------------|--------|--------|--------|--------|---------|
+  | ResSHyp λ1000 | 0.9666 | 0.9627 | 0.9628 | 0.9628 | 0.0039  |
+  | ResSHyp λ20   | 0.9210 | 0.9190 | 0.9189 | 0.9190 | 0.0020  |
+  | ResSHyp λ2    | 0.6540 | 0.6539 | 0.6539 | 0.6537 | 0.0001  |
+  | FP λ1000      | 0.9592 | 0.9555 | 0.9556 | 0.9556 | 0.0037  |
+  | FP λ20        | 0.9348 | 0.9323 | 0.9327 | 0.9327 | 0.0025  |
+  | FP λ2         | 0.8464 | 0.8456 | 0.8454 | 0.8457 | 0.0008  |
 
   **Conclusion → skip symmetrization** (definitive: 2 archs × 3 rates × full scene). Granularity is
   irrelevant everywhere (none ≈ patch ≈ block within ≤0.05 dB). Dropping whole-image symmetrization
@@ -208,12 +219,12 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
 
 - [x] DDR / cores / SD capacity (§2).
 - [x] Scene dims → patch count / footprints (§3).
-- [ ] SD sequential **read** throughput (tile load).
-- [ ] SD **write** throughput (`.ddc`).
+- [x] SD read throughput — **23.5 MB/s** cold (dd, cache-dropped, 3.5).
+- [x] SD write throughput — ~0.1 ms/patch for the `.ddc` (3.5).
 - [x] E1 symmetrization study (§6) — done; symmetrization dropped.
 - [x] `.ddc` format + Python codec/verifier (§7) — done; self-test passes on ResSHyp/FP.
-- [ ] per-patch patchify + normalize timing on the raw scene.
-- [ ] byte-identity gate harness.
+- [x] per-patch stage timing (3.5) — DPU 75 / entropy 12 / normalize 9 ms; DPU-bound.
+- [x] correctness gate — decode == `inference_hybrid` (MSE=0); windowed == whole byte-identical.
 
 ---
 
@@ -221,7 +232,42 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
 
 1. ✅ **E1** (local GPU) — done; symmetrization dropped (§6).
 2. ✅ **`.ddc` format + Python codec/verifier** — done; v1 locked + verified (§7).
-3. **`stream_seq`** on-board (next) — read `.cos`/tile → full pipeline → write `.ddc`; gate vs `inference_hybrid`.
-4. **`stream_p0`** (2-lane) — throughput + tile latency; power.
+3. ✅ **`stream_pipeline`** on-board — tile → DPU compress → `.ddc` → decode. **Correctness-gated:**
+   decoded recon is **bit-identical** to `inference_hybrid` (MSE=0.0, SSIM=1.0, identical bpp) on
+   ResSHyp. New: `inference_cpp/src/{ddc_io.hpp, tile_source.hpp, stream/}` + host tests
+   `test_ddc_io`/`test_tile_source`.
+   ✅ **3.5 baseline** (1024 patches, ResSHyp, **int16 tile streamed row-block by row-block**):
+   **10 patch/s**, 100 ms/patch — **DPU 75% / entropy 12% / normalize 9% / I/O ~1%**; windowed ==
+   whole-tile **byte-identical** (+1.5% time, 16× less DDR: 33 MB row-block vs 536 MB whole);
+   bpp 2.08 → **15.4× vs raw int16**; cold SD read 23.5 MB/s. Full scene ≈ 12 min / 124 MB (projected).
+   **DPU-bound → pipelining ceiling ~1.33×** (that's step 4's headroom).
+4. **Step 4 (parallelism), ResSHyp 1024 patches.** ✅ **S1** (g_a‖g_a, 2 cores) → 16.1 patch/s
+   (1.61×); ✅ **p0** (S1 + CPU‖DPU worker-pool overlap; DPU serialized by a mutex; records placed by
+   index) → **21.1 patch/s (2.11×)** at 3–4 threads, **byte-identical** to sequential (no race);
+   DPU-serialized ceiling ~25/s (84% reached). The `--threads` knob *is* the "fine" tuning — ResSHyp
+   plateaus at ~3 (DPU-bound). **FP (CPU-bound) scales the opposite way:** seq 37 → s1 43 (1.18×) →
+   **p0 116 patch/s (3.16×)**, still climbing t2→t4 (+52% vs ResSHyp's +9%). **Parallelism is
+   arch-dependent:** ResSHyp wants S1 (DPU channel-parallel), FP wants p0 threads (CPU-parallel);
+   both byte-identical. Full scene @ best p0: ResSHyp ~5.8 min, FP ~1.0 min.
 5. **`stream_fine`** + `--queue-depth`/`--entropy-threads` sweeps; full 7 296-patch scene streamed from SD.
 6. Overlap + reconstructed-tile quality.
+7. **On-ground decode (nice-to-have):** reproduce the on-board INT8 `h_s` on host so SHyp `.ddc`
+   files decode in pure Python — until then, SHyp verification is board-side (the FP path already
+   decodes in Python; see the INT8-scales note in §7). Handy for a ground station, not required.
+
+> **TODO (review agent):** commission an independent code-review agent over the Step-3 C++
+> (`ddc_io.hpp`, `tile_source.hpp`, `stream/`) — flag convoluted/redundant implementations and
+> untested cases (FP path, full-scene 64-bit overflow, error handling, endianness/edge values,
+> the FNV params hash) before Step 3 graduates.
+
+> **TODO (paper):** full 7,296-patch scene — **seq vs s1 vs p0(best-threads)** — for all archs ×
+> λ{1000,20,2} → throughput / full-tile latency / energy table. Batch it (ResSHyp seq ≈ 12 min/run).
+
+> **TODO (CPU opt):** NEON-vectorize `normalize`/`denorm` (log/exp) — the CPU bottleneck that
+> dominates FP (~33% of its per-patch time; would lift FP p0 throughput). See FPGA_inference.md §9.
+
+> **TODO (figure):** Gantt-style timeline diagrams (stages × threads) for seq / s1 / p0 (and B) —
+> to communicate the schedules in the paper.
+
+> **Open (U2, storage format):** the realistic "SLC on the SD" is complex **int16** (4 B/px, the
+> `.cos` payload) — our f32 `.npy` is a 2× convenience. Resolve as part of 3.5 (int16 vs f32 read).
