@@ -49,6 +49,13 @@ struct NpyArray {
             for (size_t i = 0; i < n; ++i)
                 out[i] = static_cast<float>(p[i]);
             return out;
+        } else if (dtype == "<i2" || dtype == "int16") {
+            // Raw complex SLC on the SD is stored as int16 I/Q (the .cos payload, 4 B/px).
+            const int16_t* p = reinterpret_cast<const int16_t*>(data.data());
+            std::vector<float> out(n);
+            for (size_t i = 0; i < n; ++i)
+                out[i] = static_cast<float>(p[i]);
+            return out;
         }
         throw std::runtime_error("NpyArray::to_float32_vec: unsupported dtype: " + dtype);
     }
@@ -166,6 +173,7 @@ inline NpyArray npy_load(const std::string& path) {
     size_t elem_size = 0;
     if (arr.dtype == "<f4" || arr.dtype == "float32") elem_size = 4;
     else if (arr.dtype == "<i4" || arr.dtype == "int32") elem_size = 4;
+    else if (arr.dtype == "<i2" || arr.dtype == "int16") elem_size = 2;
     else if (arr.dtype == "<i8" || arr.dtype == "int64") elem_size = 8;
     else if (arr.dtype == "<f8" || arr.dtype == "float64") elem_size = 8;
     else throw std::runtime_error("npy_load: unsupported dtype: " + arr.dtype);
