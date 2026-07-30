@@ -249,6 +249,19 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
    **p0 116 patch/s (3.16×)**, still climbing t2→t4 (+52% vs ResSHyp's +9%). **Parallelism is
    arch-dependent:** ResSHyp wants S1 (DPU channel-parallel), FP wants p0 threads (CPU-parallel);
    both byte-identical. Full scene @ best p0: ResSHyp ~5.8 min, FP ~1.0 min.
+
+   ✅ **Full-scene headline (Option 1 — 7,296 patches, `--p0 --s1 --windowed --threads 4`, measured on board):**
+
+   | arch (λ=1000) | throughput | full-tile latency | `.ddc` | ratio vs raw int16 | bpp | peak DDR |
+   | --- | --- | --- | --- | --- | --- | --- |
+   | FP (CPU-bound) | 53 patch/s (131 compute-only) | 2.28 min = 81 s cold SD read + 56 s compute | 88.9 MB | **21.8×** | 1.485 | 272 MB |
+   | ResSHyp (DPU-bound) | 22 patch/s | 5.61 min (7 s warm read; **~6.85 min** cold) | 74.0 MB | **26.1×** | 1.237 | 307 MB |
+
+   Windowed read holds only a **30 MB row-block + compressed records → peak DDR ~0.3 GB** (board stays
+   ~2.8 GB free). The whole f32 tile is 3.87 GB > 3 GB DDR → **windowed streaming is required, not an
+   optimization** (whole-load is OOM-killed). Measured compute matches the step-4 projection (FP 0.93 min,
+   ResSHyp 5.5 min); the ~81 s cold SD read (23.8 MB/s) is the end-to-end add-on. Full-scene bpp (1.24–1.48)
+   beats the 1024 crop (2.08) — more low-texture area → higher ratio. raw int16 SLC = 1.93 GB (`.cos` payload).
 5. **`stream_fine`** + `--queue-depth`/`--entropy-threads` sweeps; full 7 296-patch scene streamed from SD.
 6. Overlap + reconstructed-tile quality.
 7. **On-ground decode (nice-to-have):** reproduce the on-board INT8 `h_s` on host so SHyp `.ddc`
@@ -269,5 +282,49 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
 > **TODO (figure):** Gantt-style timeline diagrams (stages × threads) for seq / s1 / p0 (and B) —
 > to communicate the schedules in the paper.
 
+> **TODO (overlap — double-buffer):** prefetch row-block N+1 while compressing block N (currently
+> read then process, serialized). Hides the SD read behind compute: lifts **FP 14→24 MB/s** (then
+> read-bound at the SD ceiling) and **fully hides ResSHyp's read** (compute-bound, 5.8 MB/s). Single
+> biggest lever for the realistic "data/s" number. Pretending faster persistent storage then lifts FP
+> toward its **34 MB/s compute ceiling** (the SD's 24 MB/s is our board's artifact, not fundamental).
+
+> **TODO (harness — cold read):** the realistic-scenario runner must drop the page cache at the start
+> of each timed run **inside the script** (`echo 3 > /proc/sys/vm/drop_caches`, needs root) — never by
+> hand (we'd forget). Makes every read honestly cold + reproducible, matching the real
+> acquire→focus→store→read flow where the SLC is genuinely on persistent storage, not in RAM.
+
 > **Open (U2, storage format):** the realistic "SLC on the SD" is complex **int16** (4 B/px, the
 > `.cos` payload) — our f32 `.npy` is a 2× convenience. Resolve as part of 3.5 (int16 vs f32 read).
+
+## User-added: TerraSAR-X "specifications", to be used as a real-time objective
+
+About real-time processing: TerraSAR-X always had the constraint of a maximum 180 seconds monostatic acquisition per satellite per orbit (so 360s for both satellites). But now it's much down (to about 1/4th says a colleague) due to the battery aging. Anyway, let's consider the worst case scenario: we have a duty cycle of 100%, i.e., we aim to process real-time the data acquisition made during these 180s. That's the ultimate objective.
+
+Now how much data is that?
+
+- For the most realistic mode (Stripmap) the PRF is between 3000 to 5000 Hz ==To check in the resources Thomas shared, might have heard it wrong==
+- The swath width on ground is about 30km (different in slant-range)
+- And the bandwidth of 100 or 150 MHz gives the resolution, which is about 1.5m
+- So in total you get about 20k range x 5k azimuth per second
+- Which leads to an absurd 20k x 900k azimuth line for 180s, so per orbit (which is about 90mins)
+
+Orbit time is typically 92 minutes for LEO, but in practice what matters is not to have finished pre-processing before the next orbit but before the next contact with the ground station, which can be in a few orbits or a few minutes.
+
+- The contact duration with ground station depends on the size of antenna of ground station
+- But it's about maximum 9 to 10 minutes and less if you appear closer to the horizon (it can even be seconds, which is not usable). The shortest is about 5 to 6 minutes.
+- The Neustrelitz ground station (DLR facility, 120km north of [[Berlin, Germany]]), can get about 90GB per day (in average you get about 1 contact in the morning and one in the evening, and max 2 and 2).
+- The downlink capacity obviously depends on the technology, but here they use X-band (8-12 GHz), which is not super sophisticated.
+- ==The X-band transmitter I found have a capacity of about 400 to 440 Mbps==
+- So you get between 16 GB (5 mins) and 32 GB (10 mins) at 440 Mbps
+
+Side note about power:
+
+- For TerraSAR-X the SAR transmit energy is about 2.5kW, but the solar panels only gather about 800W, so we need to fill up the battery and then use it for acquisition. It's similar for ICEYE or Capella like mission.
+- Sentinels or more modern mission like NiSAR or Rose-L (in the future) have more solar panels and lower wavelength, so they can almost operate continuously. But they also have lower resolution.
+- One additional problem with so high power consumption is that X-bands modules are close to each other so they overheat and you really need to wait for them to cooldown before the next acquisition. L-band doesn't have that problem because the modules are larger, further from each other, they also consume less power.
+
+Further resources to check that he shared:
+
+- There are a lot of references at: https://www.eoportal.org/satellite-missions/terrasar-x#ground-segment but I think he said it's not official
+- Early mission paper from Werninghaus (was the mission project manager): https://elib.dlr.de/63943/1/tgrs-RWerninghaus-2031062-proof.pdf
+- TerraSAR-X product specification document, [[Thomas Fritz]] is the author: https://sss.terrasar-x.dlr.de/docs/TX-GS-DD-3302.pdf
