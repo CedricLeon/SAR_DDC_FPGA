@@ -138,3 +138,19 @@ target_include_directories(test_ddc_io PRIVATE src)
 # tile_source windowed SD reader (header-only, no DPU / no deps)
 add_executable(test_tile_source tests/test_tile_source.cpp)
 target_include_directories(test_tile_source PRIVATE src)
+
+# ---------------------------------------------------------------------------
+# stream_pipeline — sequential streaming compressor (tile -> .ddc). New binary,
+# reuses BenchPipeline stages (bench_pipeline.cpp) + inference_lib. Needs nlohmann/json.
+# ---------------------------------------------------------------------------
+if(NLOHMANN_JSON_INCLUDE_DIR)
+    add_executable(stream_pipeline
+        src/stream/stream_pipeline.cpp
+        src/stream/main_stream.cpp
+        src/benchmark/bench_pipeline.cpp)
+    target_include_directories(stream_pipeline PRIVATE
+        src src/benchmark include ${NLOHMANN_JSON_INCLUDE_DIR})
+    target_link_libraries(stream_pipeline PRIVATE inference_lib)
+else()
+    message(STATUS "Skipping stream_pipeline target (nlohmann/json not found)")
+endif()
