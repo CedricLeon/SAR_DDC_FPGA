@@ -219,7 +219,10 @@ void BenchPipeline::init_s1()
 // ---------------------------------------------------------------------------
 void BenchPipeline::stage_normalize(PatchState& s)
 {
-    normalize_patch(s.noisy_hwc.data(), s.norm_hwc.data(), s.H, s.W);
+    if (use_neon_)
+        normalize_patch_neon(s.noisy_hwc.data(), s.norm_hwc.data(), s.H, s.W);
+    else
+        normalize_patch(s.noisy_hwc.data(), s.norm_hwc.data(), s.H, s.W);
 }
 
 // ---------------------------------------------------------------------------
@@ -379,7 +382,10 @@ void BenchPipeline::stage_gs_s1(PatchState& s)
 // ---------------------------------------------------------------------------
 void BenchPipeline::stage_denorm(PatchState& s)
 {
-    denorm_to_lina(s.recon_norm_logI.data(), s.recon_lina.data(), s.H, s.W);
+    if (use_neon_)
+        denorm_to_lina_neon(s.recon_norm_logI.data(), s.recon_lina.data(), s.H, s.W);
+    else
+        denorm_to_lina(s.recon_norm_logI.data(), s.recon_lina.data(), s.H, s.W);
 }
 
 } // namespace ddc

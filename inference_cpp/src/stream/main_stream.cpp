@@ -8,13 +8,15 @@
 #include <stdexcept>
 #include <string>
 
+#include "patch_transforms.hpp"  // ddc::neon_math_maxrelerr for --neon-check
 #include "stream/stream_pipeline.hpp"
 
 static const char* USAGE =
     "usage: stream_pipeline --xmodel <m.xmodel> --params <entropy_params> --tile <tile.npy> "
     "--out <out.ddc>\n"
     "                       [--manifest <manifest.json>] [--tile-id <name>] [--max-rows N]\n"
-    "                       [--windowed] [--s1] [--p0] [--threads N] [--prefetch] [--verbose]";
+    "                       [--windowed] [--s1] [--p0] [--threads N] [--prefetch] [--neon]\n"
+    "                       [--verbose]   |   --neon-check  (print NEON log/exp error, exit)";
 
 int main(int argc, char** argv) {
     ddc::StreamOptions o;
@@ -38,8 +40,13 @@ int main(int argc, char** argv) {
             else if (a == "--p0") o.p0 = true;
             else if (a == "--threads") o.threads = std::stoi(next());
             else if (a == "--prefetch") o.prefetch = true;
+            else if (a == "--neon") o.neon = true;
             else if (a == "--verbose") o.verbose = true;
             else if (a == "-h" || a == "--help") { std::printf("%s\n", USAGE); return 0; }
+            else if (a == "--neon-check") {
+                std::printf("neon log/exp max rel err vs libm: %.3e\n", ddc::neon_math_maxrelerr());
+                return 0;
+            }
             else throw std::runtime_error("unknown argument: " + a);
         }
 

@@ -79,6 +79,8 @@ def schedule_flags(args) -> list:
         flags.append("--windowed")
     if args.prefetch:
         flags.append("--prefetch")
+    if args.neon:
+        flags.append("--neon")
     if args.max_rows >= 0:
         flags += ["--max-rows", str(args.max_rows)]
     return flags
@@ -104,6 +106,8 @@ def label(args, cold: bool) -> str:
         parts.append(f"t{args.threads}")
     if args.prefetch:
         parts.append("pf")
+    if args.neon:
+        parts.append("neon")
     parts.append("cold" if cold else "warm")
     if args.max_rows >= 0:
         parts.append(f"r{args.max_rows}")
@@ -119,6 +123,7 @@ def parse_args():
     p.add_argument("--s1", action="store_true", help="channel-parallel g_a (composes with both)")
     p.add_argument("--threads", type=int, default=4, help="worker count for --schedule p0")
     p.add_argument("--prefetch", action="store_true", help="double-buffer row-block reads")
+    p.add_argument("--neon", action="store_true", help="NEON-vectorised normalize/denorm")
     p.add_argument(
         "--tile", default="data/stream_tile_1k_i16.npy", help="board-relative tile path"
     )

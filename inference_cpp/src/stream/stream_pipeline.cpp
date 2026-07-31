@@ -206,6 +206,7 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
 
     BenchPipeline pipe(opt.xmodel, opt.params);  // loads xmodel + entropy tables
     const bool hyper = pipe.uses_hyper();
+    pipe.set_neon(opt.neon);
     if (opt.s1) pipe.init_s1();  // channel-parallel g_a(real)‖g_a(imag)
 
     StreamResult res;
@@ -304,6 +305,7 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
 
     BenchPipeline pipe(opt.xmodel, opt.params);
     const bool hyper = pipe.uses_hyper();
+    pipe.set_neon(opt.neon);
     if (opt.s1) pipe.init_s1();
 
     StreamResult res;
@@ -431,6 +433,7 @@ StreamResult stream_decode_ddc(const StreamOptions& opt) {
 
     BenchPipeline pipe(opt.xmodel, opt.params);
     const bool hyper = pipe.uses_hyper();
+    pipe.set_neon(opt.neon);
 
     // Decodability guards — refuse a model/params mismatch loudly instead of decoding to garbage
     // (errors over silent fallbacks). arch_id {2,3} = SHyp/ResSHyp carry a hyperprior; the exact

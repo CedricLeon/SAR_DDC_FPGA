@@ -301,8 +301,14 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
 > **TODO (paper):** full 7,296-patch scene — **seq vs s1 vs p0(best-threads)** — for all archs ×
 > λ{1000,20,2} → throughput / full-tile latency / energy table. Batch it (ResSHyp seq ≈ 12 min/run).
 
-> **TODO (CPU opt):** NEON-vectorize `normalize`/`denorm` (log/exp) — the CPU bottleneck that
-> dominates FP (~33% of its per-patch time; would lift FP p0 throughput). See FPGA_inference.md §9.
+> **Done (2026-07-31) — NEON `normalize`/`denorm` (`--neon`).** Vectorised log/exp (Cephes/Pommier,
+> `neon_mathfun.h`) behind a runtime flag; scalar path kept for A/B + rollback. Kernel self-check
+> (`--neon-check`) max rel err vs libm = 7e-8. **normalize 2.42× faster** (1150→475 ms/128 patches,
+> ResSHyp). **Byte-transparent encode:** scalar vs `--neon` `.ddc` byte-identical (7e-8 log error ≪
+> the INT8 g_a step 1/64 → no quantisation flips). `denorm` (double→float32, decode-side) changes the
+> recon by only ~146 dB PSNR (SSIM 1.00000; identical vs MERLIN 22.16 dB) — float noise. Validated on
+> the Hamburg region; metrics + log-intensity panels via `scripts/evaluation/compare_recon.py`. FP
+> (CPU-bound, normalize a bigger fraction) should gain more — quantify in the Phase 5 sweep.
 
 > **TODO (figure):** Gantt-style timeline diagrams (stages × threads) for seq / s1 / p0 (and B) —
 > to communicate the schedules in the paper.
