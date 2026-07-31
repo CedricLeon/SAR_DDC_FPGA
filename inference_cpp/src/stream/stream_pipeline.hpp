@@ -24,6 +24,7 @@ struct StreamOptions {
     bool s1 = false;                 // channel-parallel g_a(real)‖g_a(imag) on two DPU cores
     bool p0 = false;                 // pipeline overlap: K workers, DPU serialized, CPU overlapped
     int threads = 3;                 // worker count for --p0
+    bool prefetch = false;           // double-buffer: read row-block N+1 while compressing N (windowed)
     bool verbose = false;
 };
 

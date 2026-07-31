@@ -307,11 +307,15 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
 > **TODO (figure):** Gantt-style timeline diagrams (stages × threads) for seq / s1 / p0 (and B) —
 > to communicate the schedules in the paper.
 
-> **TODO (overlap — double-buffer):** prefetch row-block N+1 while compressing block N (currently
-> read then process, serialized). Hides the SD read behind compute: lifts **FP 14→24 MB/s** (then
-> read-bound at the SD ceiling) and **fully hides ResSHyp's read** (compute-bound, 5.8 MB/s). Single
-> biggest lever for the realistic "data/s" number. Pretending faster persistent storage then lifts FP
-> toward its **34 MB/s compute ceiling** (the SD's 24 MB/s is our board's artifact, not fundamental).
+> **Done (2026-07-31) — double-buffer (`--prefetch`, windowed seq + p0).** A producer thread reads
+> row-block N+1 while the compressor works block N (bounded `RowBlockQueue`, depth 2). Verified on
+> board: **byte-transparent** — seq / p0 with and without `--prefetch` are all byte-identical — and
+> cold-read `total` drops as the SD read hides behind compute (ResSHyp λ1000, 128-patch region: p0+s1
+> 9.9→8.8 s, seq 16.4→15.4 s; the ~1 s hidden ≈ the region's ~1.4 s cold read minus block 0, which
+> has nothing to overlap). Scales to the headline: on the full scene the ~81 s cold read hides fully
+> behind ResSHyp compute (compute-bound) and lifts **FP toward its ~34 MB/s ceiling** (else read-bound
+> at the SD's ~24 MB/s). Full FP + full-scene cold/warm quantification → Phase 5 sweep (needs the
+> cold/warm harness below).
 
 > **TODO (harness — cold/warm read):** the realistic-scenario runner drops the page cache at the start
 > of each timed run **inside the script** (`echo 3 > /proc/sys/vm/drop_caches`, needs root) — never by

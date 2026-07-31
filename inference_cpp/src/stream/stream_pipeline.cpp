@@ -5,13 +5,16 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -71,6 +74,44 @@ uint8_t arch_id_from_name(const std::string& name) {
     if (arch == "ResSHyp") return 3;
     throw std::runtime_error("stream: unknown arch in model_name '" + name + "'");
 }
+
+// Bounded FIFO of (row-index, row-block) for the double-buffer prefetch: a producer thread reads
+// row-blocks in order and pushes; the consumer pops in order and compresses. Capacity caps in-flight
+// blocks (2 = double buffer). A blocking pop *is* the efficient wait — no busy-spin pinning an A53.
+class RowBlockQueue {
+public:
+    explicit RowBlockQueue(size_t cap) : cap_(cap) {}
+    void push(int pa, std::vector<float>&& blk) {
+        std::unique_lock<std::mutex> lk(m_);
+        not_full_.wait(lk, [&] { return q_.size() < cap_; });
+        q_.emplace_back(pa, std::move(blk));
+        not_empty_.notify_one();
+    }
+    bool pop(int& pa, std::vector<float>& blk) {  // false once closed and drained
+        std::unique_lock<std::mutex> lk(m_);
+        not_empty_.wait(lk, [&] { return !q_.empty() || closed_; });
+        if (q_.empty()) return false;
+        pa = q_.front().first;
+        blk = std::move(q_.front().second);
+        q_.pop_front();
+        not_full_.notify_one();
+        return true;
+    }
+    void close() {
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            closed_ = true;
+        }
+        not_empty_.notify_all();
+    }
+
+private:
+    size_t cap_;
+    std::deque<std::pair<int, std::vector<float>>> q_;
+    std::mutex m_;
+    std::condition_variable not_full_, not_empty_;
+    bool closed_ = false;
+};
 
 // ---- shared plumbing (identical across the seq / p0 writers; the per-patch compute loop, which
 // ---- differs by schedule, stays inline in each) --------------------------------------------------
@@ -183,19 +224,11 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
     std::vector<DdcRecord> records;
     records.reserve(static_cast<size_t>(grid_a) * grid_r);
 
-    std::vector<float> rowblock;  // [P*W*2] when windowed
-    for (int pa = 0; pa < grid_a; ++pa) {
-        const float* src = nullptr;
-        size_t base_row = 0;
-        if (windowed) {
-            const auto tread = clk::now();
-            rowblock = reader->read_row_block(static_cast<size_t>(pa) * P, P);
-            res.t_read_ms += ms(tread, clk::now());
-            src = rowblock.data();       // block is [P, W, 2]; patch rows are 0..P-1
-        } else {
-            src = tile.data.data();
-            base_row = static_cast<size_t>(pa) * P;
-        }
+    // Compress one block/tile-row of patches, single-threaded, with per-stage timing. Blocks are
+    // consumed strictly in order, so appending records row-major stays correct with or without
+    // prefetch. (pa unused here — records are appended, not index-placed as in p0.)
+    auto process_block = [&](int pa, const float* src, size_t base_row) {
+        (void)pa;
         for (int pr = 0; pr < grid_r; ++pr) {
             const size_t c0 = static_cast<size_t>(pr) * P;
             const auto tp = clk::now();
@@ -219,6 +252,38 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
             }
             res.payload_bytes += rec.z.size() + rec.y.size();
             records.push_back(std::move(rec));
+        }
+    };
+
+    if (windowed && opt.prefetch) {
+        // Double buffer: a producer thread reads row-block N+1 while this thread compresses block N.
+        RowBlockQueue q(2);
+        double read_ms = 0.0;
+        std::thread producer([&] {
+            for (int pa = 0; pa < grid_a; ++pa) {
+                const auto tr = clk::now();
+                auto blk = reader->read_row_block(static_cast<size_t>(pa) * P, P);
+                read_ms += ms(tr, clk::now());  // only the producer touches read_ms
+                q.push(pa, std::move(blk));
+            }
+            q.close();
+        });
+        int pa;
+        std::vector<float> blk;
+        while (q.pop(pa, blk)) process_block(pa, blk.data(), 0);
+        producer.join();
+        res.t_read_ms += read_ms;  // raw read cost, now overlapped with compute (hidden in t_total)
+    } else {
+        std::vector<float> rowblock;  // [P*W*2] when windowed
+        for (int pa = 0; pa < grid_a; ++pa) {
+            if (windowed) {
+                const auto tread = clk::now();
+                rowblock = reader->read_row_block(static_cast<size_t>(pa) * P, P);
+                res.t_read_ms += ms(tread, clk::now());
+                process_block(pa, rowblock.data(), 0);  // block is [P, W, 2]; patch rows are 0..P-1
+            } else {
+                process_block(pa, tile.data.data(), static_cast<size_t>(pa) * P);
+            }
         }
     }
 
@@ -284,25 +349,49 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
         records[static_cast<size_t>(idx)] = std::move(rec);  // distinct slot: no lock
     };
 
-    if (windowed) {
+    // Compress one row-block: K workers pull patches (pr) off an atomic counter; the DPU bursts are
+    // serialized inside process_patch and records placed by index. Used by both windowed paths.
+    auto process_block = [&](int pa, const float* block) {
+        std::atomic<int> pr_next{0};
+        auto blockworker = [&](int wid) {
+            PatchState& s = states[static_cast<size_t>(wid)];
+            int pr;
+            while ((pr = pr_next.fetch_add(1)) < grid_r) {
+                fill_patch(s, block, 0, static_cast<size_t>(pr) * P, P, W);
+                process_patch(s, pa * grid_r + pr);
+            }
+        };
+        std::vector<std::thread> pool;
+        for (int k = 0; k < K; ++k) pool.emplace_back(blockworker, k);
+        for (auto& t : pool) t.join();
+    };
+
+    if (windowed && opt.prefetch) {
+        // Double buffer: a producer thread reads row-block N+1 while the K workers compress block N.
+        RowBlockQueue q(2);
+        double read_ms = 0.0;
+        std::thread producer([&] {
+            for (int pa = 0; pa < grid_a; ++pa) {
+                const auto tr = clk::now();
+                auto blk = reader->read_row_block(static_cast<size_t>(pa) * P, P);
+                read_ms += ms(tr, clk::now());  // only the producer touches read_ms
+                q.push(pa, std::move(blk));
+            }
+            q.close();
+        });
+        int pa;
+        std::vector<float> blk;
+        while (q.pop(pa, blk)) process_block(pa, blk.data());
+        producer.join();
+        res.t_read_ms += read_ms;  // raw read cost, now overlapped with compute (hidden in t_total)
+    } else if (windowed) {
         // Outer loop over row-blocks (one in DDR at a time); K workers parallelize each block.
         std::vector<float> rowblock;
         for (int pa = 0; pa < grid_a; ++pa) {
             const auto tread = clk::now();
             rowblock = reader->read_row_block(static_cast<size_t>(pa) * P, P);
             res.t_read_ms += ms(tread, clk::now());
-            std::atomic<int> pr_next{0};
-            auto blockworker = [&](int wid) {
-                PatchState& s = states[static_cast<size_t>(wid)];
-                int pr;
-                while ((pr = pr_next.fetch_add(1)) < grid_r) {
-                    fill_patch(s, rowblock.data(), 0, static_cast<size_t>(pr) * P, P, W);
-                    process_patch(s, pa * grid_r + pr);
-                }
-            };
-            std::vector<std::thread> pool;
-            for (int k = 0; k < K; ++k) pool.emplace_back(blockworker, k);
-            for (auto& t : pool) t.join();
+            process_block(pa, rowblock.data());
         }
     } else {
         std::atomic<int> next_idx{0};

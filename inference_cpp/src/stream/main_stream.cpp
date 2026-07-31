@@ -13,8 +13,8 @@
 static const char* USAGE =
     "usage: stream_pipeline --xmodel <m.xmodel> --params <entropy_params> --tile <tile.npy> "
     "--out <out.ddc>\n"
-    "                       [--manifest <manifest.json>] [--tile-id <name>] [--max-rows N] "
-    "[--verbose]";
+    "                       [--manifest <manifest.json>] [--tile-id <name>] [--max-rows N]\n"
+    "                       [--windowed] [--s1] [--p0] [--threads N] [--prefetch] [--verbose]";
 
 int main(int argc, char** argv) {
     ddc::StreamOptions o;
@@ -37,6 +37,7 @@ int main(int argc, char** argv) {
             else if (a == "--s1") o.s1 = true;
             else if (a == "--p0") o.p0 = true;
             else if (a == "--threads") o.threads = std::stoi(next());
+            else if (a == "--prefetch") o.prefetch = true;
             else if (a == "--verbose") o.verbose = true;
             else if (a == "-h" || a == "--help") { std::printf("%s\n", USAGE); return 0; }
             else throw std::runtime_error("unknown argument: " + a);
@@ -53,6 +54,8 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "%s\n", USAGE);
             return 2;
         }
+        if (o.prefetch && (decoding || !o.windowed))
+            throw std::runtime_error("--prefetch requires --windowed compression");
 
         const ddc::StreamResult r =
             decoding ? ddc::stream_decode_ddc(o)
@@ -75,6 +78,8 @@ int main(int argc, char** argv) {
                             "entropy=%.1f write=%.1f\n",
                             r.t_read_ms, r.t_patchify_ms, r.t_normalize_ms, r.t_dpu_ms,
                             r.t_entropy_ms, r.t_write_ms);
+            if (o.prefetch)
+                std::printf("  [prefetch] row-block N+1 read overlapped with compress of N\n");
         }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "stream_pipeline error: %s\n", e.what());
