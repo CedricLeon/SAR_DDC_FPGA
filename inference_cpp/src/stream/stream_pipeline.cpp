@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -36,10 +37,13 @@ double time_stage(F&& fn) {
     return ms(a, clk::now());
 }
 
-// FNV-1a 64-bit over the sorted entropy_params/*.npy bytes — the .ddc decodability guard. The
-// algorithm is our choice; the (future) ground-side verifier must use the same one to compare.
+// FNV-1a 64-bit over the sorted entropy_params/*.npy bytes — the .ddc decodability guard. Canonical
+// spec = src/utils/ddc_format.py::params_guard (the ground-side verifier); the constants below are
+// the STANDARD FNV-1a-64 offset basis / prime, written in hex to stay eyeball-checkable — a decimal
+// typo here (a dropped digit → 0xcbf.../10) once made this non-standard and silently diverge from
+// the Python oracle. Cross-checked byte-for-byte against params_guard on real entropy_params.
 void fnv1a_params(const std::filesystem::path& dir, uint8_t out[8]) {
-    uint64_t h = 1469598103934665603ULL;
+    uint64_t h = 0xcbf29ce484222325ULL;  // FNV-1a-64 offset basis (= 14695981039346656037)
     std::vector<std::filesystem::path> files;
     for (const auto& e : std::filesystem::directory_iterator(dir))
         if (e.path().extension() == ".npy") files.push_back(e.path());
@@ -51,7 +55,7 @@ void fnv1a_params(const std::filesystem::path& dir, uint8_t out[8]) {
             const std::streamsize n = in.gcount();
             for (std::streamsize i = 0; i < n; ++i) {
                 h ^= static_cast<uint8_t>(buf[i]);
-                h *= 1099511628211ULL;
+                h *= 0x100000001b3ULL;  // FNV-1a-64 prime (= 1099511628211)
             }
         }
     }
@@ -362,6 +366,23 @@ StreamResult stream_decode_ddc(const StreamOptions& opt) {
 
     BenchPipeline pipe(opt.xmodel, opt.params);
     const bool hyper = pipe.uses_hyper();
+
+    // Decodability guards — refuse a model/params mismatch loudly instead of decoding to garbage
+    // (errors over silent fallbacks). arch_id {2,3} = SHyp/ResSHyp carry a hyperprior; the exact
+    // params_sha (FNV-1a-64 over entropy_params) also separates same-class models, e.g. SHyp vs
+    // ResSHyp. Both pass trivially when decoding with the model/params that wrote the file.
+    const bool hdr_hyper = (f.header.arch_id == 2 || f.header.arch_id == 3);
+    if (hdr_hyper != hyper)
+        throw std::runtime_error("stream_decode: arch mismatch — .ddc arch_id=" +
+                                 std::to_string(f.header.arch_id) + " but --xmodel is a " +
+                                 (hyper ? "hyperprior" : "factorized") + " model");
+    uint8_t sha[8];
+    fnv1a_params(opt.params, sha);
+    if (std::memcmp(sha, f.header.params_sha, 8) != 0)
+        throw std::runtime_error(
+            "stream_decode: params_sha mismatch — --params do not match the CDF tables the .ddc "
+            "was written with");
+
     const int P = 256;
     PatchState s = pipe.make_patch_state(P, P);
 

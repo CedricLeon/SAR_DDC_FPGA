@@ -14,7 +14,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -75,13 +74,10 @@ def load_net(arch, lmbda, seed, device):
     net = model.net.eval().to(device)
     net.update(force=True)  # populate CDF tables for compress/decompress
     ep = mdir / "entropy_params"
-    if ep.is_dir():
-        h = hashlib.sha256()
-        for fp in sorted(ep.glob("*.npy")):
-            h.update(fp.read_bytes())
-        sha = h.digest()[:8]
-    else:
-        sha = hashlib.sha256(name.encode()).digest()[:8]
+    # Canonical params guard = FNV-1a-64 (ddc.params_guard) — MUST match the on-board C++ writer
+    # (stream_pipeline.cpp::fnv1a_params). An earlier draft used SHA-256[:8], which never matched
+    # the bytes the board actually stamps.
+    sha = ddc.params_guard(ep) if ep.is_dir() else ddc.fnv1a_64_bytes(name.encode())
     return net, name, sha
 
 

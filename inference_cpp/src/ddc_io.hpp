@@ -95,6 +95,16 @@ inline float get_f32(const std::vector<uint8_t>& b, size_t& c) {
     return v;
 }
 
+// Bounds guard for a variable-length read of `n` bytes at offset `c` into a buffer of `size` bytes.
+// Throws instead of letting a malformed/truncated .ddc drive an out-of-bounds copy. Written without
+// `c + n` so it cannot itself overflow (c <= size always holds here, as the length fields that
+// precede each copy are read via bounds-checked get_u* / .at()).
+inline void need_bytes(size_t c, size_t n, size_t size, const char* what) {
+    if (c > size || n > size - c)
+        throw std::runtime_error(std::string("read_ddc: truncated, need ") + std::to_string(n) +
+                                 " bytes for " + what);
+}
+
 }  // namespace ddc_detail
 
 // Serialize a .ddc to `path`. Throws std::runtime_error on record/grid mismatch or I/O failure.
@@ -173,19 +183,27 @@ inline DdcFile read_ddc(const std::string& path) {
     std::memcpy(h.params_sha, buf.data() + c, 8);
     c += 8;
     uint16_t tlen = get_u16(buf, c);
+    need_bytes(c, tlen, buf.size(), "tile_id");
     h.tile_id.assign(reinterpret_cast<const char*>(buf.data() + c), tlen);
     c += tlen;
     uint16_t mlen = get_u16(buf, c);
+    need_bytes(c, mlen, buf.size(), "model_id");
     h.model_id.assign(reinterpret_cast<const char*>(buf.data() + c), mlen);
     c += mlen;
 
+    // Cap the reservation: each record is >= 8 bytes (len_z + len_y), so a header claiming more
+    // patches than the remaining bytes could hold is corrupt — reject before a huge reserve().
+    if (h.n_patches() > (buf.size() - c) / 8)
+        throw std::runtime_error("read_ddc: header claims more patches than the file can hold");
     out.records.reserve(h.n_patches());
     for (size_t i = 0; i < h.n_patches(); ++i) {
         uint32_t lz = get_u32(buf, c);
+        need_bytes(c, lz, buf.size(), "z stream");
         DdcRecord r;
         r.z.assign(buf.begin() + c, buf.begin() + c + lz);
         c += lz;
         uint32_t ly = get_u32(buf, c);
+        need_bytes(c, ly, buf.size(), "y stream");
         r.y.assign(buf.begin() + c, buf.begin() + c + ly);
         c += ly;
         out.records.push_back(std::move(r));

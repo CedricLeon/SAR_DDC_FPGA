@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import struct
 from dataclasses import dataclass
+from pathlib import Path
 
 MAGIC = b"DDC1"
 _FIXED = "<4sBBHHHHIIHHfff8s"
@@ -34,6 +35,45 @@ _OFFSET_BYTES = 8  # u64 per trailer entry
 
 ARCH_IDS = {"FP": 0, "ResFP": 1, "SHyp": 2, "ResSHyp": 3}
 ARCH_NAMES = {v: k for k, v in ARCH_IDS.items()}
+
+
+# --- params_sha guard (FNV-1a-64 over the entropy CDF tables) ---
+# The .ddc header carries an 8-byte guard so a decoder can refuse a file whose entropy CDF tables
+# differ from the ones it holds. CANONICAL ALGORITHM = FNV-1a-64 over the concatenated bytes of the
+# sorted entropy_params/*.npy files, emitted little-endian. This MUST stay byte-identical to the
+# on-board writer inference_cpp/src/stream/stream_pipeline.cpp::fnv1a_params (same offset basis /
+# prime / LE output) — the board stamps every real .ddc this way, so a Python verifier that used a
+# different hash (an earlier draft used SHA-256[:8]) would reject every genuine downlink product.
+# Run `python src/utils/ddc_format.py` for the known-answer check.
+_FNV64_OFFSET = 0xCBF29CE484222325
+_FNV64_PRIME = 0x100000001B3
+_U64_MASK = 0xFFFFFFFFFFFFFFFF
+
+
+def fnv1a_64(data: bytes) -> int:
+    """FNV-1a 64-bit hash of ``data`` (standard offset basis / prime)."""
+    h = _FNV64_OFFSET
+    for b in data:
+        h = ((h ^ b) * _FNV64_PRIME) & _U64_MASK
+    return h
+
+
+def fnv1a_64_bytes(data: bytes) -> bytes:
+    """FNV-1a-64 of ``data`` as 8 little-endian bytes (the on-disk params_sha form)."""
+    return fnv1a_64(data).to_bytes(8, "little")
+
+
+def params_guard(entropy_params_dir) -> bytes:
+    """Canonical 8-byte params_sha: FNV-1a-64 over the sorted entropy_params/*.npy bytes, LE.
+
+    Streams each file's bytes through one running hash in sorted-path order — matches the C++
+    fnv1a_params, which sorts the std::filesystem::path list and hashes each file's bytes in turn.
+    """
+    h = _FNV64_OFFSET
+    for fp in sorted(Path(entropy_params_dir).glob("*.npy")):
+        for b in fp.read_bytes():
+            h = ((h ^ b) * _FNV64_PRIME) & _U64_MASK
+    return h.to_bytes(8, "little")
 
 
 @dataclass
@@ -111,9 +151,17 @@ def write_ddc(path, header: DDCHeader, records: list[tuple[bytes, bytes]]) -> li
     return offsets
 
 
+def _read_exact(f, n: int, what: str) -> bytes:
+    """Read exactly ``n`` bytes or raise — never silently truncate (errors over fallbacks)."""
+    b = f.read(n)
+    if len(b) != n:
+        raise ValueError(f"truncated .ddc: wanted {n} bytes for {what}, got {len(b)}")
+    return b
+
+
 def _read_header(f):
     """Read the fixed header + tile_id/model_id strings, return DDCHeader and body offset."""
-    vals = struct.unpack(_FIXED, f.read(_FIXED_SIZE))
+    vals = struct.unpack(_FIXED, _read_exact(f, _FIXED_SIZE, "fixed header"))
     if vals[0] != MAGIC:
         raise ValueError(f"not a DDC file (magic={vals[0]!r})")
     (
@@ -133,10 +181,10 @@ def _read_header(f):
         eps,
         params_sha,
     ) = vals
-    tlen = struct.unpack("<H", f.read(2))[0]
-    tile_id = f.read(tlen).decode("utf-8")
-    mlen = struct.unpack("<H", f.read(2))[0]
-    model_id = f.read(mlen).decode("utf-8")
+    tlen = struct.unpack("<H", _read_exact(f, 2, "tile_id length"))[0]
+    tile_id = _read_exact(f, tlen, "tile_id").decode("utf-8")
+    mlen = struct.unpack("<H", _read_exact(f, 2, "model_id length"))[0]
+    model_id = _read_exact(f, mlen, "model_id").decode("utf-8")
     header = DDCHeader(
         arch_id,
         N,
@@ -172,10 +220,10 @@ def read_ddc(path) -> tuple[DDCHeader, list[tuple[bytes, bytes]]]:
         header, _ = _read_header(f)
         records: list[tuple[bytes, bytes]] = []
         for _ in range(header.n_patches):
-            lz = struct.unpack("<I", f.read(4))[0]
-            z = f.read(lz)
-            ly = struct.unpack("<I", f.read(4))[0]
-            y = f.read(ly)
+            lz = struct.unpack("<I", _read_exact(f, 4, "len_z"))[0]
+            z = _read_exact(f, lz, "z stream")
+            ly = struct.unpack("<I", _read_exact(f, 4, "len_y"))[0]
+            y = _read_exact(f, ly, "y stream")
             records.append((z, y))
     return header, records
 
@@ -189,9 +237,11 @@ def read_offset_table(path, header: DDCHeader) -> tuple[list[int], int]:
         raise ValueError("file has no offset index (flags bit0 = 0)")
     n = header.n_patches
     table_start = os.path.getsize(path) - n * _OFFSET_BYTES
+    if table_start < _FIXED_SIZE:
+        raise ValueError(f"corrupt .ddc: trailer start {table_start} precedes the header")
     with open(path, "rb") as f:
         f.seek(table_start)
-        offsets = struct.unpack(f"<{n}Q", f.read(n * _OFFSET_BYTES))
+        offsets = struct.unpack(f"<{n}Q", _read_exact(f, n * _OFFSET_BYTES, "offset table"))
     return list(offsets), table_start
 
 
@@ -199,8 +249,34 @@ def read_patch(path, offset: int) -> tuple[bytes, bytes]:
     """Random-access a single patch record given its byte offset (from the trailer)."""
     with open(path, "rb") as f:
         f.seek(offset)
-        lz = struct.unpack("<I", f.read(4))[0]
-        z = f.read(lz)
-        ly = struct.unpack("<I", f.read(4))[0]
-        y = f.read(ly)
+        lz = struct.unpack("<I", _read_exact(f, 4, "len_z"))[0]
+        z = _read_exact(f, lz, "z stream")
+        ly = struct.unpack("<I", _read_exact(f, 4, "len_y"))[0]
+        y = _read_exact(f, ly, "y stream")
     return z, y
+
+
+def _selfcheck() -> None:
+    """Known-answer + guard smoke test — run with ``python src/utils/ddc_format.py``."""
+    import io
+
+    # Canonical FNV-1a-64 test vectors — proves parity with the C++ fnv1a_params constants
+    # (offset 0xcbf29ce484222325, prime 0x100000001b3, little-endian output).
+    assert fnv1a_64(b"") == 0xCBF29CE484222325
+    assert fnv1a_64(b"a") == 0xAF63DC4C8601EC8C
+    assert fnv1a_64(b"foobar") == 0x85944171F73967E8
+    assert fnv1a_64_bytes(b"a") == bytes.fromhex("8cec01864cdc63af")
+
+    # Malformed input must raise, not silently truncate.
+    try:
+        _read_exact(io.BytesIO(b"ab"), 4, "probe")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("_read_exact did not raise on a short read")
+
+    print("ddc_format self-check: PASS (FNV-1a-64 KAT + read guard)")
+
+
+if __name__ == "__main__":
+    _selfcheck()

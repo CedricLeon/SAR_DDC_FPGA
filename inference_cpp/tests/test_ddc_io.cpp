@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -81,6 +83,35 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < recs.size() && i < f.records.size(); ++i) {
         CHECK(f.records[i].z == recs[i].z);
         CHECK(f.records[i].y == recs[i].y);
+    }
+
+    // Negative test (finding #1): a corrupted length field must throw, not over-read the buffer.
+    // rec0 has an empty z, so its len_y u32 sits at [hdr+4, hdr+8); set it to 0xFFFFFFFF and the
+    // reader must reject the file instead of walking past the end.
+    {
+        std::vector<uint8_t> raw;
+        {
+            std::ifstream in(path, std::ios::binary);
+            raw.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        const size_t hdr = 46 + 2 + h.tile_id.size() + 2 + h.model_id.size();
+        const size_t leny_off = hdr + 4;  // rec0: len_z(4) + z(0 bytes) -> len_y here
+        CHECK(raw.size() > leny_off + 4);
+        for (int i = 0; i < 4; ++i) raw[leny_off + i] = 0xFF;
+        const std::string bad = path + ".bad";
+        {
+            std::ofstream o(bad, std::ios::binary);
+            o.write(reinterpret_cast<const char*>(raw.data()),
+                    static_cast<std::streamsize>(raw.size()));
+        }
+        bool threw = false;
+        try {
+            read_ddc(bad);
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        CHECK(threw);
+        std::remove(bad.c_str());
     }
 
     if (ok)

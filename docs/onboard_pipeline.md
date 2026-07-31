@@ -204,8 +204,14 @@ round-trip byte-exact, random access matches, decode(file) ≈ decode(direct) wi
 sanity 1.95 (ResSHyp λ1000) / 0.26 (FP λ20); container overhead ≈ header + 8·n bytes (negligible).
 The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python codec is the oracle.
 
-> **TODO (user review):** `src/utils/ddc_format.py` + `scripts/evaluation/ddc_selftest.py` were
-> committed unreviewed — independently sanity-check the byte layout and the self-test assertions.
+> **Reviewed + hardened (2026-07-31).** Independent review confirmed the happy-path round-trip (host
+> `test_ddc_io` + `ddc_cross_check.py` pass). **`params_sha` algorithm now pinned:** canonical =
+> `ddc_format.py::params_guard` = **standard FNV-1a-64** over the sorted `entropy_params/*.npy` bytes
+> (little-endian). Two latent bugs closed — the self-test hashed with SHA-256[:8] (never matched the
+> board), and the C++ `fnv1a_params` offset basis was a typo (the canonical basis with its last digit
+> dropped → non-standard). C++ constant corrected (written in hex) and cross-checked byte-for-byte
+> against `params_guard` on real `entropy_params`. Malformed-`.ddc` reads (C++ + Python) now
+> hard-error via bounds/length guards instead of over-reading or silently truncating.
 
 ---
 
@@ -274,10 +280,20 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
    files decode in pure Python — until then, SHyp verification is board-side (the FP path already
    decodes in Python; see the INT8-scales note in §7). Handy for a ground station, not required.
 
-> **TODO (review agent):** commission an independent code-review agent over the Step-3 C++
-> (`ddc_io.hpp`, `tile_source.hpp`, `stream/`) — flag convoluted/redundant implementations and
-> untested cases (FP path, full-scene 64-bit overflow, error handling, endianness/edge values,
-> the FNV params hash) before Step 3 graduates.
+> **Step-3 review — done (2026-07-31).** Independent agent audited `ddc_io.hpp`, `tile_source.hpp`,
+> `stream/` (+ the `ddc_format.py` oracle). Happy path validated (byte-identical gate + `.ddc`
+> round-trip hold); it independently cleared the FP `len_z=0` path and the full-scene 64-bit
+> `tile_source` offsets (all `size_t`, no truncation). **Host-verified fixes applied:**
+> malformed-`.ddc` bounds/length guards (C++ `read_ddc` + Python reads) + reserve cap; `params_sha`
+> canonicalized to standard FNV-1a-64 (§7, incl. the C++ typo fix, cross-checked on real params);
+> negative test added to `test_ddc_io`.
+>
+> **Board-gated batch — one deploy, the "bridge" before Phase 2a:** (a) the C++ FNV constant fix,
+> (b) decode-side guards (arch-class + `params_sha`) in `stream_decode_ddc`, (c) de-duplicate the
+> shared writer/header-build between `stream_compress_tile` and `_p0` (so double-buffer can't desync
+> the header) — then re-run the seq-vs-p0 byte-identical gate + a board-`.ddc`-vs-`params_guard`
+> cross-check. Deferred/flagged (not fixed): `--max-rows` `scene_H` metadata, u16 length wrap,
+> host-decode whole-scene RAM, `tile_source` non-LE-host nit; FP/int16 host-test coverage.
 
 > **TODO (paper):** full 7,296-patch scene — **seq vs s1 vs p0(best-threads)** — for all archs ×
 > λ{1000,20,2} → throughput / full-tile latency / energy table. Batch it (ResSHyp seq ≈ 12 min/run).
@@ -301,9 +317,6 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
 > persistent storage, not in our RAM). Add a `--keep-cache` / warm flag that **skips the drop** to
 > *simulate a much faster persistent store* (the read then comes from RAM ≈ removing the SD bottleneck),
 > giving the FP compute-ceiling number alongside the cold floor.
-
-> **Open (U2, storage format):** the realistic "SLC on the SD" is complex **int16** (4 B/px, the
-> `.cos` payload) — our f32 `.npy` is a 2× convenience. Resolve as part of 3.5 (int16 vs f32 read).
 
 ## TerraSAR-X objective (full derivation → `docs/TerraSAR-X_objective.md`)
 
