@@ -46,6 +46,12 @@ Status: **planning + feasibility** (nothing implemented). Last updated 2026-07-2
   consume DDR. Step 7 writes to the SD rootfs.
 - **4× A53 cores** (`nproc=4`) → parallel-worker budget, shared with DPU dispatch + OS.
 - Queues are a non-issue: **~50 MB at depth 16** vs ~3 GB free.
+- **SD sequential read ≈ 23.5–23.8 MB/s** (measured cold: 1.93 GB ÷ 81 s) — the **Step-1 read ceiling**.
+  `eth0` is GbE (1000 Mb/s ≈ 5× the SD), but reading the tile from the host **breaks the onboard premise**;
+  to emulate a *faster persistent store* use a warm read or a `/dev/shm` tmpfs copy (RAM speed, GB/s), not the host.
+- **Page cache** (4 KB pages, confirmed): a *warm* read = the file resident in kernel cache — reclaimable, still
+  counts as free. Our 1.93 GB tile ≈ **472k pages**; whole-tile *warm* read is fine, whole-tile *f32 in-process
+  load* (3.87 GB) OOMs. Cold vs warm = whether those pages are present (cold → real SD read at ~24 MB/s).
 
 Sources: [UG1182 ZCU102 Eval Board UG](https://docs.amd.com/v/u/en-US/ug1182-zcu102-eval-bd) ·
 [DS891 Zynq UltraScale+ Data Sheet](https://www.mouser.com/datasheet/2/903/ds891_zynq_ultrascale_plus_overview-1662253.pdf).
@@ -74,7 +80,7 @@ Sources: [UG1182 ZCU102 Eval Board UG](https://docs.amd.com/v/u/en-US/ug1182-zcu
 | Step | Unit | Notes |
 | --- | --- | --- |
 | 1 read tile | SD → DDR | whole (region) or **row-block stream** (full scene) |
-| ~~1.5 symmetrize~~ | — | **dropped** (E1 §6: ≤0.38 dB cost); optional one-time whole-image pre-pass if ever wanted |
+| ~~1.5 symmetrize~~ | — | **dropped** (E1 §6: ≤0.54 dB cost); optional one-time whole-image pre-pass if ever wanted |
 | 2 patchify | CPU | strided per-row `memcpy` of `[256,256,2]` out of the DDR tile |
 | 3 normalize | CPU | log + min/max (~18.7 ms/patch; NEON target) |
 | 4 g_a×2 | DPU | already S1-parallel (1.95×) |
@@ -288,43 +294,33 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
 > biggest lever for the realistic "data/s" number. Pretending faster persistent storage then lifts FP
 > toward its **34 MB/s compute ceiling** (the SD's 24 MB/s is our board's artifact, not fundamental).
 
-> **TODO (harness — cold read):** the realistic-scenario runner must drop the page cache at the start
+> **TODO (harness — cold/warm read):** the realistic-scenario runner drops the page cache at the start
 > of each timed run **inside the script** (`echo 3 > /proc/sys/vm/drop_caches`, needs root) — never by
-> hand (we'd forget). Makes every read honestly cold + reproducible, matching the real
-> acquire→focus→store→read flow where the SLC is genuinely on persistent storage, not in RAM.
+> hand (we'd forget). **Cold is the default** (honest + reproducible, matches the real
+> acquire→focus→store→read flow: the focuser is likely a separate board, so its SLC is genuinely on
+> persistent storage, not in our RAM). Add a `--keep-cache` / warm flag that **skips the drop** to
+> *simulate a much faster persistent store* (the read then comes from RAM ≈ removing the SD bottleneck),
+> giving the FP compute-ceiling number alongside the cold floor.
 
 > **Open (U2, storage format):** the realistic "SLC on the SD" is complex **int16** (4 B/px, the
 > `.cos` payload) — our f32 `.npy` is a 2× convenience. Resolve as part of 3.5 (int16 vs f32 read).
 
-## User-added: TerraSAR-X "specifications", to be used as a real-time objective
+## TerraSAR-X objective (full derivation → `docs/TerraSAR-X_objective.md`)
 
-About real-time processing: TerraSAR-X always had the constraint of a maximum 180 seconds monostatic acquisition per satellite per orbit (so 360s for both satellites). But now it's much down (to about 1/4th says a colleague) due to the battery aging. Anyway, let's consider the worst case scenario: we have a duty cycle of 100%, i.e., we aim to process real-time the data acquisition made during these 180s. That's the ultimate objective.
+The mission-throughput objective — *how much SLC a StripMap acquisition produces, how fast we must
+process it, and whether our compression makes it downlinkable* — is derived from cited TSX specs in
+**`docs/TerraSAR-X_objective.md`** (novice-friendly, page-referenced; reference PDFs in `docs/references/`).
+Headline numbers the rest of this doc refers to:
 
-Now how much data is that?
+| StripMap SM, 100% duty | working point (real Hamburg scene) | **worst case (headline)** |
+| --- | --- | --- |
+| incidence / PRF / N_r | 26° / 3600 Hz / 14 686 | **45° / 3800 Hz / 23 570** |
+| SLC acq rate (int16 4 B/px) | 211 MB/s | **358 MB/s** |
+| 180 s take | 38 GB | **64.5 GB** |
+| raw rate → SSMM (BAQ 8:4) | 423 Mbps | 717 Mbps (cf. [Pitz] StripMap-mean 580 Mbps) |
 
-- For the most realistic mode (Stripmap) the PRF is between 3000 to 5000 Hz ==To check in the resources Thomas shared, might have heard it wrong==
-- The swath width on ground is about 30km (different in slant-range)
-- And the bandwidth of 100 or 150 MHz gives the resolution, which is about 1.5m
-- So in total you get about 20k range x 5k azimuth per second
-- Which leads to an absurd 20k x 900k azimuth line for 180s, so per orbit (which is about 90mins)
-
-Orbit time is typically 92 minutes for LEO, but in practice what matters is not to have finished pre-processing before the next orbit but before the next contact with the ground station, which can be in a few orbits or a few minutes.
-
-- The contact duration with ground station depends on the size of antenna of ground station
-- But it's about maximum 9 to 10 minutes and less if you appear closer to the horizon (it can even be seconds, which is not usable). The shortest is about 5 to 6 minutes.
-- The Neustrelitz ground station (DLR facility, 120km north of [[Berlin, Germany]]), can get about 90GB per day (in average you get about 1 contact in the morning and one in the evening, and max 2 and 2).
-- The downlink capacity obviously depends on the technology, but here they use X-band (8-12 GHz), which is not super sophisticated.
-- ==The X-band transmitter I found have a capacity of about 400 to 440 Mbps==
-- So you get between 16 GB (5 mins) and 32 GB (10 mins) at 440 Mbps
-
-Side note about power:
-
-- For TerraSAR-X the SAR transmit energy is about 2.5kW, but the solar panels only gather about 800W, so we need to fill up the battery and then use it for acquisition. It's similar for ICEYE or Capella like mission.
-- Sentinels or more modern mission like NiSAR or Rose-L (in the future) have more solar panels and lower wavelength, so they can almost operate continuously. But they also have lower resolution.
-- One additional problem with so high power consumption is that X-bands modules are close to each other so they overheat and you really need to wait for them to cooldown before the next acquisition. L-band doesn't have that problem because the modules are larger, further from each other, they also consume less power.
-
-Further resources to check that he shared:
-
-- There are a lot of references at: https://www.eoportal.org/satellite-missions/terrasar-x#ground-segment but I think he said it's not official
-- Early mission paper from Werninghaus (was the mission project manager): https://elib.dlr.de/63943/1/tgrs-RWerninghaus-2031062-proof.pdf
-- TerraSAR-X product specification document, [[Thomas Fritz]] is the author: https://sss.terrasar-x.dlr.de/docs/TX-GS-DD-3302.pdf
+Against this, one ZCU102 `p0` (FP 34.4 MB/s / ResSHyp 5.8 MB/s of SLC) is **~10× short of full-duty
+real-time** but **meets the process-before-next-contact deadline** (FP, ~3× headroom) and keeps the
+compressed product (~24×) well inside the 270 Mb/s-net downlink. Platform constants: downlink 270 Mb/s
+net / 300 gross; SSMM 384 Gbit BOL / 256 EOL; ground swath 30 km. Full tables + the three-deadline
+breakdown are in the objective doc §4–5; mission context (power, contacts) in its §9.
