@@ -72,68 +72,118 @@ uint8_t arch_id_from_name(const std::string& name) {
     throw std::runtime_error("stream: unknown arch in model_name '" + name + "'");
 }
 
+// ---- shared plumbing (identical across the seq / p0 writers; the per-patch compute loop, which
+// ---- differs by schedule, stays inline in each) --------------------------------------------------
+
+// Read the manifest, set model_name, return the arch_id.
+uint8_t resolve_arch(const StreamOptions& opt, std::string& model_name) {
+    std::ifstream mf(opt.manifest);
+    if (!mf) throw std::runtime_error("stream: cannot open manifest " + opt.manifest.string());
+    nlohmann::json manifest;
+    mf >> manifest;
+    model_name = manifest.at("model_name").get<std::string>();
+    return arch_id_from_name(model_name);
+}
+
+// Open the tile source (whole-tile load, or a windowed row-block reader), set H/W, validate C==2.
+// Returns the elapsed open time in ms (header-only for windowed; row reads are timed in the loop).
+double open_tile(const StreamOptions& opt, bool windowed, Tile& tile,
+                 std::unique_ptr<TileWindowReader>& reader, size_t& H, size_t& W) {
+    const auto tread = clk::now();
+    if (windowed) {
+        reader = std::make_unique<TileWindowReader>(opt.tile.string());
+        H = reader->H();
+        W = reader->W();
+        if (reader->C() != 2) throw std::runtime_error("stream: expected tile [H,W,2]");
+    } else {
+        tile = load_tile_whole(opt.tile.string());
+        H = tile.H;
+        W = tile.W;
+        if (tile.C != 2) throw std::runtime_error("stream: expected tile [H,W,2]");
+    }
+    return ms(tread, clk::now());
+}
+
+// Patch grid from tile dims; clamp azimuth rows to max_rows when set (>=0). Throws if < one patch.
+void compute_grid(size_t H, size_t W, int P, int max_rows, int& grid_a, int& grid_r) {
+    grid_a = static_cast<int>(H / P);        // azimuth patch-rows
+    grid_r = static_cast<int>(W / P);        // range patch-cols
+    if (grid_a == 0 || grid_r == 0) throw std::runtime_error("stream: tile smaller than a patch");
+    if (max_rows >= 0 && max_rows < grid_a) grid_a = max_rows;
+}
+
+// Copy the [P,P,2] window at (base_row, c0) out of a [.,W,2] source into s.noisy_hwc.
+void fill_patch(PatchState& s, const float* src, size_t base_row, size_t c0, int P, size_t W) {
+    for (int i = 0; i < P; ++i) {
+        const float* row = src + ((base_row + i) * W + c0) * 2;
+        std::memcpy(s.noisy_hwc.data() + static_cast<size_t>(i) * P * 2, row,
+                    static_cast<size_t>(P) * 2 * sizeof(float));
+    }
+}
+
+// The .ddc header both writers emit — single source, so seq and p0 can never desync the bytes.
+DdcHeader build_ddc_header(const StreamOptions& opt, const std::string& model_name, uint8_t arch_id,
+                           size_t H, size_t W, int grid_r, int grid_a, int P) {
+    DdcHeader h;
+    h.flags = 1;
+    h.arch_id = arch_id;
+    h.N = static_cast<uint16_t>(C_MAIN);
+    h.M = static_cast<uint16_t>(C_HYPER);
+    h.patch = static_cast<uint16_t>(P);
+    h.stride = static_cast<uint16_t>(P);
+    h.scene_H = static_cast<uint32_t>(H);
+    h.scene_W = static_cast<uint32_t>(W);
+    h.grid_r = static_cast<uint16_t>(grid_r);
+    h.grid_a = static_cast<uint16_t>(grid_a);
+    h.amp_min = AMP_MIN;
+    h.amp_max = AMP_MAX;
+    h.eps = EPS;
+    fnv1a_params(opt.params, h.params_sha);
+    h.tile_id = opt.tile_id;
+    h.model_id = model_name;
+    return h;
+}
+
+// Fill the result's grid/counts/file-size/bpp/total-time (identical tail of both writers).
+void finalize_result(StreamResult& res, int grid_r, int grid_a, int n, int P,
+                     const StreamOptions& opt, clk::time_point t0) {
+    res.grid_r = grid_r;
+    res.grid_a = grid_a;
+    res.n_patches = n;
+    res.file_bytes = std::filesystem::file_size(opt.out_ddc);
+    res.bpp = n > 0 ? res.payload_bytes * 8.0 / (static_cast<double>(n) * P * P) : 0.0;
+    res.t_total_ms = ms(t0, clk::now());
+}
+
 }  // namespace
 
 StreamResult stream_compress_tile(const StreamOptions& opt) {
     const auto t0 = clk::now();
 
-    // ---- manifest -> arch ----
-    std::ifstream mf(opt.manifest);
-    if (!mf) throw std::runtime_error("stream: cannot open manifest " + opt.manifest.string());
-    nlohmann::json manifest;
-    mf >> manifest;
-    const std::string model_name = manifest.at("model_name").get<std::string>();
-    const uint8_t arch_id = arch_id_from_name(model_name);
+    std::string model_name;
+    const uint8_t arch_id = resolve_arch(opt, model_name);
 
-    // ---- model (loads xmodel + entropy tables) ----
-    BenchPipeline pipe(opt.xmodel, opt.params);
+    BenchPipeline pipe(opt.xmodel, opt.params);  // loads xmodel + entropy tables
     const bool hyper = pipe.uses_hyper();
     if (opt.s1) pipe.init_s1();  // channel-parallel g_a(real)‖g_a(imag)
 
     StreamResult res;
     const int P = 256;
 
-    // ---- tile source: whole-tile load, or row-block streaming (one patch-row in DDR) ----
-    const bool windowed = opt.windowed;
+    const bool windowed = opt.windowed;  // whole-tile load, or row-block streaming (one row in DDR)
     Tile tile;
     std::unique_ptr<TileWindowReader> reader;
     size_t H = 0, W = 0;
-    {
-        const auto tread = clk::now();
-        if (windowed) {
-            reader = std::make_unique<TileWindowReader>(opt.tile.string());
-            H = reader->H();
-            W = reader->W();
-            if (reader->C() != 2) throw std::runtime_error("stream: expected tile [H,W,2]");
-        } else {
-            tile = load_tile_whole(opt.tile.string());
-            H = tile.H;
-            W = tile.W;
-            if (tile.C != 2) throw std::runtime_error("stream: expected tile [H,W,2]");
-        }
-        res.t_read_ms += ms(tread, clk::now());  // windowed: header only; row reads timed in the loop
-    }
+    res.t_read_ms += open_tile(opt, windowed, tile, reader, H, W);
 
-    int grid_a = static_cast<int>(H / P);          // azimuth patch-rows
-    const int grid_r = static_cast<int>(W / P);    // range patch-cols
-    if (grid_a == 0 || grid_r == 0) throw std::runtime_error("stream: tile smaller than a patch");
-    if (opt.max_rows >= 0 && opt.max_rows < grid_a) grid_a = opt.max_rows;
+    int grid_a = 0, grid_r = 0;
+    compute_grid(H, W, P, opt.max_rows, grid_a, grid_r);
 
     PatchState s = pipe.make_patch_state(P, P);
     std::vector<DdcRecord> records;
     records.reserve(static_cast<size_t>(grid_a) * grid_r);
 
     std::vector<float> rowblock;  // [P*W*2] when windowed
-
-    // Copy the [P,P,2] window at (base_row, c0) from a [.,W,2] source into s.noisy_hwc.
-    auto fill_patch = [&](const float* src, size_t base_row, size_t c0) {
-        for (int i = 0; i < P; ++i) {
-            const float* row = src + ((base_row + i) * W + c0) * 2;
-            std::memcpy(s.noisy_hwc.data() + static_cast<size_t>(i) * P * 2, row,
-                        static_cast<size_t>(P) * 2 * sizeof(float));
-        }
-    };
-
     for (int pa = 0; pa < grid_a; ++pa) {
         const float* src = nullptr;
         size_t base_row = 0;
@@ -149,7 +199,7 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
         for (int pr = 0; pr < grid_r; ++pr) {
             const size_t c0 = static_cast<size_t>(pr) * P;
             const auto tp = clk::now();
-            fill_patch(src, base_row, c0);
+            fill_patch(s, src, base_row, c0, P, W);
             res.t_patchify_ms += ms(tp, clk::now());
 
             res.t_normalize_ms += time_stage([&] { pipe.stage_normalize(s); });
@@ -172,49 +222,20 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
         }
     }
 
-    // ---- header + write ----
-    DdcHeader h;
-    h.flags = 1;
-    h.arch_id = arch_id;
-    h.N = static_cast<uint16_t>(C_MAIN);
-    h.M = static_cast<uint16_t>(C_HYPER);
-    h.patch = static_cast<uint16_t>(P);
-    h.stride = static_cast<uint16_t>(P);
-    h.scene_H = static_cast<uint32_t>(H);
-    h.scene_W = static_cast<uint32_t>(W);
-    h.grid_r = static_cast<uint16_t>(grid_r);
-    h.grid_a = static_cast<uint16_t>(grid_a);
-    h.amp_min = AMP_MIN;
-    h.amp_max = AMP_MAX;
-    h.eps = EPS;
-    fnv1a_params(opt.params, h.params_sha);
-    h.tile_id = opt.tile_id;
-    h.model_id = model_name;
-
+    DdcHeader h = build_ddc_header(opt, model_name, arch_id, H, W, grid_r, grid_a, P);
     const auto tw = clk::now();
     write_ddc(opt.out_ddc.string(), h, records);
     res.t_write_ms = ms(tw, clk::now());
 
-    res.grid_r = grid_r;
-    res.grid_a = grid_a;
-    res.n_patches = static_cast<int>(records.size());
-    res.file_bytes = std::filesystem::file_size(opt.out_ddc);
-    res.bpp = res.n_patches > 0
-                  ? res.payload_bytes * 8.0 / (static_cast<double>(res.n_patches) * P * P)
-                  : 0.0;
-    res.t_total_ms = ms(t0, clk::now());
+    finalize_result(res, grid_r, grid_a, static_cast<int>(records.size()), P, opt, t0);
     return res;
 }
 
 StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
     const auto t0 = clk::now();
 
-    std::ifstream mf(opt.manifest);
-    if (!mf) throw std::runtime_error("stream: cannot open manifest " + opt.manifest.string());
-    nlohmann::json manifest;
-    mf >> manifest;
-    const std::string model_name = manifest.at("model_name").get<std::string>();
-    const uint8_t arch_id = arch_id_from_name(model_name);
+    std::string model_name;
+    const uint8_t arch_id = resolve_arch(opt, model_name);
 
     BenchPipeline pipe(opt.xmodel, opt.params);
     const bool hyper = pipe.uses_hyper();
@@ -227,25 +248,10 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
     Tile tile;
     std::unique_ptr<TileWindowReader> reader;
     size_t H = 0, W = 0;
-    {
-        const auto tread = clk::now();
-        if (windowed) {
-            reader = std::make_unique<TileWindowReader>(opt.tile.string());
-            H = reader->H();
-            W = reader->W();
-            if (reader->C() != 2) throw std::runtime_error("stream: expected tile [H,W,2]");
-        } else {
-            tile = load_tile_whole(opt.tile.string());
-            H = tile.H;
-            W = tile.W;
-            if (tile.C != 2) throw std::runtime_error("stream: expected tile [H,W,2]");
-        }
-        res.t_read_ms += ms(tread, clk::now());
-    }
-    int grid_a = static_cast<int>(H / P);
-    const int grid_r = static_cast<int>(W / P);
-    if (grid_a == 0 || grid_r == 0) throw std::runtime_error("stream: tile smaller than a patch");
-    if (opt.max_rows >= 0 && opt.max_rows < grid_a) grid_a = opt.max_rows;
+    res.t_read_ms += open_tile(opt, windowed, tile, reader, H, W);
+
+    int grid_a = 0, grid_r = 0;
+    compute_grid(H, W, P, opt.max_rows, grid_a, grid_r);
     const int n = grid_a * grid_r;
 
     std::vector<DdcRecord> records(static_cast<size_t>(n));
@@ -278,14 +284,6 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
         records[static_cast<size_t>(idx)] = std::move(rec);  // distinct slot: no lock
     };
 
-    auto fill_from = [&](PatchState& s, const float* src, size_t base_row, size_t c0) {
-        for (int i = 0; i < P; ++i) {
-            const float* row = src + ((base_row + i) * W + c0) * 2;
-            std::memcpy(s.noisy_hwc.data() + static_cast<size_t>(i) * P * 2, row,
-                        static_cast<size_t>(P) * 2 * sizeof(float));
-        }
-    };
-
     if (windowed) {
         // Outer loop over row-blocks (one in DDR at a time); K workers parallelize each block.
         std::vector<float> rowblock;
@@ -298,7 +296,7 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
                 PatchState& s = states[static_cast<size_t>(wid)];
                 int pr;
                 while ((pr = pr_next.fetch_add(1)) < grid_r) {
-                    fill_from(s, rowblock.data(), 0, static_cast<size_t>(pr) * P);
+                    fill_patch(s, rowblock.data(), 0, static_cast<size_t>(pr) * P, P, W);
                     process_patch(s, pa * grid_r + pr);
                 }
             };
@@ -313,8 +311,8 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
             int idx;
             while ((idx = next_idx.fetch_add(1)) < n) {
                 const int pa = idx / grid_r, pr = idx % grid_r;
-                fill_from(s, tile.data.data(), static_cast<size_t>(pa) * P,
-                          static_cast<size_t>(pr) * P);
+                fill_patch(s, tile.data.data(), static_cast<size_t>(pa) * P,
+                           static_cast<size_t>(pr) * P, P, W);
                 process_patch(s, idx);
             }
         };
@@ -325,34 +323,12 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
 
     for (const auto& r : records) res.payload_bytes += r.z.size() + r.y.size();
 
-    DdcHeader h;
-    h.flags = 1;
-    h.arch_id = arch_id;
-    h.N = static_cast<uint16_t>(C_MAIN);
-    h.M = static_cast<uint16_t>(C_HYPER);
-    h.patch = static_cast<uint16_t>(P);
-    h.stride = static_cast<uint16_t>(P);
-    h.scene_H = static_cast<uint32_t>(H);
-    h.scene_W = static_cast<uint32_t>(W);
-    h.grid_r = static_cast<uint16_t>(grid_r);
-    h.grid_a = static_cast<uint16_t>(grid_a);
-    h.amp_min = AMP_MIN;
-    h.amp_max = AMP_MAX;
-    h.eps = EPS;
-    fnv1a_params(opt.params, h.params_sha);
-    h.tile_id = opt.tile_id;
-    h.model_id = model_name;
-
+    DdcHeader h = build_ddc_header(opt, model_name, arch_id, H, W, grid_r, grid_a, P);
     const auto tw = clk::now();
     write_ddc(opt.out_ddc.string(), h, records);
     res.t_write_ms = ms(tw, clk::now());
 
-    res.grid_r = grid_r;
-    res.grid_a = grid_a;
-    res.n_patches = n;
-    res.file_bytes = std::filesystem::file_size(opt.out_ddc);
-    res.bpp = n > 0 ? res.payload_bytes * 8.0 / (static_cast<double>(n) * P * P) : 0.0;
-    res.t_total_ms = ms(t0, clk::now());  // per-stage buckets are overlapped in p0, so left at 0
+    finalize_result(res, grid_r, grid_a, n, P, opt, t0);  // per-stage buckets overlap in p0 -> 0
     return res;
 }
 

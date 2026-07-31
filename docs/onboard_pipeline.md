@@ -288,12 +288,15 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
 > canonicalized to standard FNV-1a-64 (§7, incl. the C++ typo fix, cross-checked on real params);
 > negative test added to `test_ddc_io`.
 >
-> **Board-gated batch — one deploy, the "bridge" before Phase 2a:** (a) the C++ FNV constant fix,
-> (b) decode-side guards (arch-class + `params_sha`) in `stream_decode_ddc`, (c) de-duplicate the
-> shared writer/header-build between `stream_compress_tile` and `_p0` (so double-buffer can't desync
-> the header) — then re-run the seq-vs-p0 byte-identical gate + a board-`.ddc`-vs-`params_guard`
-> cross-check. Deferred/flagged (not fixed): `--max-rows` `scene_H` metadata, u16 length wrap,
-> host-decode whole-scene RAM, `tile_source` non-LE-host nit; FP/int16 host-test coverage.
+> **Board bridge — done + verified on board (2026-07-31):** (a) C++ FNV constant fix, (b) decode-side
+> guards (arch-class + `params_sha`) in `stream_decode_ddc`, (c) de-duplicated the shared
+> writer/header-build between `stream_compress_tile`/`_p0` (6 helpers; per-patch compute loops left
+> inline). Gate — ResSHyp λ1000, 128-patch region of `stream_tile_1k_i16`: new `seq` ≡ new `p0+s1`
+> (byte-identical); new `seq` vs the pre-rebuild reference differs in **exactly** the 8 `params_sha`
+> bytes and nothing else (dedup changed nothing; the FNV fix is the sole output change); board
+> `params_sha` = host `params_guard` = `24ee38ee6ec605f2`; decode passes the new guards. Deferred/
+> flagged (not fixed): `--max-rows` `scene_H` metadata, u16 length wrap, host-decode whole-scene RAM,
+> `tile_source` non-LE-host nit; FP/int16 host-test coverage.
 
 > **TODO (paper):** full 7,296-patch scene — **seq vs s1 vs p0(best-threads)** — for all archs ×
 > λ{1000,20,2} → throughput / full-tile latency / energy table. Batch it (ResSHyp seq ≈ 12 min/run).
