@@ -317,13 +317,15 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
 > at the SD's ~24 MB/s). Full FP + full-scene cold/warm quantification → Phase 5 sweep (needs the
 > cold/warm harness below).
 
-> **TODO (harness — cold/warm read):** the realistic-scenario runner drops the page cache at the start
-> of each timed run **inside the script** (`echo 3 > /proc/sys/vm/drop_caches`, needs root) — never by
-> hand (we'd forget). **Cold is the default** (honest + reproducible, matches the real
-> acquire→focus→store→read flow: the focuser is likely a separate board, so its SLC is genuinely on
-> persistent storage, not in our RAM). Add a `--keep-cache` / warm flag that **skips the drop** to
-> *simulate a much faster persistent store* (the read then comes from RAM ≈ removing the SD bottleneck),
-> giving the FP compute-ceiling number alongside the cold floor.
+> **Done (2026-07-31) — cold/warm harness** `scripts/fpga/benchmark/stream_benchmark.py` (host-side,
+> drives `stream_pipeline` over SSH). **Cold is the default:** `sync; echo 3 > /proc/sys/vm/drop_caches`
+> before *each* timed run (board is root) — never by hand. `--keep-cache` runs WARM (skips the drop) to
+> simulate a much faster persistent store (read from RAM), the compute-ceiling number. iters→median;
+> reports patch/s, **SLC MB/s** (the objective's data/s), full-tile latency, bpp; writes
+> `results/benchmark_stream/<model>/<label>.json`. Validated (ResSHyp p0+s1+pf, 128-patch region):
+> cold 8.80 s vs warm 6.30 s — the ~2.5 s gap is the cold SD read, reproducible across iters.
+> ⚠️ small-region totals include the one-time ~1 s model load (`t0` precedes model construction);
+> negligible at full scene — use `--max-rows -1` for headline numbers.
 
 ## TerraSAR-X objective (full derivation → `docs/TerraSAR-X_objective.md`)
 
