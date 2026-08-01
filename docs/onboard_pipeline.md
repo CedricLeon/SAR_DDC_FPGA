@@ -10,7 +10,10 @@
 > `FPGA_benchmark.md` §10 (P0/P2 patch-pipelining — earmarked, not implemented); `Data.md`
 > (`.cos` source, normalisation).
 
-Status: **planning + feasibility** (nothing implemented). Last updated 2026-07-28.
+Status: **implemented + measured.** On-board streaming compressor (Steps 1–4), full-scene ablation
+sweep (throughput / latency / energy), and power + memory + roofline analysis are done and
+board-verified. Remaining: overlap + reconstructed-tile quality (Step 6), on-ground SHyp decode
+(Step 7, nice-to-have), and results-figure polish. Last updated 2026-08-01.
 
 ---
 
@@ -53,8 +56,16 @@ Status: **planning + feasibility** (nothing implemented). Last updated 2026-07-2
   counts as free. Our 1.93 GB tile ≈ **472k pages**; whole-tile *warm* read is fine, whole-tile *f32 in-process
   load* (3.87 GB) OOMs. Cold vs warm = whether those pages are present (cold → real SD read at ~24 MB/s).
 
+- **PS DDR4 peak bandwidth = 17.06 GB/s** — 4 GB DDR4-2133 SODIMM (Kingston KVR21SE15S8/4), 64-bit
+  (2133 MT/s × 8 B) [UG1182 + SODIMM part]. Sustained DDR traffic (SD read + DPU DMA + memcpy) sits
+  ≈20× below this → DDR is **not** a bottleneck (vaitrace-measured; see §onboard TODOs).
+- **DPU = 3× DPUCZDX8G B4096 @ 300 MHz → 1229 GOP/s per core** (4096 ops/cycle × 0.30 GHz; the guide
+  lists 1400 @ 350 MHz) [PG338, *DPUCZDX8G Peak Performance*; clock from `xdputil query`]. Roofline
+  ridge vs DDR = 1229 ÷ 17.06 = 72 OP/byte.
+
 Sources: [UG1182 ZCU102 Eval Board UG](https://docs.amd.com/v/u/en-US/ug1182-zcu102-eval-bd) ·
-[DS891 Zynq UltraScale+ Data Sheet](https://www.mouser.com/datasheet/2/903/ds891_zynq_ultrascale_plus_overview-1662253.pdf).
+[DS891 Zynq UltraScale+ Data Sheet](https://www.mouser.com/datasheet/2/903/ds891_zynq_ultrascale_plus_overview-1662253.pdf) ·
+[PG338 DPUCZDX8G Peak Performance](https://docs.amd.com/r/en-US/pg338-dpu/DPUCZDX8G-Peak-Performance).
 
 ---
 
@@ -82,7 +93,7 @@ Sources: [UG1182 ZCU102 Eval Board UG](https://docs.amd.com/v/u/en-US/ug1182-zcu
 | 1 read tile | SD → DDR | whole (region) or **row-block stream** (full scene) |
 | ~~1.5 symmetrize~~ | — | **dropped** (E1 §6: ≤0.54 dB cost); optional one-time whole-image pre-pass if ever wanted |
 | 2 patchify | CPU | strided per-row `memcpy` of `[256,256,2]` out of the DDR tile |
-| 3 normalize | CPU | log + min/max (~18.7 ms/patch; NEON target) |
+| 3 normalize | CPU | log + min/max (~9 ms/patch; `--neon` = 2.42× faster, byte-transparent) |
 | 4 g_a×2 | DPU | already S1-parallel (1.95×) |
 | 5 h_a/EB/h_s | DPU+CPU | SHyp only (FP skips) |
 | 6 entropy | CPU | rANS → bits |
@@ -96,10 +107,16 @@ efficient wait — a blocking pop, not a busy-wait (a spin would pin an A53 and 
 
 **Schedules (named presets, not free-form knobs):**
 
+*(Implemented as composable flags on `stream_pipeline`, not fixed presets — every one is byte-identical
+to `stream_seq`, enforced by the correctness gate §8.)*
+
 - `stream_seq` — 1 thread; correctness + latency baseline (reads tile, writes `.ddc`).
-- `stream_p0` — 2-lane: DPU lane ‖ CPU lane (normalize + entropy + I/O). **First target.**
-- `stream_fine` — per-stage workers (patchify / normalize / entropy / writer) — the narrative
-  "fine-grained" pipeline; measured against `stream_p0` to show where extra threads actually help.
+- `--s1` — `g_a(re) ‖ g_a(im)` across the 2 DPU cores (channel-parallel; 1.6–1.95×).
+- `--p0 --threads K` — worker pool: each worker runs normalize → DPU (serialized by a mutex) →
+  entropy → write, records placed by index. `K` is the "fine-grained" knob (subsumes the once-planned
+  `stream_fine` per-stage-workers idea; ResSHyp plateaus ~3, FP keeps scaling to 4).
+- `--prefetch` — producer thread double-buffers row-block N+1 while workers compress block N.
+- `--neon` — NEON-vectorized normalize/denorm.
 
 ---
 
@@ -274,7 +291,10 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
    optimization** (whole-load is OOM-killed). Measured compute matches the step-4 projection (FP 0.93 min,
    ResSHyp 5.5 min); the ~81 s cold SD read (23.8 MB/s) is the end-to-end add-on. Full-scene bpp (1.24–1.48)
    beats the 1024 crop (2.08) — more low-texture area → higher ratio. raw int16 SLC = 1.93 GB (`.cos` payload).
-5. **`stream_fine`** + `--queue-depth`/`--entropy-threads` sweeps; full 7 296-patch scene streamed from SD.
+5. ✅ **Largely folded into Step 4.** Full 7 296-patch scene streamed from SD (headline above); the
+   `--threads` worker sweep *is* the fine-grained sweep, so a separate `stream_fine` was not needed.
+   Extra `--queue-depth`/`--entropy-threads` knobs left unbuilt (prefetch depth fixed at 2 — not a
+   bottleneck; DPU-serialization, not queueing, is the limit).
 6. Overlap + reconstructed-tile quality.
 7. **On-ground decode (nice-to-have):** reproduce the on-board INT8 `h_s` on host so SHyp `.ddc`
    files decode in pure Python — until then, SHyp verification is board-side (the FP path already
@@ -298,8 +318,15 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
 > flagged (not fixed): `--max-rows` `scene_H` metadata, u16 length wrap, host-decode whole-scene RAM,
 > `tile_source` non-LE-host nit; FP/int16 host-test coverage.
 
-> **TODO (paper):** full 7,296-patch scene — **seq vs s1 vs p0(best-threads)** — for all archs ×
-> λ{1000,20,2} → throughput / full-tile latency / energy table. Batch it (ResSHyp seq ≈ 12 min/run).
+> **Done (2026-08-01) — ablation sweep + table.** `stream_sweep.py` (deploy each model → cumulative
+> configs cold + warm-final via the harness) + `stream_table.py` → `results/benchmark_stream/`
+> `ablation_table.md`. FP + ResSHyp × λ{1000,20}, full scene. **λ-independent** (L20 == L1000 within
+> ~1% everywhere → rANS time ∝ #latents, not bpp; one λ suffices for throughput). Cumulative cold:
+> **FP 26→86 patch/s (3.3×), ResSHyp 9.2→22.8 (2.5×)**. Gains are arch-specific (ResSHyp ← s1 halves
+> `g_a`; FP ← p0 then prefetch); **NEON ~flat on top of p0** (normalize already overlapped). **Read
+> ceiling:** SD ~81 s / ~24 MB/s constant; prefetch defeats the *serial* read (FP p0 137→85 s), then
+> FP is read-bound at the SD wall; warm (RAM read) → FP 85→53 s (**1.6× headroom**), ResSHyp warm ≈
+> cold (read fully hidden by its long compute → **no** storage headroom). Energy column → power TODO.
 
 > **Done (2026-07-31) — NEON `normalize`/`denorm` (`--neon`).** Vectorised log/exp (Cephes/Pommier,
 > `neon_mathfun.h`) behind a runtime flag; scalar path kept for A/B + rollback. Kernel self-check
@@ -310,8 +337,11 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
 > the Hamburg region; metrics + log-intensity panels via `scripts/evaluation/compare_recon.py`. FP
 > (CPU-bound, normalize a bigger fraction) should gain more — quantify in the Phase 5 sweep.
 
-> **TODO (figure):** Gantt-style timeline diagrams (stages × threads) for seq / s1 / p0 (and B) —
-> to communicate the schedules in the paper.
+> **Done (2026-08-01) — Gantt figures.** `stream_gantt.py --model <M> --detail {merged,full}`: seq /
+> s1 / p0(+s1) + a coarse row-block **streaming** panel (read‖compute‖write), from measured per-stage
+> means. p0 shows *normalize-early → WAIT (mutex) → DPU0/DPU1 serialized*; the streaming panel shows
+> ResSHyp **compute-bound** (read hidden under compute) vs FP **read-bound** (reader packed, compute
+> waits). ResSHyp + FP, both detail levels.
 
 > **Done (2026-07-31) — double-buffer (`--prefetch`, windowed seq + p0).** A producer thread reads
 > row-block N+1 while the compressor works block N (bounded `RowBlockQueue`, depth 2). Verified on
@@ -332,6 +362,56 @@ The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python cod
 > cold 8.80 s vs warm 6.30 s — the ~2.5 s gap is the cold SD read, reproducible across iters.
 > ⚠️ small-region totals include the one-time ~1 s model load (`t0` precedes model construction);
 > negligible at full scene — use `--max-rows -1` for headline numbers.
+
+### Other TODOs, user-added
+
+- @TODO (figures): first pass **built** — `stream_gantt.py` (seq/s1/p0/streaming timelines),
+  `stream_roofline.py` (DPU-kernel roofline, plan A), `stream_sysplot.py` (system views: (i)
+  throughput-vs-ladder + (ii) OP/byte roofline, plan B). Remaining for the manuscript batch: legibility
+  polish, a dedicated read-ceiling figure, and deciding whether to surface CPU load explicitly (see the
+  roofline caveat below).
+- @TODO (sweep): ✅ **done** — power implemented first, then one consolidated sweep run
+  (`stream_sweep.py`, FP + ResSHyp × λ{1000,20}); the table lands throughput + latency + energy
+  together (results in the ablation-sweep note above).
+- @TODO (power): ✅ **implemented** — `--power` in `stream_pipeline` (+ harness) reuses `PowerSampler`
+  (INA226 sysfs + PMBus I2C) across the compress phase; reports MPSoC (PS+PL) avg-W, total J, and
+  **J/patch** + per-group means into `StreamResult`/JSON. First test (ResSHyp, 128 patches): seq
+  11.6 W / 1.26 J/patch vs p0+s1 15.9 W / **0.73 J/patch** — p0 draws more power but ~1.7× less
+  energy/patch. → energy column in the consolidated sweep.
+- @TODO (memory): plan = **(a)** peak footprint via `VmHWM` (`/proc/self/status`) — confirms the
+  windowed ~0.3 GB; **(b)** analytical data-movement budget (SD→DDR 1.9 GB, patchify memcpy ~3.8 GB,
+  DPU DMA, DDR→SD ~90 MB) → rates vs the 17.06 GB/s (DDR4-2133 ×64b) DDR ceiling; **(c)** `vaitrace --txt_summary` for
+  the DPU's per-subgraph DDR traffic — `LdFM` (feature-map load MB), `LdWB` (weight/bias load MB),
+  `StFM` (feature-map store MB), `AvgBw` (avg DDR bandwidth). **DPU `AvgBw` + a CPU-side estimate =
+  worst-case simultaneous DDR demand** (p0 overlaps them) → the DDR **margin** vs 17.06 GB/s (DDR4-2133 ×64b).
+  Measured so far (vaitrace): DPU g_a/g_s `AvgBw` ~651–660 MB/s (dominant), h_a/h_s bursts ~6 GB/s;
+  CPU side is an **estimate** (~100–150 MB/s from memcpy+normalize volumes ÷ time). @TODO (if the
+  paper needs a defensible CPU DDR number): measure it with `perf stat -e l2d_cache_refill,l2d_cache_wb`
+  (×64 B ÷ runtime) — but `perf` is **not installed on the board** (would need adding). AXI
+  Performance Monitor (whole-system DDR counters) = overkill, skip. Refs: vaitrace UG1414 —
+  <https://docs.amd.com/r/en-US/ug1414-vitis-ai/vaitrace-Usage>,
+  <https://docs.amd.com/r/en-US/ug1414-vitis-ai/Text-Summary>.
+- @TODO (roofline): ✅ **both built** (vaitrace-measured, s0 L1000). **(A) DPU-kernel** (Williams,
+  `stream_roofline.py`): x = `WL/(LdFM+LdWB+StFM)` OP/byte, y = `WL/HW_RT` GOP/s; roofs = B4096 @
+  300 MHz = 1229 GOP/s + DDR 17.06 GB/s (ridge 72 OP/byte). *Findings:* g_a/g_s ride **468–1822
+  OP/byte** — far right of the ridge, hard **compute-bound** at **70–97%** of the roof (the gap =
+  DPU overhead; ResSHyp's residual g_a/g_s hit 94–97%). h_a/h_s sit at **~57 OP/byte** (just left of
+  the ridge) at only **~27%** → tiny + weight-load-bound. **FP g_a/g_s are separate points** (residual
+  connections make ResSHyp's ~9× larger). **(B) system** (`stream_sysplot.py`): (i) throughput-vs-ladder
+  with the SD-read ceiling + per-model warm lines; (ii) OP/byte roofline (x = compress DPU OP per SLC
+  byte, y = achieved DPU OP/s) with SD-read (diagonal) + DPU (2-core) roofs — **FP (low intensity)
+  rides the SD-read roof (read-bound); ResSHyp (high intensity) sits near the compute roof
+  (compute-bound); the warm `*` breaks the SD roof.**
+  > ⚠️ **CPU-load caveat (all three figures are DPU + SD-read only).** None decomposes the CPU
+  > (entropy + normalize) load: (A) is pure-DPU by construction; (ii)'s only compute roof is the DPU;
+  > (i) bakes the CPU into the *measured* throughputs + the warm ceiling but never draws it. The CPU
+  > shows up **only implicitly** — and for **FP the warm/compute ceiling *is* the CPU entropy limit**
+  > (FP is CPU-bound). To surface CPU load explicitly, two options for the manuscript batch: **(1)** a
+  > per-model **compute roof at the warm throughput** on (ii) = the `min(DPU, CPU)` compute bound (folds
+  > the CPU in as the effective roof), or **(2)** a separate **stacked time-per-patch** figure
+  > (read / DPU / normalize / entropy) — the honest, direct view of where CPU time goes and how NEON
+  > shrinks the normalize slice. Recommend (2): the roofline is a single-resource (DPU) tool, so the
+  > stacked-time figure is the right complement for the CPU story.
 
 ## TerraSAR-X objective (full derivation → `docs/TerraSAR-X_objective.md`)
 
