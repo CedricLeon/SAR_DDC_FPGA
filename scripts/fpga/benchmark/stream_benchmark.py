@@ -40,6 +40,7 @@ _SUMMARY = re.compile(
     r"(\d+) patches \((\d+) x (\d+)\) \| bpp=([\d.]+) \| ([\d.]+) patch/s \| total=([\d.]+) s"
 )
 _READ = re.compile(r"read=([\d.]+)")
+_POWER = re.compile(r"\[power\] ([\d.]+) W .*?([\d.]+) J \| ([\d.]+) J/patch")
 
 
 def ssh_capture(remote_cmd: str) -> str:
@@ -57,6 +58,7 @@ def parse_run(stdout: str) -> dict:
         raise RuntimeError(f"could not parse stream_pipeline output:\n{stdout}")
     n, grid_a, grid_r, bpp, patch_s, total_s = m.groups()
     read = _READ.search(stdout)
+    pw = _POWER.search(stdout)
     return {
         "n_patches": int(n),
         "grid_a": int(grid_a),
@@ -65,6 +67,9 @@ def parse_run(stdout: str) -> dict:
         "patch_s": float(patch_s),
         "total_s": float(total_s),
         "read_ms": float(read.group(1)) if read else None,
+        "avg_power_w": float(pw.group(1)) if pw else None,
+        "energy_j": float(pw.group(2)) if pw else None,
+        "j_per_patch": float(pw.group(3)) if pw else None,
     }
 
 
@@ -81,6 +86,8 @@ def schedule_flags(args) -> list:
         flags.append("--prefetch")
     if args.neon:
         flags.append("--neon")
+    if args.power:
+        flags.append("--power")
     if args.max_rows >= 0:
         flags += ["--max-rows", str(args.max_rows)]
     return flags
@@ -124,6 +131,7 @@ def parse_args():
     p.add_argument("--threads", type=int, default=4, help="worker count for --schedule p0")
     p.add_argument("--prefetch", action="store_true", help="double-buffer row-block reads")
     p.add_argument("--neon", action="store_true", help="NEON-vectorised normalize/denorm")
+    p.add_argument("--power", action="store_true", help="sample board power (INA226/PMBus)")
     p.add_argument(
         "--tile", default="data/stream_tile_1k_i16.npy", help="board-relative tile path"
     )
@@ -200,6 +208,7 @@ def main():
         "s1": args.s1,
         "threads": args.threads if args.schedule == "p0" else None,
         "prefetch": args.prefetch,
+        "neon": args.neon,
         "windowed": not args.whole,
         "cold": cold,
         "tile": args.tile,
@@ -213,6 +222,9 @@ def main():
         "median_patch_s": med_patch_s,
         "slc_mb_s": slc_mb_s,
         "read_ms": runs[0]["read_ms"],
+        "avg_power_w": runs[0]["avg_power_w"],
+        "energy_j": runs[0]["energy_j"],
+        "j_per_patch": runs[0]["j_per_patch"],
     }
 
     out = (
@@ -224,9 +236,14 @@ def main():
     out.write_text(json.dumps(result, indent=2))
 
     print("-" * 68)
+    pw = (
+        f" | {runs[0]['j_per_patch']:.4f} J/patch @ {runs[0]['avg_power_w']:.1f} W"
+        if runs[0]["avg_power_w"]
+        else ""
+    )
     print(
         f" median: {med_patch_s:.2f} patch/s | {slc_mb_s:.1f} MB/s SLC | "
-        f"full-tile {med_total:.2f} s | bpp {runs[0]['bpp']:.4f}"
+        f"full-tile {med_total:.2f} s | bpp {runs[0]['bpp']:.4f}{pw}"
     )
     print(f" -> {out.relative_to(REPO_ROOT)}")
 
