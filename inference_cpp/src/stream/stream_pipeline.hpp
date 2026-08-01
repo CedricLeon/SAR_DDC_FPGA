@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 
 namespace ddc {
@@ -26,6 +27,7 @@ struct StreamOptions {
     int threads = 3;                 // worker count for --p0
     bool prefetch = false;           // double-buffer: read row-block N+1 while compressing N (windowed)
     bool neon = false;               // NEON-vectorised normalize/denorm (else scalar libm)
+    bool power = false;              // sample INA226/PMBus board power across the compress phase
     bool verbose = false;
 };
 
@@ -36,6 +38,11 @@ struct StreamResult {
     // per-bucket wall-clock totals (ms)
     double t_read_ms = 0, t_patchify_ms = 0, t_normalize_ms = 0, t_dpu_ms = 0,
            t_entropy_ms = 0, t_write_ms = 0, t_total_ms = 0;
+    // power (only when --power and INA226 sensors present)
+    bool power_ok = false;
+    double avg_power_w = 0.0;                     // MPSoC group (PS+PL) mean over the compress phase
+    double energy_j = 0.0;                        // avg_power_w * window duration
+    std::map<std::string, double> power_groups;   // mean W per rail-group (DPU_fabric, PS, PL, …)
 };
 
 // Compress a whole tile into a .ddc. Throws std::runtime_error on any missing/invalid input.

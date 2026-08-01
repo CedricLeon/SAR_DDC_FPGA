@@ -147,7 +147,8 @@ if(NLOHMANN_JSON_INCLUDE_DIR)
     add_executable(stream_pipeline
         src/stream/stream_pipeline.cpp
         src/stream/main_stream.cpp
-        src/benchmark/bench_pipeline.cpp)
+        src/benchmark/bench_pipeline.cpp
+        src/benchmark/power_sampler.cpp)
     target_include_directories(stream_pipeline PRIVATE
         src src/benchmark include ${NLOHMANN_JSON_INCLUDE_DIR})
     target_link_libraries(stream_pipeline PRIVATE inference_lib)

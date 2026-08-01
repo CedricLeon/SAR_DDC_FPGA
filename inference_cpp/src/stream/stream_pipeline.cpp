@@ -20,6 +20,7 @@
 #include <nlohmann/json.hpp>
 
 #include "benchmark/bench_pipeline.hpp"
+#include "benchmark/power_sampler.hpp"
 #include "constants.hpp"
 #include "ddc_io.hpp"
 #include "tile_source.hpp"
@@ -196,6 +197,16 @@ void finalize_result(StreamResult& res, int grid_r, int grid_a, int n, int P,
     res.t_total_ms = ms(t0, clk::now());
 }
 
+// Stop the power sampler and record the compress-phase power (MPSoC = PS+PL) + per-group means.
+void fill_power(StreamResult& res, PowerSampler& ps) {
+    ps.stop();
+    const PowerResult pr = ps.results();
+    res.power_ok = pr.valid;
+    res.power_groups = pr.groups;
+    res.avg_power_w = pr.groups.count("MPSoC") ? pr.groups.at("MPSoC") : 0.0;
+    res.energy_j = res.avg_power_w * pr.duration_s;
+}
+
 }  // namespace
 
 StreamResult stream_compress_tile(const StreamOptions& opt) {
@@ -211,6 +222,9 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
 
     StreamResult res;
     const int P = 256;
+    PowerSampler ps;
+    const bool psok = opt.power && ps.init();  // false off-board -> --power cleanly no-ops
+    if (psok) ps.start();
 
     const bool windowed = opt.windowed;  // whole-tile load, or row-block streaming (one row in DDR)
     Tile tile;
@@ -293,6 +307,7 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
     write_ddc(opt.out_ddc.string(), h, records);
     res.t_write_ms = ms(tw, clk::now());
 
+    if (psok) fill_power(res, ps);
     finalize_result(res, grid_r, grid_a, static_cast<int>(records.size()), P, opt, t0);
     return res;
 }
@@ -310,6 +325,9 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
 
     StreamResult res;
     const int P = 256;
+    PowerSampler ps;
+    const bool psok = opt.power && ps.init();  // false off-board -> --power cleanly no-ops
+    if (psok) ps.start();
 
     const bool windowed = opt.windowed;  // full scene must stream (whole f32 > DDR)
     Tile tile;
@@ -419,6 +437,7 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
     write_ddc(opt.out_ddc.string(), h, records);
     res.t_write_ms = ms(tw, clk::now());
 
+    if (psok) fill_power(res, ps);
     finalize_result(res, grid_r, grid_a, n, P, opt, t0);  // per-stage buckets overlap in p0 -> 0
     return res;
 }

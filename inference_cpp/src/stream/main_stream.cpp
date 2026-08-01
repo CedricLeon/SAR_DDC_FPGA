@@ -16,7 +16,7 @@ static const char* USAGE =
     "--out <out.ddc>\n"
     "                       [--manifest <manifest.json>] [--tile-id <name>] [--max-rows N]\n"
     "                       [--windowed] [--s1] [--p0] [--threads N] [--prefetch] [--neon]\n"
-    "                       [--verbose]   |   --neon-check  (print NEON log/exp error, exit)";
+    "                       [--power] [--verbose]   |   --neon-check  (print NEON log/exp error)";
 
 int main(int argc, char** argv) {
     ddc::StreamOptions o;
@@ -41,6 +41,7 @@ int main(int argc, char** argv) {
             else if (a == "--threads") o.threads = std::stoi(next());
             else if (a == "--prefetch") o.prefetch = true;
             else if (a == "--neon") o.neon = true;
+            else if (a == "--power") o.power = true;
             else if (a == "--verbose") o.verbose = true;
             else if (a == "-h" || a == "--help") { std::printf("%s\n", USAGE); return 0; }
             else if (a == "--neon-check") {
@@ -87,6 +88,9 @@ int main(int argc, char** argv) {
                             r.t_entropy_ms, r.t_write_ms);
             if (o.prefetch)
                 std::printf("  [prefetch] row-block N+1 read overlapped with compress of N\n");
+            if (r.power_ok)
+                std::printf("  [power] %.2f W (MPSoC) | %.1f J | %.4f J/patch\n", r.avg_power_w,
+                            r.energy_j, r.n_patches > 0 ? r.energy_j / r.n_patches : 0.0);
         }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "stream_pipeline error: %s\n", e.what());
