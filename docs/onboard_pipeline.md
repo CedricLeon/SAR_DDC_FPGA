@@ -332,31 +332,35 @@ Three exploratory scripts under `scripts/fpga/benchmark/` (output → `results/b
 > grid and must be **re-run** on the snap-covered grid. **Not yet re-run** — the §8 table still shows the
 > old counts. Re-run `stream_sweep.py` and refresh §8 + the §3 patch-count.
 
-**Overlap study — reconstructed-tile quality vs cost (U5).** *Status: in implementation.* Non-overlapping
-patches leave seam artifacts when the despeckled tile is recombined; overlap + ramp-blend removes them at
-a latency/bitrate cost. Measured on the **same streaming pipeline as §8** (cost is measured, not
-estimated) and **decoupled from the host decoder below** — reconstruction uses the board's real INT8
-decode.
+**Overlap study — reconstructed-tile quality vs cost (U5).** *Status: passes 1–3 + GT tooling
+implemented and validated; remaining = the full-scene GT run, then the sweep + plots.* Non-overlapping patches leave seam artifacts when the despeckled tile is recombined; overlap +
+ramp-blend removes them at a latency/bitrate cost. Measured on the **same streaming pipeline as §8**
+(cost is measured, not estimated) and **decoupled from the host decoder below** — reconstruction uses
+the board's real INT8 decode.
 
 - **Grid rule (single source of truth).** Offsets = `make_offsets(dim, 256, stride)`, `stride = 256 −
-  overlap`, last patch snapped to `dim − 256`. `stream_pipeline.cpp` (board) and the host stitcher **must**
-  use this identical rule. The `.ddc` header already carries `stride`, so `overlap = patch − stride` is
-  recoverable — **no new `.ddc` field needed** (resolves the earlier U4 worry).
-- **Pass 1 — cost (board, timed).** `stream_pipeline --overlap {0,4,8,16}` at the deployment config →
-  measured full-tile latency + energy + bitrate; overlap=0 is the snap-covered baseline. Expected patch
-  inflation (to be measured): **+3.3 % / +6.7 % / +14.4 %** at 4 / 8 / 16 px.
-- **Pass 2 — reconstruction (board).** `stream_pipeline --decode` decodes each patch with the real INT8
-  `h_s`+`g_s`+rANS → per-patch linA (record order). *TODO:* make it stream-write per patch to avoid the
-  ~2.2 GB in-RAM spike at full-scene+overlap.
-- **Pass 3 — stitch + score (host).** Read the `.ddc` header + per-patch linA, reproduce offsets (grid
-  rule), ramp-blend (sigmoid, ported from `tile_infer`) into the full `[H,W]` linA tile (1.93 GB in host
-  RAM → no board OOM), score vs the project MERLIN full-tile GT (PSNR / SSIM / EPD), + a 50×50
-  patch-corner seam crop (original + overlaps, red lines marking overlap reach). Output: overlap→quality
-  line plot with measured latency labelled per point.
-- **MERLIN GT.** Generate the project's own full-tile despeckle (`data/method_ground_truths/MERLIN`,
-  reuse `predict_linA`) with a seam-free heavy-overlap blend — consistent with §5 and every other project
-  number. (`data/visualization/MERLIN_DDS/linA_MERLIN_DDS_full_Hamburg.npy` exists but is the
-  original-study checkpoint → different absolute metrics; a cross-check only.)
+  overlap`, last patch snapped to `dim − 256`. Board = `stream_pipeline.cpp::make_offsets`; host =
+  `src/utils/tiling.py::make_offsets` (+ `blend_patches`), pinned byte-for-byte-close to the canonical
+  `processing_utils.patch_infer` blend by `tiling._selftest` (max err 3.6e-7). The `.ddc` header carries
+  `stride`, so `overlap = patch − stride` is recoverable — **no new `.ddc` field needed** (resolves U4).
+- **Pass 1 — cost (board, timed).** ✅ `stream_pipeline --overlap N` (snap grid). Board-verified: grid
+  counts, byte-identical gate across seq/s1/p0/windowed/prefetch at overlap 0 & 8, and the decode
+  round-trip all pass. overlap=0 is the snap-covered baseline; expected patch inflation (to be measured in
+  the sweep) **+3.3 % / +6.7 % / +14.4 %** at 4 / 8 / 16 px.
+- **Pass 2 — reconstruction (board).** ✅ `stream_pipeline --decode` decodes each patch with the real
+  INT8 `h_s`+`g_s`+rANS and **stream-writes** it straight to the `[n,P,P]` NPY (via
+  `npy_write_header_float32`) — no ~2.2 GB buffer at full-scene+overlap. Board-verified byte-identical to
+  the prior buffered decode.
+- **Pass 3 — stitch + score (host).** ✅ `scripts/evaluation/stitch_ddc.py` (+ `src/utils/tiling.py`):
+  reads the `.ddc` header, reproduces the snap offsets, ramp-blends the decoded per-patch linA into the
+  full `[H,W]` tile in host RAM (no board OOM), optional scoring vs the MERLIN GT. Validated on a board
+  round-trip: overlap-0 stitch = plain reassembly bit-for-bit; overlap-8 coherent. Remaining: the
+  overlap→quality line plot (measured latency per point) + a 50×50 patch-corner seam crop.
+- **MERLIN GT.** ✅ `scripts/evaluation/merlin_full_gt.py`: the project's own MERLIN despeckle on the
+  whole-image-symmetrized scene, seam-free heavy-overlap (64 px) blend — consistent with §5. Validated on
+  the 1024² crop vs the project's existing `linA_MERLIN.npy` (PSNR 54.8 dB, corr 0.991). Remaining: run it
+  once on the full scene. (`…/MERLIN_DDS/linA_MERLIN_DDS_full_Hamburg.npy` exists but is the original-study
+  checkpoint → a cross-check only.)
 
 > **On-ground SHyp `.ddc` decoder** (optional, decoupled — *not* a blocker for the overlap study).
 > *Idea:* reproduce the board's INT8 `h_s` on host so SHyp/ResSHyp `.ddc` decode in pure Python (FP
