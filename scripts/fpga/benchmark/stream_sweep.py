@@ -50,12 +50,16 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tile", default="data/full_scene_i16.npy", help="board-relative full scene")
     ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument(
+        "--power", action="store_true", help="sample board power (INA226) on every run"
+    )
     ap.add_argument("--warm-final", action="store_true", default=True)
     ap.add_argument("--no-warm-final", dest="warm_final", action="store_false")
     args = ap.parse_args()
 
     archs = [a.strip() for a in args.archs.split(",") if a.strip()]
     lambdas = [int(x) for x in args.lambdas.split(",")]
+    power = ["--power"] if args.power else []
     combos = [(a, lam) for a in archs for lam in lambdas]
     print(f"[sweep] {len(combos)} models x {len(CONFIGS)} configs; warm={args.warm_final}")
 
@@ -86,6 +90,7 @@ def main():
                     sys.executable,
                     BENCH,
                     *flags,
+                    *power,
                     "--tile",
                     args.tile,
                     "--threads",
@@ -106,6 +111,7 @@ def main():
                     sys.executable,
                     BENCH,
                     *CONFIGS[-1][1],
+                    *power,
                     "--tile",
                     args.tile,
                     "--threads",
