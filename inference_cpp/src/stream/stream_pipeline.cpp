@@ -499,7 +499,12 @@ StreamResult stream_decode_ddc(const StreamOptions& opt) {
     PatchState s = pipe.make_patch_state(P, P);
 
     const int n = static_cast<int>(f.records.size());
-    std::vector<float> out(static_cast<size_t>(n) * P * P);  // [n, P, P] linA, record order
+    // Stream each decoded patch straight to the [n, P, P] NPY (record order) rather than buffering the
+    // whole ~n*P*P array — at full-scene+overlap that buffer is ~2.2 GB, close to the DDR ceiling.
+    std::ofstream fout(opt.out_ddc.string(), std::ios::binary);
+    if (!fout) throw std::runtime_error("stream_decode: cannot open " + opt.out_ddc.string());
+    npy_write_header_float32(
+        fout, {static_cast<size_t>(n), static_cast<size_t>(P), static_cast<size_t>(P)});
     for (int i = 0; i < n; ++i) {
         const DdcRecord& rec = f.records[i];
         res.payload_bytes += rec.z.size() + rec.y.size();
@@ -515,14 +520,13 @@ StreamResult stream_decode_ddc(const StreamOptions& opt) {
         }
         res.t_dpu_ms += time_stage([&] { pipe.stage_gs(s); });
         res.t_normalize_ms += time_stage([&] { pipe.stage_denorm(s); });  // (denorm bucketed here)
-        std::memcpy(out.data() + static_cast<size_t>(i) * P * P, s.recon_lina.data(),
-                    static_cast<size_t>(P) * P * sizeof(float));
+        res.t_write_ms += time_stage([&] {
+            fout.write(reinterpret_cast<const char*>(s.recon_lina.data()),
+                       static_cast<std::streamsize>(P) * P * sizeof(float));
+        });
     }
-
-    const auto tw = clk::now();
-    npy_save_float32(opt.out_ddc.string(), out.data(),
-                     {static_cast<size_t>(n), static_cast<size_t>(P), static_cast<size_t>(P)});
-    res.t_write_ms = ms(tw, clk::now());
+    fout.close();
+    if (!fout) throw std::runtime_error("stream_decode: short write to " + opt.out_ddc.string());
 
     res.grid_r = f.header.grid_r;
     res.grid_a = f.header.grid_a;
