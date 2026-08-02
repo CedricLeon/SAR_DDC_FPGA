@@ -36,7 +36,7 @@ We want three numbers, each a different **deadline**:
 
 Everything below exists to turn TSX specs into those three numbers. The single hardware fact from our
 side: one ZCU102 running the factorized-prior (FP) model in the `p0` schedule compresses at
-**≈ 34 MB/s of SLC** (measured; see `onboard_pipeline.md` §10, **to be updated once design evolves**).
+**≈ 34 MB/s of SLC** (measured; see `onboard_pipeline.md` §8, **to be updated once design evolves**).
 
 ---
 
@@ -257,7 +257,7 @@ uncompressed focused take on-board is marginal.
 
 ### 3.7 Compression
 
-Our DDC compresses the SLC ~**24×** (measured, `onboard_pipeline.md` §10). Worst-case take
+Our DDC compresses the SLC ~**24×** (measured, `onboard_pipeline.md` §8). Worst-case take
 64.5 GB → **2.7 GB**; at 33.75 MB/s that downlinks in **~80 s**, well inside a 5–10 min contact. Note
 the raw is *already* downlinkable (BAQ + store-and-forward), so the value of DDC is **not** "enables
 downlink" but a ~6× smaller *exploitation* product, on-board semantic latents, and making on-board SLC

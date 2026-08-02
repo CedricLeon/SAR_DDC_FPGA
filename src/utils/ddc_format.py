@@ -2,7 +2,7 @@
 
 A ``.ddc`` file is the compressed SAR tile as it would be queued for downlink: a fixed HEADER
 (how to decode), a BODY of per-patch rANS bitstreams, and an optional TRAILER offset table for
-random access. Little-endian, positional (no field names in the file). See docs/onboard_pipeline.md §7.
+random access. Little-endian, positional (no field names in the file). See docs/onboard_pipeline.md §6.
 
 Layout
 ------

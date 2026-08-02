@@ -2,26 +2,33 @@
 
 > End-to-end **"receive focused SLC tile → despeckle + compress → write downlink bitstream"**
 > streaming demo on the Xilinx ZCU102 — the core contribution of the systems/CS paper, alongside
-> the performance analysis. This file is the **design discussion CLAUDE.md requires before
-> implementing any parallelism**. It records only *new* decisions + open questions; for existing
-> pieces it points to the canonical docs.
+> the performance analysis. This file **was the design discussion CLAUDE.md requires before
+> implementing parallelism, and now records the implemented design + measurements**. It keeps only
+> the *decisions* and their rationale; for existing pieces it points to the canonical docs.
 >
 > Builds on: `FPGA_inference.md` §5 (per-stage pipeline), §9 (streaming inference — earmarked);
-> `FPGA_benchmark.md` §10 (P0/P2 patch-pipelining — earmarked, not implemented); `Data.md`
-> (`.cos` source, normalisation).
+> `FPGA_benchmark.md` §10 (P0/P2 patch-pipelining — earmarked there; **P0 now implemented +
+> measured here**); `Data.md` (`.cos` source, normalisation).
 
 Status: **implemented + measured.** The on-board streaming compressor, the parallel/I/O optimizations
-(§8), and the full-scene throughput/latency/energy sweep + memory/roofline analysis (§9) are done and
-board-verified. Remaining (§11): overlap + reconstructed-tile quality, on-ground SHyp decode
-(nice-to-have), and figure polish. Last updated 2026-08-02.
+(§4), and the full-scene throughput/latency/energy sweep + memory/roofline analysis (§8) are done and
+board-verified. Remaining (§10): overlap + reconstructed-tile quality, on-ground SHyp decode
+(nice-to-have), a stacked time-per-patch figure, and figure rigor/polish. Last updated 2026-08-02.
 
 **Questions opened/answered**:
 
-- [x] **U1**: Symmetrization is a whole-tile operation part of the pre-processing, it breaks the streaming flow. Can we skip it or adjust it's granularity to a patch or large block? *We can skip it*, see §5 E1.
-- [x] **U2**: Which file format and layout do we use to store the tile? *row-major int16 `.npy`, seek-streamed by `TileWindowReader` so no per-patch open.* Patchify (row-strided extract) = 0.4%. a Patch-major format `[n,256,256,2]` would zero patchify but fragments SD reads + complicates overlap. *Data type: **int16** (4 B/sample)*
-- [x] **U3**: How to keep things organize given all the possible configs and setups we implemented? *See §7 for the harness shape using named presets + gates*
-- [x] **U4**: How do we store the compressed patches and tile? *We created a `.ddc` container format, see §6*
-- [ ] **U5**: So far we compress the tile without overlapping patches, which results in edge artifacts when recombining the tile (should visualize), how do we prevent that? *Introduce an overlap parameter in the harness `--stream-overlap {0,4,8,16}` px to sweep overlap → reconstructed-image quality*.
+- [x] **U1**: Symmetrization is a whole-tile pre-processing step, so it breaks the streaming flow. Can
+  we skip it, or drop its granularity to a patch or large block? *We can skip it* — see §5 (E1).
+- [x] **U2**: Which file format and layout for the stored tile? *Row-major int16 `.npy`, seek-streamed
+  by `TileWindowReader` (no per-patch open)*; patchify (row-strided extract) costs ~0.4% of latency. A
+  patch-major format `[n,256,256,2]` would zero that but fragments SD reads and complicates overlap.
+  *Data type: **int16**, 4 B per complex sample (I+Q).*
+- [x] **U3**: How do we stay organized given all the configs/setups? *See §7 — one base-schedule preset
+  + composable flags, all held to a byte-identical gate.*
+- [x] **U4**: How do we store the compressed patches + tile? *A `.ddc` container format — see §6.*
+- [ ] **U5**: Non-overlapping patch compression leaves seam/edge artifacts when the tile is recombined.
+  How do we prevent that? *Add a `--stream-overlap {0,4,8,16}` px knob and sweep overlap →
+  reconstructed-image quality — see §10.*
 
 ---
 
@@ -32,9 +39,8 @@ board-verified. Remaining (§11): overlap + reconstructed-tile quality, on-groun
   (patch/s)** + **full-tile latency** (read → compress → write).
 - **Models:** ResSHyp (DPU-bound) + FP (CPU-bound) primary; SHyp/ResFP come ~free (arch
   auto-detected from `manifest.json`).
-- **Overlap:** start **non-overlapping** (independent per-patch bitstreams); add overlap later — the
-  harness will expose `--stream-overlap {0,4,8,16}` px to sweep it (reconstructed-image quality;
-  inflates bitrate).
+- **Overlap:** deferred — non-overlapping per-patch bitstreams for now; the overlap sweep is future
+  work (§10).
 - **Language:** C++ on-board (only inference path). Python only for the offline symmetrization study
   (§5) and the `.ddc` verifier (§6).
 
@@ -60,10 +66,12 @@ board-verified. Remaining (§11): overlap + reconstructed-tile quality, on-groun
 
 - **PS DDR4 peak bandwidth = 17.06 GB/s** — 4 GB DDR4-2133 SODIMM (Kingston KVR21SE15S8/4), 64-bit
   (2133 MT/s × 8 B) [UG1182 + SODIMM part]. Sustained DDR traffic (SD read + DPU DMA + memcpy) sits
-  ≈20× below this → DDR is **not** a bottleneck (vaitrace-measured; §9).
+  ≈20× below this → DDR is **not** a bottleneck (vaitrace-measured; §8).
 - **DPU = 3× DPUCZDX8G B4096 @ 300 MHz → 1229 GOP/s per core** (4096 ops/cycle × 0.30 GHz; the guide
   lists 1400 @ 350 MHz) [PG338, *DPUCZDX8G Peak Performance*; clock from `xdputil query`]. Roofline
   ridge vs DDR = 1229 ÷ 17.06 = 72 OP/byte.
+
+**Concepts.** *Queue* = bounded producer→consumer FIFO between threaded stages (depth = max buffered patches; overlap = stage B on patch N while A makes N+1). One slot is the minimum for overlap; a small depth (a few) absorbs per-patch DPU/rANS jitter so the bottleneck never stalls.
 
 Sources: [UG1182 ZCU102 Eval Board UG](https://docs.amd.com/v/u/en-US/ug1182-zcu102-eval-bd) ·
 [DS891 Zynq UltraScale+ Data Sheet](https://www.mouser.com/datasheet/2/903/ds891_zynq_ultrascale_plus_overview-1662253.pdf) ·
@@ -75,7 +83,7 @@ Sources: [UG1182 ZCU102 Eval Board UG](https://docs.amd.com/v/u/en-US/ug1182-zcu
 
 - Tile: `data/TSX_cos_files/Hamburg_…_strip_004.cos` = **14 686 (range) × 32 901 (azimuth)** →
   **57 × 128 = 7 296** non-overlap 256² patches; raw complex-int16 = **1.93 GB**.
-- Footprints: full f32 `[H,W,2]` tile = **3.87 GB** (> DDR → must stream); ~1000-patch region ≈ 538 MB.
+- Footprints: full f32 `[H,W,2]` tile = **3.87 GB** (> DDR → must stream); a ~1000-patch region ≈ 524 MB.
 - **Streaming axis = azimuth.** Range bins (14 686 cols) arrive ~together per radar pulse (fast-time);
   azimuth lines (32 901 rows) accumulate as the platform flies (slow-time). → natural streaming unit
   = **row-block** = 256 azimuth lines × full range = **one patch-row (57 patches)**; **128 row-blocks**
@@ -85,35 +93,44 @@ Sources: [UG1182 ZCU102 Eval Board UG](https://docs.amd.com/v/u/en-US/ug1182-zcu
 
 ---
 
-## 4. Pipeline (who does what)
+## 4. Pipeline & optimizations
 
 | Step | Unit | Notes |
 | --- | --- | --- |
 | 1 read tile | SD → DDR | whole (region) or **row-block stream** (full scene) |
-| ~~1.5 symmetrize~~ | — | **dropped** (See E1 §5: ≤0.54 dB cost); optional one-time whole-image pre-pass if ever wanted |
+| ~~1.5 symmetrize~~ | — | **dropped** (see §5/E1: ≤0.54 dB cost); optional one-time whole-image pre-pass if ever wanted |
 | 2 patchify | CPU | strided per-row `memcpy` of `[256,256,2]` out of the DDR row-block |
-| 3 normalize | CPU | log + min/max (~9 ms/patch; `--neon` = 2.42× faster, byte-identic) |
+| 3 normalize | CPU | log + min/max (~9 ms/patch; `--neon` = 2.42× faster, byte-identical) |
 | 4 g_a×2 | DPU | already S1-parallel (1.95×) |
 | 5 h_a/EB/h_s | DPU+CPU | SHyp only (FP skips) |
 | 6 entropy | CPU | rANS → bits |
-| 7 write bits | DDR → SD | generate `.ddc` product per-tile, §6 |
+| 7 write bits | DDR → SD | generate `.ddc` product per tile (§6) |
 
-**Concepts.** *Queue* = bounded producer→consumer FIFO between threaded stages (depth = max buffered
-patches; overlap = stage B on patch N while A makes N+1). One slot is the minimum for overlap; a small
-depth (a few) absorbs per-patch DPU/rANS jitter so the bottleneck never stalls.
 
-**Schedules (named presets, not free-form knobs):**
 
-*(Implemented as composable flags on `stream_pipeline`, not fixed presets — every one is byte-identical
-to `stream_seq`, enforced by the correctness gate §7.)*
+**Optimizations.** Everything below layers on the sequential `seq` baseline (the step table above) and
+is **gated byte-identical to it** (correctness gate §7): any schedule that changes a single output byte
+fails loudly, and the decoded recon is bit-identical to `inference_hybrid` (MSE=0). So the knobs are
+purely about *speed and energy*, never quality. Measured effects → §8.
 
-- `stream_seq` — 1 thread; correctness + latency baseline (reads tile, writes `.ddc`).
-- `--s1` — `g_a(re) ‖ g_a(im)` across the 2 DPU cores (channel-parallel; 1.6–1.95×).
-- `--p0 --threads K` — worker pool: each worker runs normalize → DPU (serialized by a mutex) →
-  entropy → write, records placed by index. `K` is the "fine-grained" knob (subsumes the once-planned
-  `stream_fine` per-stage-workers idea; ResSHyp plateaus at ~3 workers, FP keeps scaling to 4).
-- `--prefetch` — producer thread double-buffers row-block N+1 while workers compress block N.
-- `--neon` — NEON-vectorized normalize/denorm.
+- `seq` — single thread; correctness + latency baseline (reads the tile, writes the `.ddc`).
+- **`--s1` — DPU channel-parallel.** Runs `g_a(re)` and `g_a(im)` on the two DPU cores at once. The
+  main lever for the DPU-bound ResSHyp; ~free for FP.
+- **`--p0 --threads K` — worker pool.** K workers each run normalize → DPU (serialized by a mutex) →
+  entropy → write, with records placed by patch index (deterministic output). The main lever for the
+  CPU-bound FP (scales to 4 workers); ResSHyp plateaus at ~3 (DPU-serialized).
+- **`--prefetch` — double-buffer I/O.** A producer thread reads row-block N+1 while the workers
+  compress block N (bounded `RowBlockQueue`, depth 2). Byte-transparent; hides the SD read behind
+  compute — fully for ResSHyp, partially for FP (toward its read ceiling).
+- **`--neon` — vectorized normalize/denorm.** NEON log/exp (Cephes/Pommier, `neon_mathfun.h`) behind a
+  runtime flag, scalar path kept for A/B. Kernel error vs libm = 7e-8 → **byte-transparent encode** (≪
+  the INT8 `g_a` step, so no quantisation flips). 2.42× faster normalize in isolation.
+- **`--power` — energy instrumentation.** `PowerSampler` (INA226 sysfs + PMBus) wraps the compress
+  phase → MPSoC (PS+PL) avg-W, total J, and **J/patch**.
+- **cold/warm harness** (`stream_benchmark.py`, host-side over SSH). Drops the page cache before each
+  run (`sync && echo 3 > /proc/sys/vm/drop_caches`) so **cold** is the honest SD-read number;
+  `--keep-cache` runs **warm** (tile served from RAM) = the compute ceiling if storage were fast. The
+  measurement methodology behind every number in §8.
 
 ---
 
@@ -153,6 +170,8 @@ per-patch/per-block pipeline.
   | FP λ20        | 28.87 | 28.64 | 28.65 | 28.66 | 0.22    |
   | FP λ2         | 24.70 | 24.67 | 24.67 | 24.67 | 0.03    |
 
+  *Δ(skip) = whole − none, from unrounded values (may differ ±0.01 from the rounded columns).*
+
 - SSIM:
 
   | model         | whole  | none   | patch  | block  | Δ(skip) |
@@ -164,10 +183,10 @@ per-patch/per-block pipeline.
   | FP λ20        | 0.9348 | 0.9323 | 0.9327 | 0.9327 | 0.0025  |
   | FP λ2         | 0.8464 | 0.8456 | 0.8454 | 0.8457 | 0.0008  |
 
-  **Conclusion → skip symmetrization**. Granularity is irrelevant everywhere (none ≈ patch ≈ block within ≤0.05 dB). Dropping whole-image symmetrization
-  costs **at most 0.54 dB** (ResSHyp λ1000) and shrinks with compression — only ~0.03 dB at λ2.
-  **The pipeline drops the symmetrization stage**; an optional one-time whole-image pre-pass reclaims the ≤0.54 dB if ever
-  wanted.
+  **Conclusion → skip symmetrization**. Granularity is irrelevant everywhere (none ≈ patch ≈ block
+  within ≤0.06 dB). Dropping whole-image symmetrization costs **at most 0.54 dB** (ResSHyp λ1000) and
+  shrinks with compression — only ~0.03 dB at λ2. **The pipeline drops the symmetrization stage**; an
+  optional one-time whole-image pre-pass reclaims the ≤0.54 dB if ever wanted.
   Runs: `results/symmetrization_study/*_full.json`.
 
 ---
@@ -191,67 +210,38 @@ header only *references* them.
   partial + prioritised downlink.
 
 **Locked decisions:** latent shapes are *derived* from patch+arch (a dummy forward), not stored;
-`params_sha` is a decodability *guard* (params shipped out-of-band, ground has the decoder+CDF);
-little-endian; scene bound by `tile_id`. **Verified** (self-test, ResSHyp + FP): header/body/trailer
-round-trip byte-exact, random access matches, decode(file) ≈ decode(direct) within float32 ε. bpp
-sanity 1.95 (ResSHyp λ1000) / 0.26 (FP λ20); container overhead ≈ header + 8·n bytes (negligible).
-The C++ `stream_seq` writer (step 3) must emit these exact bytes; the Python codec is the oracle.
-
-> **Reviewed + hardened (2026-07-31).** Independent review confirmed the happy-path round-trip (host
-> `test_ddc_io` + `ddc_cross_check.py` pass). **`params_sha` algorithm now pinned:** canonical =
-> `ddc_format.py::params_guard` = **standard FNV-1a-64** over the sorted `entropy_params/*.npy` bytes
-> (little-endian). Two latent bugs closed — the self-test hashed with SHA-256[:8] (never matched the
-> board), and the C++ `fnv1a_params` offset basis was a typo (the canonical basis with its last digit
-> dropped → non-standard). C++ constant corrected (written in hex) and cross-checked byte-for-byte
-> against `params_guard` on real `entropy_params`. Malformed-`.ddc` reads (C++ + Python) now
-> hard-error via bounds/length guards instead of over-reading or silently truncating.
+`params_sha` is a decodability *guard* — **FNV-1a-64 over the sorted `entropy_params/*.npy` bytes
+(little-endian)**, canonical impl `ddc_format.py::params_guard` (params shipped out-of-band; the ground
+station has the decoder + CDFs); little-endian throughout; scene bound by `tile_id`. Malformed `.ddc`
+reads **hard-error** (bounds/length guards, C++ + Python) rather than over-reading or silently
+truncating. **Verified** (self-test, ResSHyp + FP): header/body/trailer round-trip byte-exact, random
+access matches, decode(file) ≈ decode(direct) within float32 ε. bpp sanity 1.95 (ResSHyp λ1000) / 0.26
+(FP λ20); container overhead ≈ header + 8·n bytes (negligible). The C++ streaming writer (step 7) must
+emit these exact bytes; the Python codec is the oracle.
 
 ---
 
 ## 7. Staying sane (anti-chaos safeguards for U3)
 
-- **Named presets** (S0/S1-style), not arbitrary knob combos; knobs (`--queue-depth`,
-  `--entropy-threads`) validated at startup, **hard-error on nonsensical combos** (errors-over-fallbacks).
-- **Correctness gate:** every schedule must emit **byte-identical** bitstreams to `stream_seq` (same
-  gate that verified S0=S1), plus the one-time `.ddc` round-trip PSNR check. This is the anti-"BS
-  results" safeguard — wrong schedules fail loudly.
-- Streaming executor in its own module (`inference_cpp/src/benchmark/stream_pipeline.{cpp,hpp}`)
-  reusing leaf stages; if the CLI ever tangles, splitting to a separate binary is cheap (shared functions).
+- **One base preset + composable flags, not arbitrary knob combos.** The harness picks a base executor
+  with `--schedule {seq,p0}` and layers composable modifiers on top (`--s1`, `--prefetch`, `--neon`,
+  `--threads K` → C++ `stream_pipeline` flags); combos are validated at startup and **hard-error on
+  nonsensical inputs** (errors-over-fallbacks).
+- **Correctness gate:** every schedule must emit **byte-identical** bitstreams to `seq` (the same gate
+  that verified S0=S1), plus the one-time `.ddc` round-trip PSNR check. Because the modifiers are
+  composable flags, this gate — not the preset count — is what keeps results honest: wrong schedules
+  fail loudly.
+- Streaming executor in its own module (`inference_cpp/src/stream/` — `main_stream.cpp` CLI +
+  `stream_pipeline.{cpp,hpp}`, binary `stream_pipeline`), reusing leaf stages; if the CLI ever tangles,
+  splitting to a separate binary is cheap (shared functions).
 
 ---
 
-## 8. Further optimizations
-
-Everything here is layered on the sequential `stream_seq` baseline (§4) and **gated byte-identical
-to it** — the anti-"BS results" safeguard (§7): any schedule that changes a single output byte fails
-loudly, and the decoded recon is bit-identical to `inference_hybrid` (MSE=0). So the optimizations
-below are purely about *speed and energy*, never quality. Measured effects → §9.
-
-- **`--s1` — DPU channel-parallel.** Runs `g_a(re)` and `g_a(im)` on the two DPU cores at once. The
-  main lever for the DPU-bound ResSHyp; ~free for FP.
-- **`--p0 --threads K` — worker pool.** K workers each run normalize → DPU (serialized by a mutex) →
-  entropy → write, with records placed by patch index (deterministic output). The main lever for the
-  CPU-bound FP; ResSHyp plateaus at ~3 workers (DPU-serialized).
-- **`--prefetch` — double-buffer I/O.** A producer thread reads row-block N+1 while the workers
-  compress block N (bounded `RowBlockQueue`, depth 2). Byte-transparent; hides the SD read behind
-  compute — fully for ResSHyp, partially for FP (toward its read ceiling).
-- **`--neon` — vectorized normalize/denorm.** NEON log/exp (Cephes/Pommier, `neon_mathfun.h`) behind
-  a runtime flag, scalar path kept for A/B. Kernel error vs libm = 7e-8 → **byte-transparent encode**
-  (≪ the INT8 `g_a` step, so no quantisation flips). 2.42× faster normalize in isolation.
-- **`--power` — energy instrumentation.** `PowerSampler` (INA226 sysfs + PMBus) wraps the compress
-  phase → MPSoC (PS+PL) avg-W, total J, and **J/patch**.
-- **cold/warm harness** (`stream_benchmark.py`, host-side over SSH). Drops the page cache before each
-  run (`sync; echo 3 > drop_caches`) so **cold** is the honest SD-read number; `--keep-cache` runs
-  **warm** (tile served from RAM) = the compute ceiling if storage were fast. This is the measurement
-  methodology behind every number in §9.
-
----
-
-## 9. Results
+## 8. Results
 
 **The sweep.** `stream_sweep.py` deploys each model and runs the cumulative optimization ladder on the
 full **7,296-patch** Hamburg scene, **cold**, plus one **warm** run of the best config, through the
-harness (§8); `stream_table.py` builds the table. Ran FP + ResSHyp × λ{1000, 20} and found it
+harness (§4); `stream_table.py` builds the table. Ran FP + ResSHyp × λ{1000, 20} and found it
 **λ-independent** (L20 = L1000 within ~1% — rANS time scales with the *number of latents*, not bpp),
 so one λ characterizes throughput. Numbers below are λ=1000; results in
 `results/benchmark_stream/<model>/*.json` + `ablation_table.md`.
@@ -283,7 +273,7 @@ so one λ characterizes throughput. Numbers below are λ=1000; results in
 - **Parallelism is arch-dependent.** ResSHyp (DPU-bound) is unlocked by `--s1` (halves `g_a`); FP
   (CPU-bound) by `--p0` threads, then `--prefetch`. Cumulative cold: FP **26→86 patch/s (3.3×)**,
   ResSHyp **9.2→23 (2.5×)**. `--neon` is ~flat end-to-end (normalize already overlapped/hidden) — its
-  win is the standalone 2.42× (§8), not throughput here.
+  win is the standalone 2.42× (§4), not throughput here.
 - **Parallelism costs power but saves energy** — the speedup outpaces the extra draw. FP seq→neon
   **0.364→0.139 J/patch (2.6× better)** at +27% W; ResSHyp **1.266→0.724 (1.75×)** at +42% W.
   Cross-arch, ResSHyp costs **5.2× the energy/patch** of FP (≈ its ~9× OPs).
@@ -296,14 +286,14 @@ so one λ characterizes throughput. Numbers below are λ=1000; results in
   and the Vitis-AI image would need its matching BSP) — so we keep the estimate; the ~20× margin holds
   either way.
 - **vs the mission objective** (full derivation → `docs/TerraSAR-X_objective.md`): TSX StripMap produces
-  SLC at **211 MB/s** (working point) / 358 MB/s (worst case). One ZCU102 at best `p0` (FP 34 MB/s warm
-  / ResSHyp 6 MB/s) is **~10× short of full-duty real-time**, but **meets the process-before-next-contact
-  deadline** (FP, ~3× headroom) and the ~24× compressed product sits well inside the 270 Mb/s-net
-  downlink.
+  SLC at **211 MB/s** (working point) / 358 MB/s (worst case). One ZCU102 at its best config (warm+neon:
+  FP 34 MB/s / ResSHyp 6 MB/s) is **~10× short of full-duty real-time**, but **meets the
+  process-before-next-contact deadline** (FP, ~3× headroom) and the ~24× compressed product sits well
+  inside the 270 Mb/s-net downlink.
 
 ---
 
-## 10. Figures
+## 9. Figures
 
 Three exploratory scripts under `scripts/fpga/benchmark/` (output → `results/benchmark_stream/`):
 
@@ -319,16 +309,16 @@ Three exploratory scripts under `scripts/fpga/benchmark/` (output → `results/b
 
 > ⚠️ **First-pass sketches — feel, not final.** They build intuition but likely oversimplify; the Gantt
 > and roofline both need a rigor + polish pass before the manuscript (audit the axes, the roofs, and what
-> each point actually represents). → §11.
+> each point actually represents). → §10.
 >
 > ⚠️ **All three are DPU + SD-read only** — none decomposes the CPU (entropy + normalize) load: the
 > roofline is DPU by construction, the system roofline's only compute roof is the DPU, and the throughput
 > plot bakes the CPU into the numbers without drawing it (for FP, the warm ceiling *is* the CPU entropy
-> limit). The dedicated CPU view is the stacked-time figure → §11.
+> limit). The dedicated CPU view is the stacked-time figure → §10.
 
 ---
 
-## 11. TODO
+## 10. TODO
 
 > **Overlap + reconstructed-tile quality.**
 > *Idea:* patches are compressed non-overlapping → seam/edge artifacts when the despeckled tile is
@@ -336,10 +326,11 @@ Three exploratory scripts under `scripts/fpga/benchmark/` (output → `results/b
 > bitrate it costs.
 > *Builds on:* §1 (overlap deferred), §6 (`.ddc` — likely needs a field for the overlap-px count).
 > *Plan (overlap sweep):* sweep overlap for both archs, store every `.ddc` on-board, move them to host,
-> decode all (needs on-ground SHyp decode below, atm it might be we can't generate the exact same scales on HOst because h_s on Target is quantized to int8. Need to check if it's a problem), and score against the MERLIN
-> U-net GT → a line plot of overlap (x) vs a quality metric (y), full-tile latency labelled per point.
-> Plus a small viz: a 50×50 crop at a patch corner, original + 2–3 overlap reconstructions, thin red
-> lines marking how far the overlap reaches.
+> decode all, and score against the MERLIN U-net GT → a line plot of overlap (x) vs a quality metric (y),
+> full-tile latency labelled per point. Plus a small viz: a 50×50 crop at a patch corner, original + 2–3
+> overlap reconstructions, thin red lines marking how far the overlap reaches.
+> *Blocker:* decoding on host needs the on-ground SHyp decode below — the board's `h_s` is INT8-quantized,
+> so host-side decode may not reproduce identical scales (to be checked).
 
 > **On-ground SHyp decode** (nice-to-have).
 > *Idea:* reproduce the on-board INT8 `h_s` on host so SHyp/ResSHyp `.ddc` decode in pure Python (FP
@@ -347,15 +338,15 @@ Three exploratory scripts under `scripts/fpga/benchmark/` (output → `results/b
 
 > **Stacked time-per-patch figure.**
 > *Idea:* a stacked bar (read / DPU / normalize / entropy) per arch × schedule — the figure that shows
-> **CPU load explicitly**, which the roofline/system plots miss (§10). ResSHyp's bar is DPU-dominated,
+> **CPU load explicitly**, which the roofline/system plots miss (§9). ResSHyp's bar is DPU-dominated,
 > FP's is entropy-dominated; NEON visibly shrinks the normalize slice.
-> *Builds on:* §10. Data already exist (`benchmark_hardware` stage means + `benchmark_stream` read
+> *Builds on:* §9. Data already exist (`benchmark_hardware` stage means + `benchmark_stream` read
 > times) — no new board runs.
 
 > **Figure rigor + polish pass.**
 > *Idea:* the Gantt + roofline + system plots are feel-only sketches; before the manuscript, audit what
 > each axis/roof/point means, then polish for legibility. Consider a dedicated read-ceiling figure.
-> *Builds on:* §10.
+> *Builds on:* §9.
 
 > **Naming: `stream_pipeline`?**
 > *Remark:* the binary does a sequential path + a worker-pool (`--p0`), not a classic per-stage pipeline

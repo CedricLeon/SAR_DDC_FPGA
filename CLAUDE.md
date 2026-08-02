@@ -168,6 +168,7 @@ on-board yet.
 
 - **Minimal changes**: do not reformat unrelated files; `ruff` handles formatting automatically.
 - **Doc consistency**: after code changes, update the relevant doc file if the change affects overall understanding.
+- **Living design docs**: each initiative has one **main doc** — its design + reference (e.g. `docs/onboard_pipeline.md`), sometimes with smaller docs orbiting it — kept clean enough to hand to a stranger. *Resolve, don't accumulate*: when a question/TODO is answered, fold the insight into the section it belongs in and delete the TODO — no "done" markers, changelog blockquotes, or bug-archaeology (that goes to a journal). *One home per fact*: describe each thing once, cross-reference instead of re-describing. *Self-contained prose*: every paragraph readable standalone, no half-formed inline asides.
 - **Markdown tables**: always `| --- | --- |` with spaces (markdownlint MD055/MD056).
 - **C++ decisions**: provide clear explanations and context in chat.
 - **Destructive actions**: always ask before deleting files, force-pushing, or anything irreversible.
