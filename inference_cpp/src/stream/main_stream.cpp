@@ -15,7 +15,7 @@ static const char* USAGE =
     "usage: stream_pipeline --xmodel <m.xmodel> --params <entropy_params> --tile <tile.npy> "
     "--out <out.ddc>\n"
     "                       [--manifest <manifest.json>] [--tile-id <name>] [--max-rows N]\n"
-    "                       [--windowed] [--s1] [--p0] [--threads N] [--prefetch] [--neon]\n"
+    "                       [--overlap N] [--windowed] [--s1] [--p0] [--threads N] [--prefetch] [--neon]\n"
     "                       [--power] [--verbose]   |   --neon-check  (print NEON log/exp error)";
 
 int main(int argc, char** argv) {
@@ -35,6 +35,7 @@ int main(int argc, char** argv) {
             else if (a == "--decode") o.decode_ddc = next();
             else if (a == "--tile-id") o.tile_id = next();
             else if (a == "--max-rows") o.max_rows = std::stoi(next());
+            else if (a == "--overlap") o.overlap = std::stoi(next());
             else if (a == "--windowed") o.windowed = true;
             else if (a == "--s1") o.s1 = true;
             else if (a == "--p0") o.p0 = true;

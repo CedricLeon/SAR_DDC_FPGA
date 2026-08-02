@@ -12,8 +12,10 @@
 
 Status: **implemented + measured.** The on-board streaming compressor, the parallel/I/O optimizations
 (§4), and the full-scene throughput/latency/energy sweep + memory/roofline analysis (§8) are done and
-board-verified. Remaining (§10): overlap + reconstructed-tile quality, on-ground SHyp decode
-(nice-to-have), a stacked time-per-patch figure, and figure rigor/polish. Last updated 2026-08-02.
+board-verified. Remaining (§10): **baseline grid snap-fix + §8 re-run** (the old grid dropped the far
+edge sliver), the **overlap study** (in implementation — measured cost + board-decode/host-stitch
+quality), a stacked time-per-patch figure, and figure rigor/polish. The on-ground `.ddc` decoder is
+optional/decoupled. Last updated 2026-08-02.
 
 **Questions opened/answered**:
 
@@ -27,8 +29,9 @@ board-verified. Remaining (§10): overlap + reconstructed-tile quality, on-groun
   + composable flags, all held to a byte-identical gate.*
 - [x] **U4**: How do we store the compressed patches + tile? *A `.ddc` container format — see §6.*
 - [ ] **U5**: Non-overlapping patch compression leaves seam/edge artifacts when the tile is recombined.
-  How do we prevent that? *Add a `--stream-overlap {0,4,8,16}` px knob and sweep overlap →
-  reconstructed-image quality — see §10.*
+  How do we prevent that? *Being answered — the overlap study (§10, in implementation) sweeps a
+  `--overlap {0,4,8,16}` px knob and measures reconstructed-image quality vs the latency/bitrate it
+  costs, on the same streaming pipeline as §8; reconstruction via board INT8 decode + host stitch.*
 
 ---
 
@@ -240,7 +243,8 @@ emit these exact bytes; the Python codec is the oracle.
 ## 8. Results
 
 **The sweep.** `stream_sweep.py` deploys each model and runs the cumulative optimization ladder on the
-full **7,296-patch** Hamburg scene, **cold**, plus one **warm** run of the best config, through the
+full **7,296-patch** Hamburg scene (⚠ old floor grid that dropped the edge sliver — the snap-fix makes it
+7,482; these numbers need a re-run, see §10), **cold**, plus one **warm** run of the best config, through the
 harness (§4); `stream_table.py` builds the table. Ran FP + ResSHyp × λ{1000, 20} and found it
 **λ-independent** (L20 = L1000 within ~1% — rANS time scales with the *number of latents*, not bpp),
 so one λ characterizes throughput. Numbers below are λ=1000; results in
@@ -320,21 +324,48 @@ Three exploratory scripts under `scripts/fpga/benchmark/` (output → `results/b
 
 ## 10. TODO
 
-> **Overlap + reconstructed-tile quality.**
-> *Idea:* patches are compressed non-overlapping → seam/edge artifacts when the despeckled tile is
-> recombined. Add `--stream-overlap {0,4,8,16}` px (U5) and measure reconstructed-image quality vs the
-> bitrate it costs.
-> *Builds on:* §1 (overlap deferred), §6 (`.ddc` — likely needs a field for the overlap-px count).
-> *Plan (overlap sweep):* sweep overlap for both archs, store every `.ddc` on-board, move them to host,
-> decode all, and score against the MERLIN U-net GT → a line plot of overlap (x) vs a quality metric (y),
-> full-tile latency labelled per point. Plus a small viz: a 50×50 crop at a patch corner, original + 2–3
-> overlap reconstructions, thin red lines marking how far the overlap reaches.
-> *Blocker:* decoding on host needs the on-ground SHyp decode below — the board's `h_s` is INT8-quantized,
-> so host-side decode may not reproduce identical scales (to be checked).
+> **⚠ Baseline grid must snap-cover the full tile (correctness — affects every §8 number).**
+> The pre-overlap `compute_grid` floored (`H/P`, `W/P`) and **dropped the far azimuth/range edge sliver**,
+> so the "7,296-patch full scene" never covered the whole tile. Fixed in `stream_pipeline.cpp`
+> (`make_offsets` snaps the last patch flush to the edge; **overlap=0 now = 7,482 patches, +2.55 %**).
+> *Consequence:* every §8 number (throughput / latency / energy / bitrate) was measured on the old 7,296
+> grid and must be **re-run** on the snap-covered grid. **Not yet re-run** — the §8 table still shows the
+> old counts. Re-run `stream_sweep.py` and refresh §8 + the §3 patch-count.
 
-> **On-ground SHyp decode** (nice-to-have).
-> *Idea:* reproduce the on-board INT8 `h_s` on host so SHyp/ResSHyp `.ddc` decode in pure Python (FP
-> already does). Enables off-board verification, a ground-station decoder, and the overlap-sweep metrics above.
+**Overlap study — reconstructed-tile quality vs cost (U5).** *Status: in implementation.* Non-overlapping
+patches leave seam artifacts when the despeckled tile is recombined; overlap + ramp-blend removes them at
+a latency/bitrate cost. Measured on the **same streaming pipeline as §8** (cost is measured, not
+estimated) and **decoupled from the host decoder below** — reconstruction uses the board's real INT8
+decode.
+
+- **Grid rule (single source of truth).** Offsets = `make_offsets(dim, 256, stride)`, `stride = 256 −
+  overlap`, last patch snapped to `dim − 256`. `stream_pipeline.cpp` (board) and the host stitcher **must**
+  use this identical rule. The `.ddc` header already carries `stride`, so `overlap = patch − stride` is
+  recoverable — **no new `.ddc` field needed** (resolves the earlier U4 worry).
+- **Pass 1 — cost (board, timed).** `stream_pipeline --overlap {0,4,8,16}` at the deployment config →
+  measured full-tile latency + energy + bitrate; overlap=0 is the snap-covered baseline. Expected patch
+  inflation (to be measured): **+3.3 % / +6.7 % / +14.4 %** at 4 / 8 / 16 px.
+- **Pass 2 — reconstruction (board).** `stream_pipeline --decode` decodes each patch with the real INT8
+  `h_s`+`g_s`+rANS → per-patch linA (record order). *TODO:* make it stream-write per patch to avoid the
+  ~2.2 GB in-RAM spike at full-scene+overlap.
+- **Pass 3 — stitch + score (host).** Read the `.ddc` header + per-patch linA, reproduce offsets (grid
+  rule), ramp-blend (sigmoid, ported from `tile_infer`) into the full `[H,W]` linA tile (1.93 GB in host
+  RAM → no board OOM), score vs the project MERLIN full-tile GT (PSNR / SSIM / EPD), + a 50×50
+  patch-corner seam crop (original + overlaps, red lines marking overlap reach). Output: overlap→quality
+  line plot with measured latency labelled per point.
+- **MERLIN GT.** Generate the project's own full-tile despeckle (`data/method_ground_truths/MERLIN`,
+  reuse `predict_linA`) with a seam-free heavy-overlap blend — consistent with §5 and every other project
+  number. (`data/visualization/MERLIN_DDS/linA_MERLIN_DDS_full_Hamburg.npy` exists but is the
+  original-study checkpoint → different absolute metrics; a cross-check only.)
+
+> **On-ground SHyp `.ddc` decoder** (optional, decoupled — *not* a blocker for the overlap study).
+> *Idea:* reproduce the board's INT8 `h_s` on host so SHyp/ResSHyp `.ddc` decode in pure Python (FP
+> already does). *Why it's hard:* the Gaussian decode needs the board's scales to land in the same
+> `gc_scale_table` bucket (64 log-spaced, ~13 % wide) for **every** element — an FP32-checkpoint `h_s`
+> crosses buckets and desyncs rANS. A faithful decoder needs the INT8 `h_s`: the quant artifacts aren't
+> on disk (would re-quantize in Docker from `original_run_dir`) and bit-exactness vs the board is unproven
+> (`export_xmodel(deploy_check=False)`). *Value if built:* off-board verification + a real ground-station
+> decoder. The overlap study sidesteps it entirely via board decode (pass 2).
 
 > **Stacked time-per-patch figure.**
 > *Idea:* a stacked bar (read / DPU / normalize / entropy) per arch × schedule — the figure that shows

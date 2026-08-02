@@ -146,12 +146,33 @@ double open_tile(const StreamOptions& opt, bool windowed, Tile& tile,
     return ms(tread, clk::now());
 }
 
-// Patch grid from tile dims; clamp azimuth rows to max_rows when set (>=0). Throws if < one patch.
-void compute_grid(size_t H, size_t W, int P, int max_rows, int& grid_a, int& grid_r) {
-    grid_a = static_cast<int>(H / P);        // azimuth patch-rows
-    grid_r = static_cast<int>(W / P);        // range patch-cols
-    if (grid_a == 0 || grid_r == 0) throw std::runtime_error("stream: tile smaller than a patch");
-    if (max_rows >= 0 && max_rows < grid_a) grid_a = max_rows;
+// Patch top-left offsets along one axis: stride-spaced from 0, with the LAST patch snapped to
+// (dim - P) so the FULL extent is covered — no dropped edge sliver. Returns {} if dim < P (caller
+// throws). This snap rule is the single source of truth; the host stitcher mirrors it exactly
+// (docs/onboard_pipeline.md §10 "grid rule").
+std::vector<int> make_offsets(size_t dim, int P, int stride) {
+    const int d = static_cast<int>(dim);
+    if (d < P) return {};
+    std::vector<int> offs;
+    for (int o = 0; o + P <= d; o += stride) offs.push_back(o);
+    if (offs.back() != d - P) offs.push_back(d - P);  // snap last patch flush to the edge
+    return offs;
+}
+
+// Azimuth (row) + range (col) patch-offset grid for patch size P and overlap px (stride = P -
+// overlap). max_rows (>=0) caps azimuth patch-rows for quick tests. Throws on a bad overlap or a
+// sub-patch tile (errors over silent fallbacks).
+void make_grid(size_t H, size_t W, int P, int overlap, int max_rows,
+               std::vector<int>& row_offs, std::vector<int>& col_offs) {
+    if (overlap < 0 || overlap >= P)
+        throw std::runtime_error("stream: --overlap must be in [0, " + std::to_string(P) + ")");
+    const int stride = P - overlap;
+    row_offs = make_offsets(H, P, stride);
+    col_offs = make_offsets(W, P, stride);
+    if (row_offs.empty() || col_offs.empty())
+        throw std::runtime_error("stream: tile smaller than a patch");
+    if (max_rows >= 0 && max_rows < static_cast<int>(row_offs.size()))
+        row_offs.resize(static_cast<size_t>(max_rows));
 }
 
 // Copy the [P,P,2] window at (base_row, c0) out of a [.,W,2] source into s.noisy_hwc.
@@ -172,7 +193,7 @@ DdcHeader build_ddc_header(const StreamOptions& opt, const std::string& model_na
     h.N = static_cast<uint16_t>(C_MAIN);
     h.M = static_cast<uint16_t>(C_HYPER);
     h.patch = static_cast<uint16_t>(P);
-    h.stride = static_cast<uint16_t>(P);
+    h.stride = static_cast<uint16_t>(P - opt.overlap);
     h.scene_H = static_cast<uint32_t>(H);
     h.scene_W = static_cast<uint32_t>(W);
     h.grid_r = static_cast<uint16_t>(grid_r);
@@ -232,8 +253,10 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
     size_t H = 0, W = 0;
     res.t_read_ms += open_tile(opt, windowed, tile, reader, H, W);
 
-    int grid_a = 0, grid_r = 0;
-    compute_grid(H, W, P, opt.max_rows, grid_a, grid_r);
+    std::vector<int> row_offs, col_offs;
+    make_grid(H, W, P, opt.overlap, opt.max_rows, row_offs, col_offs);
+    const int grid_a = static_cast<int>(row_offs.size());  // azimuth patch-rows
+    const int grid_r = static_cast<int>(col_offs.size());  // range patch-cols
 
     PatchState s = pipe.make_patch_state(P, P);
     std::vector<DdcRecord> records;
@@ -245,7 +268,7 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
     auto process_block = [&](int pa, const float* src, size_t base_row) {
         (void)pa;
         for (int pr = 0; pr < grid_r; ++pr) {
-            const size_t c0 = static_cast<size_t>(pr) * P;
+            const size_t c0 = static_cast<size_t>(col_offs[pr]);
             const auto tp = clk::now();
             fill_patch(s, src, base_row, c0, P, W);
             res.t_patchify_ms += ms(tp, clk::now());
@@ -277,7 +300,7 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
         std::thread producer([&] {
             for (int pa = 0; pa < grid_a; ++pa) {
                 const auto tr = clk::now();
-                auto blk = reader->read_row_block(static_cast<size_t>(pa) * P, P);
+                auto blk = reader->read_row_block(static_cast<size_t>(row_offs[pa]), P);
                 read_ms += ms(tr, clk::now());  // only the producer touches read_ms
                 q.push(pa, std::move(blk));
             }
@@ -293,11 +316,11 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
         for (int pa = 0; pa < grid_a; ++pa) {
             if (windowed) {
                 const auto tread = clk::now();
-                rowblock = reader->read_row_block(static_cast<size_t>(pa) * P, P);
+                rowblock = reader->read_row_block(static_cast<size_t>(row_offs[pa]), P);
                 res.t_read_ms += ms(tread, clk::now());
                 process_block(pa, rowblock.data(), 0);  // block is [P, W, 2]; patch rows are 0..P-1
             } else {
-                process_block(pa, tile.data.data(), static_cast<size_t>(pa) * P);
+                process_block(pa, tile.data.data(), static_cast<size_t>(row_offs[pa]));
             }
         }
     }
@@ -335,8 +358,10 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
     size_t H = 0, W = 0;
     res.t_read_ms += open_tile(opt, windowed, tile, reader, H, W);
 
-    int grid_a = 0, grid_r = 0;
-    compute_grid(H, W, P, opt.max_rows, grid_a, grid_r);
+    std::vector<int> row_offs, col_offs;
+    make_grid(H, W, P, opt.overlap, opt.max_rows, row_offs, col_offs);
+    const int grid_a = static_cast<int>(row_offs.size());
+    const int grid_r = static_cast<int>(col_offs.size());
     const int n = grid_a * grid_r;
 
     std::vector<DdcRecord> records(static_cast<size_t>(n));
@@ -377,7 +402,7 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
             PatchState& s = states[static_cast<size_t>(wid)];
             int pr;
             while ((pr = pr_next.fetch_add(1)) < grid_r) {
-                fill_patch(s, block, 0, static_cast<size_t>(pr) * P, P, W);
+                fill_patch(s, block, 0, static_cast<size_t>(col_offs[pr]), P, W);
                 process_patch(s, pa * grid_r + pr);
             }
         };
@@ -393,7 +418,7 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
         std::thread producer([&] {
             for (int pa = 0; pa < grid_a; ++pa) {
                 const auto tr = clk::now();
-                auto blk = reader->read_row_block(static_cast<size_t>(pa) * P, P);
+                auto blk = reader->read_row_block(static_cast<size_t>(row_offs[pa]), P);
                 read_ms += ms(tr, clk::now());  // only the producer touches read_ms
                 q.push(pa, std::move(blk));
             }
@@ -409,7 +434,7 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
         std::vector<float> rowblock;
         for (int pa = 0; pa < grid_a; ++pa) {
             const auto tread = clk::now();
-            rowblock = reader->read_row_block(static_cast<size_t>(pa) * P, P);
+            rowblock = reader->read_row_block(static_cast<size_t>(row_offs[pa]), P);
             res.t_read_ms += ms(tread, clk::now());
             process_block(pa, rowblock.data());
         }
@@ -420,8 +445,8 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
             int idx;
             while ((idx = next_idx.fetch_add(1)) < n) {
                 const int pa = idx / grid_r, pr = idx % grid_r;
-                fill_patch(s, tile.data.data(), static_cast<size_t>(pa) * P,
-                           static_cast<size_t>(pr) * P, P, W);
+                fill_patch(s, tile.data.data(), static_cast<size_t>(row_offs[pa]),
+                           static_cast<size_t>(col_offs[pr]), P, W);
                 process_patch(s, idx);
             }
         };

@@ -1,9 +1,10 @@
 #pragma once
 // stream_pipeline.hpp — sequential streaming compressor (stream_seq).
 //
-// Reads a [H,W,2] tile, walks the 256x256 non-overlap patch grid (row-major: azimuth-outer,
-// range-inner), runs the existing BenchPipeline compress stages per patch, and writes a .ddc
-// (ddc_io.hpp). This is the baseline before the P0/P2 pipelined executors. See docs/onboard_pipeline.md.
+// Reads a [H,W,2] tile, walks the 256x256 patch grid (row-major: azimuth-outer, range-inner;
+// stride = 256 - overlap, last patch snapped flush to the edge so the full tile is covered), runs
+// the existing BenchPipeline compress stages per patch, and writes a .ddc (ddc_io.hpp). This is the
+// baseline before the P0/P2 pipelined executors. See docs/onboard_pipeline.md.
 
 #include <cstdint>
 #include <filesystem>
@@ -21,6 +22,7 @@ struct StreamOptions {
     std::filesystem::path decode_ddc;  // if set: decode this .ddc instead of compressing a tile
     std::string tile_id;             // empty -> derived from tile filename stem
     int max_rows = -1;               // -1 = all azimuth patch-rows (else cap, for quick tests)
+    int overlap = 0;                 // patch overlap px; stride = 256 - overlap. 0 = snap-covered non-overlap
     bool windowed = false;           // stream row-blocks (one patch-row in DDR) vs load whole tile
     bool s1 = false;                 // channel-parallel g_a(real)‖g_a(imag) on two DPU cores
     bool p0 = false;                 // pipeline overlap: K workers, DPU serialized, CPU overlapped
