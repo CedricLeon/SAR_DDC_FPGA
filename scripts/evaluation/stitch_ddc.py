@@ -61,12 +61,12 @@ def stitch(ddc_path: str, patches_path: str):
     return recon, h
 
 
-def _ssim_full(x: np.ndarray, y: np.ndarray, data_range: float, sigma: float = 1.5) -> float:
-    """Memory-safe Gaussian-window SSIM (scipy).
+def _ssim_map(x: np.ndarray, y: np.ndarray, data_range: float, sigma: float = 1.5) -> np.ndarray:
+    """Per-pixel Gaussian-window SSIM map (scipy, O(N) memory).
 
     The project's torchmetrics SSIM allocates ~80x the image (154 GB on the full scene, OOM); this
-    is O(N) memory and matches it within ~3e-4 on small inputs. Standard Wang SSIM (k1=0.01,
-    k2=0.03, Gaussian sigma=1.5). See docs/onboard_pipeline.md §10.
+    matches it within ~3e-4 on small inputs. Standard Wang SSIM (k1=0.01, k2=0.03, Gaussian
+    sigma=1.5). Returns the map so callers can average it over sub-regions (seam / interior).
     """
     from scipy.ndimage import gaussian_filter
 
@@ -76,32 +76,64 @@ def _ssim_full(x: np.ndarray, y: np.ndarray, data_range: float, sigma: float = 1
     vx = gaussian_filter(x * x, sigma) - mx2
     vy = gaussian_filter(y * y, sigma) - my2
     vxy = gaussian_filter(x * y, sigma) - mxy
-    ssim_map = ((2 * mxy + c1) * (2 * vxy + c2)) / ((mx2 + my2 + c1) * (vx + vy + c2))
-    return float(ssim_map.mean())
+    return ((2 * mxy + c1) * (2 * vxy + c2)) / ((mx2 + my2 + c1) * (vx + vy + c2))
+
+
+def _seam_mask(shape: tuple, patch: int = 256, band: int = 3) -> np.ndarray:
+    """Boolean mask of pixels within ±band of the non-overlap patch-grid interior boundaries —
+    where independent-patch seams appear (≈4.6% of pixels at 256-grid ±3).
+
+    The fixed reference grid, so all overlaps are scored at the same locations.
+    """
+    hgt, wid = shape
+    m = np.zeros(shape, dtype=bool)
+    for b in make_offsets(hgt, patch, patch)[1:]:
+        m[max(0, b - band) : b + band, :] = True
+    for b in make_offsets(wid, patch, patch)[1:]:
+        m[:, max(0, b - band) : b + band] = True
+    return m
 
 
 def score(recon: np.ndarray, gt_path: str) -> dict:
-    """MSE/PSNR/EPD (project metrics) + memory-safe SSIM of the stitched tile vs a full-tile GT
-    (linear amplitude).
+    """Coherent metrics of the stitched tile vs a full-tile GT — all clipped to ``AMP_LIN_99``
+    (consistent with the project PSNR/MSE, and so the INT8 bright-scatterer cap doesn't dominate).
 
-    MS-SSIM is omitted at full-scene scale (torchmetrics OOMs on 483M px, §10).
+    Reports full-tile MSE/PSNR/SSIM/EPD, plus PSNR/SSIM split into the **seam band** (±3px of the
+    patch grid, where independent-patch seams live) and the **interior**. Overlap fixes seams,
+    whose effect the full-tile mean dilutes ~21x, so the seam split is the sensitive number (§10).
+    MS-SSIM omitted at full-scene scale (torchmetrics OOMs).
     """
+    import math
+
     import torch
 
+    from src.utils.constants import AMP_LIN_99
     from src.utils.metrics import epd, mse, psnr
 
     gt = np.load(gt_path).astype(np.float32)
     if gt.shape != recon.shape:
         raise ValueError(f"GT {gt.shape} != recon {recon.shape}")
-    rt, gtt = torch.from_numpy(recon), torch.from_numpy(gt)
-    mse_v = mse(rt, gtt)
+    lim = float(AMP_LIN_99)
+    rc = np.minimum(recon.astype(np.float32), lim)  # clip both to AMP_LIN_99, like mse()/psnr()
+    gc = np.minimum(gt, lim)
+    seam = _seam_mask(gt.shape)
+    smap = _ssim_map(rc, gc, lim)
+    rt, gtt = torch.from_numpy(rc), torch.from_numpy(gc)
+
+    def _psnr(mask: np.ndarray) -> float:
+        m = float(((rc[mask] - gc[mask]) ** 2).mean())
+        return 20 * math.log10(lim) - 10 * math.log10(m) if m > 0 else float("inf")
+
     return {
-        "mse": float(mse_v),
-        "psnr": float(psnr(rt, gtt, mse_v)),
-        # data_range = max(recon) — matches the test-set convention (sar_ddc_module.py: peak =
-        # max(clean_im)). NOT gt.max() (a bright MERLIN scatterer ~1e5) which saturated SSIM.
-        "ssim": _ssim_full(recon, gt, float(recon.max())),
+        "psnr": float(psnr(rt, gtt)),
+        "ssim": float(smap.mean()),
+        "mse": float(mse(rt, gtt)),
         "epd": float(epd(rt, gtt)),
+        "psnr_seam": _psnr(seam),
+        "ssim_seam": float(smap[seam].mean()),
+        "psnr_interior": _psnr(~seam),
+        "ssim_interior": float(smap[~seam].mean()),
+        "seam_frac": float(seam.mean()),
     }
 
 
