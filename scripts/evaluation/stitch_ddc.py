@@ -61,18 +61,48 @@ def stitch(ddc_path: str, patches_path: str):
     return recon, h
 
 
+def _ssim_full(x: np.ndarray, y: np.ndarray, data_range: float, sigma: float = 1.5) -> float:
+    """Memory-safe Gaussian-window SSIM (scipy).
+
+    The project's torchmetrics SSIM allocates ~80x the image (154 GB on the full scene, OOM); this
+    is O(N) memory and matches it within ~3e-4 on small inputs. Standard Wang SSIM (k1=0.01,
+    k2=0.03, Gaussian sigma=1.5). See docs/onboard_pipeline.md §10.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    c1, c2 = (0.01 * data_range) ** 2, (0.03 * data_range) ** 2
+    mx, my = gaussian_filter(x, sigma), gaussian_filter(y, sigma)
+    mx2, my2, mxy = mx * mx, my * my, mx * my
+    vx = gaussian_filter(x * x, sigma) - mx2
+    vy = gaussian_filter(y * y, sigma) - my2
+    vxy = gaussian_filter(x * y, sigma) - mxy
+    ssim_map = ((2 * mxy + c1) * (2 * vxy + c2)) / ((mx2 + my2 + c1) * (vx + vy + c2))
+    return float(ssim_map.mean())
+
+
 def score(recon: np.ndarray, gt_path: str) -> dict:
-    """PSNR/SSIM/MS-SSIM/EPD of the stitched tile vs a full-tile GT (linear amplitude)."""
+    """MSE/PSNR/EPD (project metrics) + memory-safe SSIM of the stitched tile vs a full-tile GT
+    (linear amplitude).
+
+    MS-SSIM is omitted at full-scene scale (torchmetrics OOMs on 483M px, §10).
+    """
     import torch
 
-    from src.utils.metrics import epd, get_all_distortion_metrics
+    from src.utils.metrics import epd, mse, psnr
 
-    gt = np.load(gt_path)
+    gt = np.load(gt_path).astype(np.float32)
     if gt.shape != recon.shape:
         raise ValueError(f"GT {gt.shape} != recon {recon.shape}")
-    m = {k: float(v) for k, v in get_all_distortion_metrics(recon, gt.astype(np.float32)).items()}
-    m["epd"] = float(epd(torch.from_numpy(recon), torch.from_numpy(gt.astype(np.float32))))
-    return m
+    rt, gtt = torch.from_numpy(recon), torch.from_numpy(gt)
+    mse_v = mse(rt, gtt)
+    return {
+        "mse": float(mse_v),
+        "psnr": float(psnr(rt, gtt, mse_v)),
+        # data_range = max(recon) — matches the test-set convention (sar_ddc_module.py: peak =
+        # max(clean_im)). NOT gt.max() (a bright MERLIN scatterer ~1e5) which saturated SSIM.
+        "ssim": _ssim_full(recon, gt, float(recon.max())),
+        "epd": float(epd(rt, gtt)),
+    }
 
 
 def main() -> None:
