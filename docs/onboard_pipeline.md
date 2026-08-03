@@ -361,6 +361,18 @@ the board's real INT8 decode.
   the 1024² crop vs the project's existing `linA_MERLIN.npy` (PSNR 54.8 dB, corr 0.991). Remaining: run it
   once on the full scene. (`…/MERLIN_DDS/linA_MERLIN_DDS_full_Hamburg.npy` exists but is the original-study
   checkpoint → a cross-check only.)
+- **INT8 recon caps bright scatterers at 2100 — metric-invisible, and it sets the SSIM `data_range`.**
+  *Observed* while scoring: full-scene SSIM sat at a saturated ~0.99 until the `data_range` was corrected.
+  The on-board recon amplitude is hard-capped at **exactly 2100.1** (every tile / overlap / arch) because
+  the DPU `g_s` output tensor is INT8 at **fix-point 8** — its largest code (127) maps to `x_hat =
+  127/256 = 0.496`, which the denorm `exp(x_hat·(AMP_MAX−AMP_MIN)+AMP_MIN)` turns into 2100.1. The float32
+  model has no such cap: on the same scene it reaches **~85 k (FP) / ~68 k (ResSHyp)**, near MERLIN's
+  ~127 k, so the board clips the brightest **~0.7 %** of pixels (point scatterers) down to 2100.
+  *Consequences:* (1) invisible to the reported metrics — PSNR/SSIM/MSE clip to `AMP_LIN_99 = 545` first,
+  far below the cap; (2) SSIM scoring must use `data_range = max(recon) ≈ 2100` (as
+  `sar_ddc_module.py::test_step` does), not `max(GT) ≈ 1e5`, which saturates it; (3) the board genuinely
+  cannot represent bright targets — a fix-point-7 re-quantization would lift the cap to ~44 k at half the
+  precision, if ever needed.
 
 > **On-ground SHyp `.ddc` decoder** (optional, decoupled — *not* a blocker for the overlap study).
 > *Idea:* reproduce the board's INT8 `h_s` on host so SHyp/ResSHyp `.ddc` decode in pure Python (FP
