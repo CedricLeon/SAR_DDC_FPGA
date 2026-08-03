@@ -31,6 +31,9 @@ from pathlib import Path
 import rootutils
 
 REPO_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=False)
+
+from scripts.fpga.benchmark.board_thermal import cooldown, read_thermal  # noqa: E402
+
 BOARD = "ZCU102"
 BOARD_ROOT = "/home/root/SAR_DDC"
 # int16 complex SLC patch: 256x256 px x (I + Q) x 2 B = 256 KiB. The objective doc's ingest unit.
@@ -88,6 +91,8 @@ def schedule_flags(args) -> list:
         flags.append("--neon")
     if args.power:
         flags.append("--power")
+    if args.overlap > 0:
+        flags += ["--overlap", str(args.overlap)]
     if args.max_rows >= 0:
         flags += ["--max-rows", str(args.max_rows)]
     return flags
@@ -100,7 +105,7 @@ def remote_cmd(args, cold: bool) -> str:
     return (
         f"cd {BOARD_ROOT} && {drop}./build_cpp/stream_pipeline "
         f"--xmodel active_model/*.xmodel --params active_model/entropy_params "
-        f"--tile {args.tile} --out /tmp/stream_bench.ddc {flags}"
+        f"--tile {args.tile} --out {args.out_ddc} {flags}"
     )
 
 
@@ -115,6 +120,8 @@ def label(args, cold: bool) -> str:
         parts.append("pf")
     if args.neon:
         parts.append("neon")
+    if args.overlap > 0:
+        parts.append(f"ov{args.overlap}")
     parts.append("cold" if cold else "warm")
     if args.max_rows >= 0:
         parts.append(f"r{args.max_rows}")
@@ -133,6 +140,9 @@ def parse_args():
     p.add_argument("--neon", action="store_true", help="NEON-vectorised normalize/denorm")
     p.add_argument("--power", action="store_true", help="sample board power (INA226/PMBus)")
     p.add_argument(
+        "--overlap", type=int, default=0, help="patch overlap px (stream_pipeline --overlap N)"
+    )
+    p.add_argument(
         "--tile", default="data/stream_tile_1k_i16.npy", help="board-relative tile path"
     )
     p.add_argument(
@@ -140,12 +150,21 @@ def parse_args():
     )
     p.add_argument("--max-rows", type=int, default=-1, help="cap azimuth patch-rows (-1 = full)")
     p.add_argument("--keep-cache", action="store_true", help="WARM: skip the cache drop")
+    p.add_argument(
+        "--cooldown", action="store_true", help="thermal cooldown-gate + telemetry per run"
+    )
+    p.add_argument(
+        "--cooldown-c", type=float, default=58.0, help="cool die to <= this °C before each run"
+    )
     p.add_argument("--iters", type=int, default=3, help="timed iterations (median reported)")
     p.add_argument("--warmup", type=int, default=1, help="discarded warmup iterations")
     p.add_argument(
         "--rebuild-cpp", action="store_true", help="rsync + rebuild stream_pipeline first"
     )
     p.add_argument("--out", default=None, help="result JSON path (default: auto under results/)")
+    p.add_argument(
+        "--out-ddc", default="/tmp/stream_bench.ddc", help="board-side .ddc path (kept for decode)"
+    )
     p.add_argument("--dry-run", action="store_true", help="print the remote command and exit")
     return p.parse_args()
 
@@ -185,15 +204,33 @@ def main():
     print(f" iters/warmup     : {args.iters} / {args.warmup}")
     print("=" * 68)
 
+    baseline = None
+    if args.cooldown:
+        baseline = read_thermal()
+        print(f" thermal baseline : die {baseline['die_c']}°C  A53 {baseline['a53_mhz']} MHz")
+
     for i in range(args.warmup):
         parse_run(ssh_capture(cmd))  # discard (stabilise DPU/thermal; populate cache when warm)
         print(f"  warmup {i + 1}/{args.warmup} done")
 
     runs = []
+    cooldowns = []
+    therms = []
     for i in range(args.iters):
+        if args.cooldown:
+            cd = cooldown(args.cooldown_c)
+            cooldowns.append(cd)
+            print(
+                f"  cooldown {i + 1}: waited {cd['wait_s']:.0f}s  "
+                f"{cd['start_die_c']}->{cd['end_die_c']}°C" + ("  [CAP]" if cd["capped"] else "")
+            )
         r = parse_run(ssh_capture(cmd))
+        post = read_thermal() if args.cooldown else None
+        if post:
+            therms.append(post)
         runs.append(r)
-        print(f"  iter {i + 1}: {r['patch_s']:.2f} patch/s  total={r['total_s']:.2f} s")
+        thr = f"  die {post['die_c']}°C A53 {post['a53_mhz']}MHz" if post else ""
+        print(f"  iter {i + 1}: {r['patch_s']:.2f} patch/s  total={r['total_s']:.2f} s{thr}")
 
     n_patches = runs[0]["n_patches"]
     med_total = statistics.median(r["total_s"] for r in runs)
@@ -225,7 +262,20 @@ def main():
         "avg_power_w": runs[0]["avg_power_w"],
         "energy_j": runs[0]["energy_j"],
         "j_per_patch": runs[0]["j_per_patch"],
+        "overlap": args.overlap,
     }
+    if args.cooldown and therms:
+        throttled = any(t["a53_throttled"] for t in therms)
+        result["thermal"] = {
+            "baseline": baseline,
+            "cooldowns": cooldowns,
+            "post_iter": therms,
+            "max_die_c": max(t["die_c"] for t in therms),
+            "min_a53_mhz": min(t["a53_mhz"] for t in therms),
+            "throttled": throttled,
+        }
+        if throttled:
+            print(" ⚠ THERMAL THROTTLE: A53 below max during a run — throughput/energy suspect")
 
     out = (
         Path(args.out)
@@ -245,7 +295,8 @@ def main():
         f" median: {med_patch_s:.2f} patch/s | {slc_mb_s:.1f} MB/s SLC | "
         f"full-tile {med_total:.2f} s | bpp {runs[0]['bpp']:.4f}{pw}"
     )
-    print(f" -> {out.relative_to(REPO_ROOT)}")
+    rel = out.relative_to(REPO_ROOT) if out.is_relative_to(REPO_ROOT) else out
+    print(f" -> {rel}")
 
 
 if __name__ == "__main__":

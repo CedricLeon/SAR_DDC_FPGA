@@ -53,6 +53,12 @@ def main():
     ap.add_argument(
         "--power", action="store_true", help="sample board power (INA226) on every run"
     )
+    ap.add_argument(
+        "--cooldown", action="store_true", help="thermal cooldown-gate + telemetry per run"
+    )
+    ap.add_argument(
+        "--cooldown-c", type=float, default=58.0, help="cool die to <= this °C before each run"
+    )
     ap.add_argument("--warm-final", action="store_true", default=True)
     ap.add_argument("--no-warm-final", dest="warm_final", action="store_false")
     args = ap.parse_args()
@@ -60,6 +66,7 @@ def main():
     archs = [a.strip() for a in args.archs.split(",") if a.strip()]
     lambdas = [int(x) for x in args.lambdas.split(",")]
     power = ["--power"] if args.power else []
+    cool = ["--cooldown", "--cooldown-c", str(args.cooldown_c)] if args.cooldown else []
     combos = [(a, lam) for a in archs for lam in lambdas]
     print(f"[sweep] {len(combos)} models x {len(CONFIGS)} configs; warm={args.warm_final}")
 
@@ -91,6 +98,7 @@ def main():
                     BENCH,
                     *flags,
                     *power,
+                    *cool,
                     "--tile",
                     args.tile,
                     "--threads",
@@ -112,6 +120,7 @@ def main():
                     BENCH,
                     *CONFIGS[-1][1],
                     *power,
+                    *cool,
                     "--tile",
                     args.tile,
                     "--threads",
