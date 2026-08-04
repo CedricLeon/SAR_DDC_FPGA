@@ -371,6 +371,15 @@ def main() -> None:
             "after a binary fix."
         ),
     )
+    g_infer.add_argument(
+        "--save-recons",
+        action="store_true",
+        help=(
+            "Pass --save-recons to each deploy.py call: store every test-subset "
+            "reconstruction so future metric changes can be re-scored off-board "
+            "(~69 MB compressed per model)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -510,6 +519,8 @@ def main() -> None:
                     cmd.append("--image-graph")
                 if args.skip_test_set:
                     cmd.append("--skip-test-set")
+                if args.save_recons:
+                    cmd.append("--save-recons")
 
                 print(f"[CMD] {' '.join(cmd)}")
 

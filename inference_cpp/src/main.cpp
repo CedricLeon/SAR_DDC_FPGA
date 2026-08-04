@@ -31,6 +31,8 @@ static void usage(const char *prog)
         << "  --subset  <int>    number of test-set patches to evaluate [default: 100]\n"
         << "  --debug-patch <N>  enable verbose stats only for patch index N (0-based)\n"
         << "  --skip-test-set    skip the test-subset phase; run tile eval only\n"
+        << "  --save-recons      dump all test-subset reconstructions (linA float32) for\n"
+        << "                     off-board re-scoring (~131 MB at 500 patches)\n"
         << "  --verbose          enable verbose per-sample logging\n"
         << "  --log     <file>   write log to file in addition to stderr\n";
 }
@@ -71,6 +73,8 @@ int main(int argc, char **argv)
             cfg.verbose = true;
         else if (arg == "--skip-test-set")
             cfg.skip_test_set = true;
+        else if (arg == "--save-recons")
+            cfg.save_recons = true;
         else if (arg == "--help" || arg == "-h")
         {
             usage(argv[0]);

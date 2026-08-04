@@ -57,15 +57,29 @@ def get_all_distortion_metrics(
     }
 
 
+def _clip_to_amp99(*linA: Tensor) -> Tuple[Tensor, ...]:
+    """Clip linear-amplitude tensors to ``AMP_LIN_99`` — the shared basis of every distortion
+    metric.
+
+    Every reference-based distortion metric in this module (MSE, PSNR, SSIM, MS-SSIM, EPD) scores on
+    the 99th-percentile amplitude, so that no metric is driven by the handful of bright scatterers
+    above it. This is "cheating" when comparing against methods that do not clip, but all our
+    experiments use it, so they stay mutually comparable.
+
+    Clipping is what makes a **fixed** ``data_range = AMP_LIN_99`` correct for SSIM/MS-SSIM. A
+    per-image ``data_range`` (e.g. ``max(predicted)``) is not comparable across models: the SSIM
+    stabilisers scale with ``data_range²``, so a recon with a bright pixel is scored on a larger
+    ``C1/C2`` and saturates toward 1. That matters most for float32 vs INT8, where the DPU caps the
+    recon at 2100 while float32 reaches ~1e5 (see docs/ssim_data_range_issue.md). It is also why EPD
+    clips: gradients at bright scatterers otherwise dominate its sums.
+    """
+    return tuple(torch.clamp(t, max=AMP_LIN_99) for t in linA)
+
+
 def mse(predicted_linA: Tensor, target_linA: Tensor) -> float:
     """Compute Mean Squared Error (MSE) loss between predicted and target tensors in linear
     Amplitude scale."""
-    # Clip target and predictions to 99% of distribution to avoid outliers dominating the PSNR computation.
-    # While this is "cheating" if comparing to other methods that do not use this clipping,
-    # these PSNR values are only use across experiments that always use this clipping.
-    predicted_linA = torch.clamp(predicted_linA, max=AMP_LIN_99)
-    target_linA = torch.clamp(target_linA, max=AMP_LIN_99)
-    # Compute MSE and PSNR on 99% of the value
+    predicted_linA, target_linA = _clip_to_amp99(predicted_linA, target_linA)
     return torch.mean((predicted_linA - target_linA) ** 2).item()
 
 
@@ -80,21 +94,23 @@ def psnr(predicted_linA: Tensor, target_linA: Tensor, mse_value: Optional[float]
     return psnr_value
 
 
-def ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = None) -> float:
-    """Compute Structural Similarity Index Measure (SSIM)."""
-    if data_range is None:
-        data_range = float(torch.max(predicted))
+def ssim(predicted: Tensor, target: Tensor) -> float:
+    """Compute Structural Similarity Index Measure (SSIM) on the AMP_LIN_99 basis.
+
+    Both inputs are clipped to ``AMP_LIN_99`` and ``data_range = AMP_LIN_99`` — the same basis as
+    ``mse``/``psnr``, see ``_clip_to_amp99`` for why this is the only comparable choice.
+    """
+    predicted, target = _clip_to_amp99(predicted, target)
     return Tensor(
-        structural_similarity_index_measure(predicted, target, data_range=data_range)
+        structural_similarity_index_measure(predicted, target, data_range=AMP_LIN_99)
     ).item()
 
 
-def ms_ssim(predicted: Tensor, target: Tensor, data_range: Optional[float] = None) -> float:
-    """Compute Multi-Scale Structural Similarity Index Measure (MS-SSIM)."""
-    if data_range is None:
-        data_range = float(torch.max(predicted))
+def ms_ssim(predicted: Tensor, target: Tensor) -> float:
+    """Compute Multi-Scale SSIM on the AMP_LIN_99 basis (see ``ssim``)."""
+    predicted, target = _clip_to_amp99(predicted, target)
     return multiscale_structural_similarity_index_measure(
-        predicted, target, data_range=data_range
+        predicted, target, data_range=AMP_LIN_99
     ).item()
 
 
@@ -177,16 +193,21 @@ def epd(
     EPD = Σ(\|∇recon\| · \|∇ref\|) / Σ(\|∇ref\|²). EPD = 1.0 → perfect edge preservation.  EPD < 1
     → edge attenuation.
 
+    Both inputs are clipped to ``AMP_LIN_99`` (see ``_clip_to_amp99``): unclipped, the sums are
+    dominated by the gradients around bright scatterers, so EPD measures how well a backend
+    represents point targets rather than how well it preserves edges.
+
     Uses a central-difference gradient for NumPy-only / Python-3.8 compatibility (consistent with
     the FPGA-side C++ implementation in ``inference_cpp/``).
     """
 
     def _arr(x: Union[Tensor, np.ndarray]) -> np.ndarray:
-        return (
+        arr = (
             (x.detach().cpu().numpy() if isinstance(x, Tensor) else np.asarray(x))
             .squeeze()
             .astype(np.float32)
         )
+        return np.minimum(arr, np.float32(AMP_LIN_99))
 
     def _grad_mag(img: np.ndarray) -> np.ndarray:
         gx = np.zeros_like(img)
