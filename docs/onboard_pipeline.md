@@ -332,8 +332,10 @@ Three exploratory scripts under `scripts/fpga/benchmark/` (output → `results/b
 > grid and must be **re-run** on the snap-covered grid. **Not yet re-run** — the §8 table still shows the
 > old counts. Re-run `stream_sweep.py` and refresh §8 + the §3 patch-count.
 
-**Overlap study — reconstructed-tile quality vs cost (U5).** *Status: passes 1–3 + GT tooling
-implemented and validated; remaining = the full-scene GT run, then the sweep + plots.* Non-overlapping patches leave seam artifacts when the despeckled tile is recombined; overlap +
+**Overlap study — reconstructed-tile quality vs cost (U5).** *Status: complete — full-scene sweep
+(FP + ResSHyp × λ{20, 1000} × overlap {0, 2, 4, 8, 16}, cold + warm) scored vs the MERLIN full-tile GT
+with coherent seam-band metrics; **Result** below. Remaining = manuscript-figure polish only.*
+Non-overlapping patches leave seam artifacts when the despeckled tile is recombined; overlap +
 ramp-blend removes them at a latency/bitrate cost. Measured on the **same streaming pipeline as §8**
 (cost is measured, not estimated) and **decoupled from the host decoder below** — reconstruction uses
 the board's real INT8 decode.
@@ -369,9 +371,10 @@ the board's real INT8 decode.
     PSNR_seam` is the sensitive number that isolates what overlap actually fixes.
 - **MERLIN GT.** ✅ `scripts/evaluation/merlin_full_gt.py`: the project's own MERLIN despeckle on the
   whole-image-symmetrized scene, seam-free heavy-overlap (64 px) blend — consistent with §5. Validated on
-  the 1024² crop vs the project's existing `linA_MERLIN.npy` (PSNR 54.8 dB, corr 0.991). Remaining: run it
-  once on the full scene. (`…/MERLIN_DDS/linA_MERLIN_DDS_full_Hamburg.npy` exists but is the original-study
-  checkpoint → a cross-check only.)
+  the 1024² crop vs the project's existing `linA_MERLIN.npy` (PSNR 54.8 dB, corr 0.991). The full-scene GT
+  (`data/visualization/MERLIN/linA_MERLIN_full_Hamburg.npy`, `(32901, 14686)`) is generated and is the
+  scoring reference for the sweep. (`…/MERLIN_DDS/linA_MERLIN_DDS_full_Hamburg.npy` exists but is the
+  original-study checkpoint → a cross-check only.)
 - **INT8 recon caps bright scatterers at 2100 — metric-invisible, and it sets the SSIM `data_range`.**
   *Observed* while scoring: full-scene SSIM sat at a saturated ~0.99 until the `data_range` was corrected.
   The on-board recon amplitude is hard-capped at **exactly 2100.1** (every tile / overlap / arch) because
@@ -388,6 +391,36 @@ the board's real INT8 decode.
   `max(clean_im)`) is a separate re-evaluation, briefed in `docs/ssim_data_range_issue.md`; (3) the board
   genuinely cannot represent bright targets — a fix-point-7 re-quantization would lift the cap to ~44 k at
   half the precision, if ever needed.
+
+**Result — overlap 2 removes the seam at ~1 % cost; more buys nothing.** Full table (all archs, λ, cold +
+warm, full/seam/interior PSNR & SSIM) → `results/benchmark_stream_overlap/overlap_table.{md,csv}`. The
+seam is real but local: at **overlap 0** the reconstruction is **1.2–2.8 dB worse in the ±3 px seam band**
+than in the interior, and its SSIM drops ~0.06–0.08 there — while the full-tile mean barely moves (the
+seam is 4.6 % of pixels, so it is diluted ~21×). **Overlap 2 fully closes the seam** (deficit → ~0.02 dB);
+overlaps 4/8/16 add nothing to the seam and only cost more.
+
+| config | seam Δ @ ov0 (dB) | seam Δ @ ov2 | SSIM seam→interior @ ov0 | full-tile PSNR ov0→ov16 |
+| --- | --- | --- | --- | --- |
+| FP λ1000 | 1.16 | 0.01 | 0.786 → 0.853 | 24.99 → 25.04 |
+| FP λ20 | 1.16 | 0.03 | 0.742 → 0.807 | 24.19 → 24.29 |
+| ResSHyp λ1000 | 2.75 | 0.03 | 0.811 → 0.889 | 27.48 → 27.72 |
+| ResSHyp λ20 | 2.06 | 0.01 | 0.737 → 0.810 | 25.37 → 25.53 |
+
+*(seam Δ = PSNR_interior − PSNR_seam; all PSNR clipped to `AMP_LIN_99`.)*
+
+**Cost of overlap 2** (measured on the §8 pipeline, so it is directly comparable):
+
+- **Latency** — **+0.7–1.0 % warm** (compute-bound: FP λ1000 +0.68 %, ResSHyp λ1000 +0.89 %) and
+  **free cold** on FP (read-bound — the extra compute hides behind the SD read; the whole ov sweep stays
+  within ±2 % of ov0, no monotonic trend). By contrast overlap 16 costs **+14 % (ResSHyp / FP λ20 warm)
+  to +19 % (FP λ1000 warm)**.
+- **Downlink** — patch count grows **+0.78 %** at ov2 (7,482 → 7,540), vs +14.35 % at ov16; bpp-per-pixel
+  is flat, so the `.ddc` grows in proportion to the patch count.
+- **Energy** — J/patch flat across overlap (within run-to-run noise, all archs).
+
+So the pipeline should reconstruct at **overlap 2**: it erases a genuine, visible per-patch seam for
+about **1 % latency and 0.8 % downlink**, and anything beyond 2 px pays a growing latency/bitrate cost for
+no further seam gain.
 
 > **On-ground SHyp `.ddc` decoder** (optional, decoupled — *not* a blocker for the overlap study).
 > *Idea:* reproduce the board's INT8 `h_s` on host so SHyp/ResSHyp `.ddc` decode in pure Python (FP
