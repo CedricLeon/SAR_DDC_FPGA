@@ -13,16 +13,38 @@ both depended on the brightest pixel of each reconstruction and were **not compa
 models**. The damage concentrates on the float32-vs-INT8 comparison, because the DPU caps the INT8
 recon at 2100 while float32 reaches ~1e5.
 
-Measured over all 240 matched (arch × λ × seed) Hamburg tiles, the reported float32→INT8 drop is
-mostly measurement convention:
+Measured on the 500-patch test set with **both backends re-evaluated from `last.ckpt`** (240
+production models, `test_sub500`):
 
-| gap (float32 − INT8), mean over 240 pairs | old convention | AMP_LIN_99 basis | artifact share |
+| float32 → INT8 | manuscript claim | measured on the fixed basis | verdict |
 | --- | --- | --- | --- |
-| SSIM | +0.201 | +0.031 | 84 % |
-| EPD | +0.431 | +0.051 | 88 % |
+| PSNR | +0.82 … +2.08 dB | **+1.09 dB** at λ=1000 | survives |
+| SSIM | −0.19 … −0.23 | **−0.02** | fails — the drop was the `data_range` artifact |
+| EPD | −0.36 … −0.40 | **−0.42** | survives |
 
-The old-convention values reproduce the manuscript's claims (SSIM −0.19 to −0.23, EPD −0.36 to
-−0.40) almost exactly, which is what identifies them as the artifact.
+So the two perceptual metrics disagree, and that is the point: SSIM was measuring its own
+`data_range` artifact, while EPD was measuring a real loss of fine structure. The
+"quantisation erases fine structure" reading is supported by EPD alone.
+
+> **Superseded.** An earlier pass estimated the gaps from the cached Hamburg tiles as SSIM +0.031
+> and EPD +0.051, and concluded both were ~85 % artifact. That is wrong for EPD: the cached *GPU*
+> tile reconstructions were produced by the original evaluation, i.e. from `best_model_path`, while
+> the INT8 tiles come from `last.ckpt`. A less-trained model is smoother and scores lower EPD, which
+> artificially closed the gap. Only the SSIM figure survived the correction (+0.031 vs −0.02
+> measured). Cross-backend comparisons must fix the checkpoint first — see below.
+
+## The checkpoint mismatch (found during the re-evaluation)
+
+`src/train.py` tested `trainer.checkpoint_callback.best_model_path`, while FPGA quantisation
+(`deploy.py`, `model_quant.py`) and re-evaluation (`update_wandb_runs.py`) all load
+`checkpoints/last.ckpt`. With `save_top_k: 1` and `monitor: null` the "best" checkpoint is often an
+early epoch, so **every published float32 number described a different model than the INT8 one it
+was compared against**: 154 of the 240 production runs (64 %) reported from an earlier epoch, median
+epoch 8 of 9, with 44 runs ≥3 epochs early and two at epoch 0.
+
+`train.py` now tests `last.ckpt`. For despeckling+compression the monitored metric does not capture
+what matters — visual quality keeps improving with training — so the last checkpoint is both the
+better model and the only one consistent with everything downstream.
 
 ## The mechanism
 
@@ -113,14 +135,18 @@ read-only with respect to the canonical board-written `metrics.json`.
 
 Everything sits in the "The Cost of Quantization" subsection (`sec:results_crossprec`):
 
-- **"the quantization has a significant cost: −0.19 to −0.23 points in SSIM"** — on the tile
-  evidence this becomes ≈ −0.03. The headline changes from a significant perceptual cost to INT8
-  being close to float32 on both metrics.
-- **"EPD drops by 0.36–0.40 … mirroring the SSIM trend"** — becomes ≈ −0.05. It is not independent
-  corroboration: it is the same bright-scatterer artifact reached through the gradient sums, so it
-  cannot be used to support the loss-of-structure reading.
-- **"PTQ acts as a regularizer … erases fine structure"** — the PSNR half (+0.82 to +2.08 dB) rests
-  on the already-coherent basis and stands; the structure-erasure half loses its evidence.
+- **"the quantization has a significant cost: −0.19 to −0.23 points in SSIM"** — measured on the
+  fixed basis this is **≈ −0.02**. Nearly the whole reported drop was the `data_range` artifact, so
+  this sentence has to go.
+- **"EPD drops by 0.36–0.40 … mirroring the SSIM trend"** — **≈ −0.42, so the magnitude stands**,
+  but it no longer "mirrors the SSIM trend": SSIM barely moves while EPD drops sharply. EPD is now
+  the *only* evidence for the loss-of-structure reading, which makes it worth stating why the two
+  disagree rather than presenting them as one signal.
+- **"PTQ acts as a regularizer … erases fine structure"** — both halves survive, on firmer ground
+  than before: PSNR **+1.09 dB at λ=1000** with both backends on `last.ckpt` (previously float32 was
+  reported from an early checkpoint, so the comparison was not like-for-like), and structure loss
+  carried by EPD. Note INT8 also sits at a slightly *lower* bitrate (0.398 vs 0.436 bpp mean), so
+  scalar deltas flatter it — the RD curves remain the honest comparison.
 - **"FPGA models tend to produce less saturated reconstructions in high-scatterer areas … we
   attribute this behavior to PTQ leading to smoother images"** — the observation is real, but the
   cause is not smoothing: it is the fix-point-8 `g_s` output cap at 2100 (§10 of
