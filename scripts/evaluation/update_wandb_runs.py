@@ -12,6 +12,7 @@ this script:
         - Logs a timestamp in config["retested_on"]
 """
 
+import argparse
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -301,6 +302,46 @@ def _print_before_after(before: dict, after: dict) -> None:
         print(f"    {key:<35} {b_str:>{col_w}}  {a_str:>{col_w}}{changed}")
 
 
+def diff_all_metrics(before: dict, after: dict, tol: float = 1e-9) -> bool:
+    """Print a full before/after diff of every test metric and return True if only the expected
+    keys moved.
+
+    Unlike ``_print_before_after`` (a fixed whitelist), this compares **every** ``test/`` and
+    ``test_sub500/`` key present in either summary. The AMP_LIN_99 basis change may only move
+    ``ssim_*``, ``ms_ssim_*`` and ``epd_*``; anything else moving (PSNR, MSE, bpp, ENL, ratios)
+    means the re-evaluation is not reproducing the original run and must be investigated before
+    the summary is overwritten — W&B history is not backed up.
+    """
+    expected = ("ssim", "ms_ssim", "epd")
+
+    def _is_expected(key: str) -> bool:
+        metric = key.split("/", 1)[-1]
+        return metric.startswith(expected)
+
+    keys = sorted(k for k in set(before) | set(after) if k.startswith(("test/", "test_sub500/")))
+    moved, unexpected = [], []
+    for k in keys:
+        b, a = before.get(k), after.get(k)
+        if not isinstance(b, (int, float)) or not isinstance(a, (int, float)):
+            continue
+        if abs(a - b) > tol:
+            moved.append((k, b, a))
+            if not _is_expected(k):
+                unexpected.append(k)
+
+    print(f"\n    {'Metric':<38}{'Before':>13}{'After':>13}{'Δ':>13}")
+    print(f"    {'-' * 38}{'-' * 13}{'-' * 13}{'-' * 13}")
+    for k, b, a in moved:
+        flag = "" if _is_expected(k) else "   <-- UNEXPECTED"
+        print(f"    {k:<38}{b:>13.5f}{a:>13.5f}{a - b:>+13.5f}{flag}")
+    print(f"    ({len(moved)} of {len(keys)} metrics moved, {len(keys) - len(moved)} identical)")
+
+    if unexpected:
+        print(f"\n    \033[31m{len(unexpected)} unexpected metric(s) moved: {unexpected}\033[0m")
+        print("    Only ssim_*/ms_ssim_*/epd_* should change on the AMP_LIN_99 basis.")
+    return not unexpected
+
+
 def update_wandb_run(
     run_obj, cfg, new_metrics: dict, output_dir: Path, media_artifacts: Optional[dict] = None
 ):
@@ -375,12 +416,24 @@ def filter_runs_by_creation_date(runs: list, limit_date: datetime) -> list:
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Re-evaluate and print the full metric diff, but do NOT write to W&B.",
+    )
+    parser.add_argument("--limit", type=int, default=None, help="Process at most N runs.")
+    parser.add_argument("--run-ids", nargs="+", default=None, help="Only these W&B run ids.")
+    args = parser.parse_args()
+
     api = wandb.Api()
     runs = api.runs(f"{ENTITY}/{PROJECT}")
     print(f"Found {len(runs)} total runs in {ENTITY}/{PROJECT}")
 
     # ----- Filtering -----
     matching_runs = [r for r in runs if run_matches_config_filters(r.config)]
+    if args.run_ids:
+        matching_runs = [r for r in matching_runs if r.id in args.run_ids]
     # matching_runs = [r for r in matching_runs if r.id in list_of_runs_id_in_the_filter]
     # One safe + one problematyic run = ['lwks3okq', 'jvsj0ut4']
     # All 24 runs with NaN problems (GDN + output_padding, for lambdas 50,100,2000,1000 all seeds = ['jvsj0ut4', 'we73n9uj', '5h78ir4k', 'zrw08hbz', 'elp40xh9', 'x4qu6p2x', 'vkd9treb', 'n5gsa2fo', '0rru19sn', '4p4ghwww', 'atv9gmhm', '9tfd1snp', 'ltec20ym', '5tj53usr', 'p9dl5f81', 'f5fs0s9d', 'hg6f3jgu', 'cj2n50np', '5wa47ncm', 'w870mauv', 'ljfcdsty', '0fftmoe3', 'gpesw2xn', 'pn1kgfwh']]
@@ -389,6 +442,11 @@ def main():
     # Filter by creation date using the helper to avoid timezone errors
     # matching_runs = filter_runs_by_creation_date(matching_runs, datetime(2026, 2, 11, 10, 0, 0))
     print(f"{len(matching_runs)} runs match the filters: {FILTERS_CONFIG}")
+    if args.limit is not None:
+        matching_runs = matching_runs[: args.limit]
+        print(f"Limited to the first {len(matching_runs)} run(s)")
+    if args.dry_run:
+        print("\033[33mDRY RUN — re-evaluating and diffing only, W&B will not be written\033[0m")
 
     for i, run in enumerate(matching_runs):
         print(
@@ -409,6 +467,15 @@ def main():
             metrics, media = evaluate_model_captured(
                 model, test_loader, hydra_cfg, output_dir, run.id
             )
+            # Diff against the live summary *before* touching it — the only chance to notice
+            # a metric moving that shouldn't, since the old values are not backed up anywhere.
+            only_expected = diff_all_metrics(dict(run.summary._json_dict), metrics)
+            if args.dry_run:
+                print("    DRY RUN — W&B not modified.")
+                continue
+            if not only_expected:
+                print("    Skipping W&B update for this run (unexpected metric change).")
+                continue
             update_wandb_run(run, hydra_cfg, metrics, output_dir, media)
         except Exception as e:
             print(f"    ERROR processing run {run.id}: {e}")
