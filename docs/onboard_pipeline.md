@@ -85,12 +85,14 @@ Sources: [UG1182 ZCU102 Eval Board UG](https://docs.amd.com/v/u/en-US/ug1182-zcu
 ## 3. Data & acquisition geometry
 
 - Tile: `data/TSX_cos_files/Hamburg_…_strip_004.cos` = **14 686 (range) × 32 901 (azimuth)** →
-  **57 × 128 = 7 296** non-overlap 256² patches; raw complex-int16 = **1.93 GB**.
+  **58 × 129 = 7 482** 256² patches on the snap grid (the last patch in each axis is flush to the edge,
+  overlapping its neighbour by the remainder; a plain floor grid gives 57 × 128 = 7 296 and drops the far
+  edge sliver); raw complex-int16 = **1.93 GB**.
 - Footprints: full f32 `[H,W,2]` tile = **3.87 GB** (> DDR → must stream); a ~1000-patch region ≈ 524 MB.
 - **Streaming axis = azimuth.** Range bins (14 686 cols) arrive ~together per radar pulse (fast-time);
   azimuth lines (32 901 rows) accumulate as the platform flies (slow-time). → natural streaming unit
-  = **row-block** = 256 azimuth lines × full range = **one patch-row (57 patches)**; **128 row-blocks**
-  per scene.
+  = **row-block** = 256 azimuth lines × full range = **one patch-row (58 patches)**; **129 row-blocks**
+  per scene (the last row-block and the last patch of each row are snapped partials).
 - Reuse: `load_cosar`, `symmetrize`, `extract_patches` (`src/utils/sar_utils.py`, Python); C++
   `npy_io` already reads `[H,W,2]` tiles.
 
@@ -243,30 +245,30 @@ emit these exact bytes; the Python codec is the oracle.
 ## 8. Results
 
 **The sweep.** `stream_sweep.py` deploys each model and runs the cumulative optimization ladder on the
-full **7,296-patch** Hamburg scene (⚠ old floor grid that dropped the edge sliver — the snap-fix makes it
-7,482; these numbers need a re-run, see §10), **cold**, plus one **warm** run of the best config, through the
-harness (§4); `stream_table.py` builds the table. Ran FP + ResSHyp × λ{1000, 20} and found it
-**λ-independent** (L20 = L1000 within ~1% — rANS time scales with the *number of latents*, not bpp),
-so one λ characterizes throughput. Numbers below are λ=1000; results in
-`results/benchmark_stream/<model>/*.json` + `ablation_table.md`.
+full **7,482-patch** Hamburg scene (snap-covered grid, §3), **cold**, plus one **warm** run of the best
+config, through the harness (§4); `stream_table.py` builds the table. Ran FP + ResSHyp × λ{1000, 20} and
+found it **λ-independent** (L20 = L1000 within ~1% — rANS time scales with the *number of latents*, not
+bpp), so one λ characterizes throughput. The table is **λ=20** (the ladder re-run on the snap grid; it
+stands for λ=1000 too by λ-independence); the **compression** line is λ-specific and quoted at λ=1000.
+Results in `results/benchmark_stream/<model>/*.json` + `ablation_table.md`.
 
 | optimization | FP patch/s (MB/s) | FP latency | FP J/patch (W) | ResSHyp patch/s (MB/s) | ResSHyp latency | ResSHyp J/patch (W) |
 | --- | --- | --- | --- | --- | --- | --- |
-| seq | 26.3 (6.9) | 4.63 min | 0.364 (9.6) | 9.2 (2.4) | 13.21 min | 1.266 (11.7) |
-| + s1 | 29.6 (7.7) | 4.12 min | 0.329 (9.8) | 13.5 (3.5) | 8.99 min | 0.967 (13.1) |
-| + p0 | 51.6 (13.5) | 2.35 min | 0.203 (10.6) | 17.7 (4.6) | 6.88 min | 0.828 (14.7) |
-| + prefetch | 84.6 (22.2) | 1.44 min | 0.140 (12.1) | 22.4 (5.9) | 5.42 min | 0.729 (16.5) |
-| + neon | 85.6 (22.4) | 1.42 min | 0.139 (12.2) | 22.8 (6.0) | 5.35 min | 0.724 (16.6) |
-| **warm (+neon)** | **129.4 (33.9)** | **0.94 min** | **0.107 (13.9)** | **22.4 (5.9)** | **5.44 min** | **0.734 (16.4)** |
+| seq | 26.7 (6.9) | 4.67 min | 0.359 (9.7) | 9.3 (2.4) | 13.38 min | 1.252 (11.7) |
+| + s1 | 30.2 (7.8) | 4.13 min | 0.323 (9.8) | 14.0 (3.6) | 8.93 min | 0.944 (13.2) |
+| + p0 | 52.8 (13.6) | 2.36 min | 0.200 (10.7) | 17.9 (4.6) | 6.98 min | 0.815 (14.7) |
+| + prefetch | 86.5 (22.3) | 1.44 min | 0.137 (12.1) | 22.4 (5.8) | 5.56 min | 0.721 (16.3) |
+| + neon | 86.6 (22.4) | 1.44 min | 0.137 (12.1) | 22.9 (5.9) | 5.43 min | 0.711 (16.4) |
+| **warm (+neon)** | **132.5 (34.2)** | **0.94 min** | **0.104 (13.9)** | **23.1 (6.0)** | **5.41 min** | **0.711 (16.4)** |
 
 - **Why "warm" is the last row.** Warm serves the tile from the RAM page cache (`--keep-cache`) instead
   of the SD card — it emulates a *faster persistent store* and isolates the **compute ceiling** from the
   SD-read bottleneck. It's not a further optimization, it's the "if storage weren't the limit" number:
-  FP jumps 85→129 patch/s (read-bound → compute-bound), while ResSHyp is unchanged (already
+  FP jumps 87→132 patch/s (read-bound → compute-bound), while ResSHyp is unchanged (already
   compute-bound, its read fully hidden).
-- **Compression** (byte-identical across every config): FP bpp 1.485 → **21.8× vs raw int16** (88.9 MB
-  `.ddc`); ResSHyp bpp 1.237 → **26.1×** (74.0 MB). Full-scene ratios beat the 1024-crop (2.08 bpp) —
-  more low-texture area.
+- **Compression** (byte-identical across every config; quoted at λ=1000, snap grid): FP bpp 1.482 →
+  **21.3× vs raw int16** (90.8 MB `.ddc`); ResSHyp bpp 1.232 → **25.6×** (75.5 MB). Full-scene ratios beat
+  the 1024-crop (2.08 bpp) — more low-texture area.
 - **Peak DDR ~0.3 GB** (windowed: a 30 MB row-block + compressed records) vs ~3 GB free. The whole f32
   tile is 3.87 GB > DDR → **windowed streaming is required, not optional** (whole-load is OOM-killed).
 - Energy = MPSoC (PS+PL) INA226; **J/patch is the comparable metric**, avg W indicative (rises partly
@@ -275,14 +277,14 @@ so one λ characterizes throughput. Numbers below are λ=1000; results in
 **Findings.**
 
 - **Parallelism is arch-dependent.** ResSHyp (DPU-bound) is unlocked by `--s1` (halves `g_a`); FP
-  (CPU-bound) by `--p0` threads, then `--prefetch`. Cumulative cold: FP **26→86 patch/s (3.3×)**,
-  ResSHyp **9.2→23 (2.5×)**. `--neon` is ~flat end-to-end (normalize already overlapped/hidden) — its
+  (CPU-bound) by `--p0` threads, then `--prefetch`. Cumulative cold: FP **27→87 patch/s (3.2×)**,
+  ResSHyp **9.3→23 (2.5×)**. `--neon` is ~flat end-to-end (normalize already overlapped/hidden) — its
   win is the standalone 2.42× (§4), not throughput here.
 - **Parallelism costs power but saves energy** — the speedup outpaces the extra draw. FP seq→neon
-  **0.364→0.139 J/patch (2.6× better)** at +27% W; ResSHyp **1.266→0.724 (1.75×)** at +42% W.
+  **0.359→0.137 J/patch (2.6× better)** at +25% W; ResSHyp **1.252→0.711 (1.76×)** at +40% W.
   Cross-arch, ResSHyp costs **5.2× the energy/patch** of FP (≈ its ~9× OPs).
 - **Read ceiling.** The cold SD read is ~81 s / ~24 MB/s, constant. `--prefetch` hides it behind
-  compute: fully for ResSHyp (warm ≈ cold → no storage headroom), partially for FP (warm 1.6× faster →
+  compute: fully for ResSHyp (warm ≈ cold → no storage headroom), partially for FP (warm 1.5× faster →
   FP is read-bound at the SD wall).
 - **DDR is not a bottleneck.** vaitrace: the dominant DPU traffic (`g_a`/`g_s`) is ~651–660 MB/s, ~20×
   under the 17.06 GB/s DDR4 ceiling (§2). CPU-side DDR is an estimate (~100–150 MB/s); a defensible
@@ -323,14 +325,6 @@ Three exploratory scripts under `scripts/fpga/benchmark/` (output → `results/b
 ---
 
 ## 10. TODO
-
-> **⚠ Baseline grid must snap-cover the full tile (correctness — affects every §8 number).**
-> The pre-overlap `compute_grid` floored (`H/P`, `W/P`) and **dropped the far azimuth/range edge sliver**,
-> so the "7,296-patch full scene" never covered the whole tile. Fixed in `stream_pipeline.cpp`
-> (`make_offsets` snaps the last patch flush to the edge; **overlap=0 now = 7,482 patches, +2.55 %**).
-> *Consequence:* every §8 number (throughput / latency / energy / bitrate) was measured on the old 7,296
-> grid and must be **re-run** on the snap-covered grid. **Not yet re-run** — the §8 table still shows the
-> old counts. Re-run `stream_sweep.py` and refresh §8 + the §3 patch-count.
 
 **Overlap study — reconstructed-tile quality vs cost (U5).** *Status: complete — full-scene sweep
 (FP + ResSHyp × λ{20, 1000} × overlap {0, 2, 4, 8, 16}, cold + warm) scored vs the MERLIN full-tile GT
