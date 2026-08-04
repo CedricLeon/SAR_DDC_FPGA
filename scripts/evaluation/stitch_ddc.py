@@ -94,14 +94,16 @@ def _seam_mask(shape: tuple, patch: int = 256, band: int = 3) -> np.ndarray:
     return m
 
 
-def score(recon: np.ndarray, gt_path: str) -> dict:
-    """Coherent metrics of the stitched tile vs a full-tile GT — all clipped to ``AMP_LIN_99``
-    (consistent with the project PSNR/MSE, and so the INT8 bright-scatterer cap doesn't dominate).
+def score_arrays(recon: np.ndarray, gt: np.ndarray) -> dict:
+    """Coherent metrics of the stitched tile vs an in-memory full-tile GT — all clipped to
+    ``AMP_LIN_99`` (consistent with the project PSNR/MSE, and so the INT8 bright-scatterer cap
+    doesn't dominate).
 
     Reports full-tile MSE/PSNR/SSIM/EPD, plus PSNR/SSIM split into the **seam band** (±3px of the
     patch grid, where independent-patch seams live) and the **interior**. Overlap fixes seams,
     whose effect the full-tile mean dilutes ~21x, so the seam split is the sensitive number (§10).
-    MS-SSIM omitted at full-scene scale (torchmetrics OOMs).
+    MS-SSIM omitted at full-scene scale (torchmetrics OOMs). Takes ``gt`` as an array so batch
+    callers (rescore_overlap_tiles.py) load the 1.9 GB GT once.
     """
     import math
 
@@ -110,7 +112,6 @@ def score(recon: np.ndarray, gt_path: str) -> dict:
     from src.utils.constants import AMP_LIN_99
     from src.utils.metrics import epd, mse, psnr
 
-    gt = np.load(gt_path).astype(np.float32)
     if gt.shape != recon.shape:
         raise ValueError(f"GT {gt.shape} != recon {recon.shape}")
     lim = float(AMP_LIN_99)
@@ -135,6 +136,11 @@ def score(recon: np.ndarray, gt_path: str) -> dict:
         "ssim_interior": float(smap[~seam].mean()),
         "seam_frac": float(seam.mean()),
     }
+
+
+def score(recon: np.ndarray, gt_path: str) -> dict:
+    """Convenience wrapper: load the GT from ``gt_path`` and score (see ``score_arrays``)."""
+    return score_arrays(recon, np.load(gt_path).astype(np.float32))
 
 
 def main() -> None:

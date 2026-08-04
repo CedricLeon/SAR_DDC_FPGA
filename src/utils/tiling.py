@@ -120,7 +120,9 @@ def _selftest() -> None:
     assert len(make_offsets(32901, 256, 256)) == 129, "full-scene azimuth rows"
 
     # 2. Partition of unity: constant patches -> constant canvas everywhere (incl. snap/overlap
-    #    bands), for both overlap=0 (snap-only overlap) and overlap=8.
+    #    bands), for both overlap=0 (snap-only overlap) and overlap=8. (Necessary but not
+    #    sufficient — this passes for ANY weighting that sums to the coverage count; step 2b pins
+    #    the actual feather shape.)
     for ov in (0, 8):
         stride = 256 - ov
         H = W = 1024
@@ -128,6 +130,29 @@ def _selftest() -> None:
         stack = np.full((n, 256, 256), 7.0, dtype=np.float32)
         out = blend_patches(stack, H, W, 256, ov)
         assert np.allclose(out, 7.0, atol=1e-4), f"partition-of-unity failed at overlap={ov}"
+
+    # 2b. Feather shape: two horizontally-adjacent constant patches (values a, b) must blend across
+    #     the overlap band as the ANALYTIC sigmoid interp a*(1-r) + b*r (independent formula), where
+    #     r = sigmoid_ramp(ov). This discriminates the real feather from a mere normalizing weight
+    #     (which would give a flat (a+b)/2 across the band). Grid is exactly 1 row x 2 cols.
+    ov, a, b = 8, 2.0, 5.0
+    H, W = 256, 512 - ov
+    col_offs = make_offsets(W, 256, 256 - ov)
+    assert col_offs == [0, W - 256], f"unexpected 2-col grid {col_offs}"
+    stack = np.stack([np.full((256, 256), a), np.full((256, 256), b)]).astype(np.float32)
+    out = blend_patches(stack, H, W, 256, ov)
+    r = sigmoid_ramp(ov)
+    band = out[0, W - 256 : 256]  # the [start-of-patch1 .. end-of-patch0) overlap columns
+    expected = a * (1.0 - r) + b * r
+    assert np.allclose(
+        band, expected, atol=1e-5
+    ), f"feather != analytic interp: {band} vs {expected}"
+    assert np.all(
+        np.diff(band) > 0
+    ), "overlap band is not a monotonic ramp (hard seam / flat mean?)"
+    assert np.allclose(out[:, : W - 256], a) and np.allclose(
+        out[:, 256:], b
+    ), "cores not preserved"
 
     # 3. Equivalence to the canonical blend (processing_utils.patch_infer). Random per-patch values
     #    blended both ways must match bit-for-bit-close — pins tiling.py against blend drift.

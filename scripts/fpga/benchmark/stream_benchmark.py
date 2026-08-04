@@ -36,8 +36,6 @@ from scripts.fpga.benchmark.board_thermal import cooldown, read_thermal  # noqa:
 
 BOARD = "ZCU102"
 BOARD_ROOT = "/home/root/SAR_DDC"
-# int16 complex SLC patch: 256x256 px x (I + Q) x 2 B = 256 KiB. The objective doc's ingest unit.
-PATCH_BYTES = 256 * 256 * 4
 
 _SUMMARY = re.compile(
     r"(\d+) patches \((\d+) x (\d+)\) \| bpp=([\d.]+) \| ([\d.]+) patch/s \| total=([\d.]+) s"
@@ -52,6 +50,33 @@ def ssh_capture(remote_cmd: str) -> str:
     if r.returncode != 0:
         raise RuntimeError(f"ssh failed ({r.returncode}): {remote_cmd}\n{r.stderr.strip()}")
     return r.stdout
+
+
+def board_scene_bytes(tile: str) -> int:
+    """Data bytes of the focused SLC we actually consume = the input tile's .npy payload
+    (``prod(shape) x itemsize``), read from the board header once.
+
+    This is the honest denominator for the SLC ingest rate: it is a property of the input scene and
+    is **overlap-independent**, unlike ``n_patches`` (which grows with overlap and, even at
+    overlap 0, over-counts the snapped edge band — so ``n_patches x patch_bytes`` inflates MB/s).
+    """
+    path = f"{BOARD_ROOT}/{tile}"
+    raw = subprocess.run(["ssh", BOARD, f"head -c 256 {path}"], capture_output=True).stdout
+    if raw[:6] != b"\x93NUMPY":
+        raise RuntimeError(f"{path}: not a .npy file (magic {raw[:6]!r})")
+    major = raw[6]
+    hlen_n, start = (2, 10) if major == 1 else (4, 12)
+    hlen = int.from_bytes(raw[8 : 8 + hlen_n], "little")
+    meta = raw[start : start + hlen].decode("latin1")
+    descr = re.search(r"'descr':\s*'([<>|=]?\w+)'", meta)
+    shape = re.search(r"'shape':\s*\(([^)]*)\)", meta)
+    if not descr or not shape:
+        raise RuntimeError(f"{path}: could not parse .npy header: {meta!r}")
+    itemsize = int(re.search(r"(\d+)$", descr.group(1)).group(1))
+    nbytes = itemsize
+    for d in shape.group(1).replace(",", " ").split():
+        nbytes *= int(d)
+    return nbytes
 
 
 def parse_run(stdout: str) -> dict:
@@ -195,6 +220,7 @@ def main():
 
     manifest = json.loads(ssh_capture(f"cat {BOARD_ROOT}/active_model/manifest.json"))
     model_name = manifest["model_name"]
+    scene_bytes = board_scene_bytes(args.tile)  # overlap-independent SLC payload (ingest denom)
     cmd = remote_cmd(args, cold)
 
     print("=" * 68)
@@ -236,7 +262,9 @@ def main():
     med_total = statistics.median(r["total_s"] for r in runs)
     med_patch_s = statistics.median(r["patch_s"] for r in runs)
     # SLC ingest rate: how fast we consume the focused int16 SLC (the objective doc's "data/s").
-    slc_mb_s = n_patches * PATCH_BYTES / med_total / 1e6 if med_total > 0 else 0.0
+    # Denominator = the unique scene payload (overlap-independent), NOT n_patches x patch_bytes,
+    # which double-counts overlapped pixels and inflates MB/s as overlap grows.
+    slc_mb_s = scene_bytes / med_total / 1e6 if med_total > 0 else 0.0
 
     result = {
         "model_name": model_name,
@@ -257,6 +285,7 @@ def main():
         "totals_s": [r["total_s"] for r in runs],
         "median_total_s": med_total,
         "median_patch_s": med_patch_s,
+        "scene_bytes": scene_bytes,
         "slc_mb_s": slc_mb_s,
         "read_ms": runs[0]["read_ms"],
         "avg_power_w": runs[0]["avg_power_w"],
