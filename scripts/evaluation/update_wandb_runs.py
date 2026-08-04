@@ -302,39 +302,48 @@ def _print_before_after(before: dict, after: dict) -> None:
         print(f"    {key:<35} {b_str:>{col_w}}  {a_str:>{col_w}}{changed}")
 
 
-def diff_all_metrics(before: dict, after: dict, tol: float = 1e-9) -> bool:
-    """Print a full before/after diff of every test metric and return True if only the expected
-    keys moved.
+def diff_all_metrics(before: dict, after: dict, rtol: float = 1e-3) -> bool:
+    """Print a full before/after diff of every test metric and return True if nothing moved that
+    shouldn't have.
 
     Unlike ``_print_before_after`` (a fixed whitelist), this compares **every** ``test/`` and
     ``test_sub500/`` key present in either summary. The AMP_LIN_99 basis change may only move
-    ``ssim_*``, ``ms_ssim_*`` and ``epd_*``; anything else moving (PSNR, MSE, bpp, ENL, ratios)
-    means the re-evaluation is not reproducing the original run and must be investigated before
-    the summary is overwritten — W&B history is not backed up.
+    ``ssim_*``, ``ms_ssim_*`` and ``epd_*``; a *material* move anywhere else (PSNR, MSE, bpp, ENL,
+    ratios) means the re-evaluation is not reproducing the original run and must be investigated
+    before the summary is overwritten — W&B history is not backed up.
+
+    "Material" is a **relative** threshold, not exact equality: re-running the same checkpoint on a
+    different GPU/cuDNN algorithm shifts MSE-like metrics by ~2e-4 relative (measured: PSNR by
+    0.0007 dB, MSE by 0.016 %). Those are printed, so the jitter stays visible, but they do not
+    block the update. ``rtol`` is the fraction of the original value that counts as a real change.
     """
     expected = ("ssim", "ms_ssim", "epd")
 
     def _is_expected(key: str) -> bool:
-        metric = key.split("/", 1)[-1]
-        return metric.startswith(expected)
+        return key.split("/", 1)[-1].startswith(expected)
 
     keys = sorted(k for k in set(before) | set(after) if k.startswith(("test/", "test_sub500/")))
-    moved, unexpected = [], []
+    moved, unexpected, worst = [], [], 0.0
     for k in keys:
         b, a = before.get(k), after.get(k)
         if not isinstance(b, (int, float)) or not isinstance(a, (int, float)):
             continue
-        if abs(a - b) > tol:
-            moved.append((k, b, a))
-            if not _is_expected(k):
+        if a == b:
+            continue
+        rel = abs(a - b) / max(abs(b), 1e-12)
+        moved.append((k, b, a, rel))
+        if not _is_expected(k):
+            worst = max(worst, rel)
+            if rel > rtol:
                 unexpected.append(k)
 
-    print(f"\n    {'Metric':<38}{'Before':>13}{'After':>13}{'Δ':>13}")
-    print(f"    {'-' * 38}{'-' * 13}{'-' * 13}{'-' * 13}")
-    for k, b, a in moved:
-        flag = "" if _is_expected(k) else "   <-- UNEXPECTED"
-        print(f"    {k:<38}{b:>13.5f}{a:>13.5f}{a - b:>+13.5f}{flag}")
+    print(f"\n    {'Metric':<38}{'Before':>13}{'After':>13}{'Δ':>13}{'rel':>10}")
+    print(f"    {'-' * 38}{'-' * 13}{'-' * 13}{'-' * 13}{'-' * 10}")
+    for k, b, a, rel in moved:
+        flag = "" if _is_expected(k) else ("   <-- UNEXPECTED" if rel > rtol else "   (jitter)")
+        print(f"    {k:<38}{b:>13.5f}{a:>13.5f}{a - b:>+13.5f}{rel:>10.2e}{flag}")
     print(f"    ({len(moved)} of {len(keys)} metrics moved, {len(keys) - len(moved)} identical)")
+    print(f"    largest non-SSIM/EPD deviation: {worst:.2e} relative (blocks above {rtol:.0e})")
 
     if unexpected:
         print(f"\n    \033[31m{len(unexpected)} unexpected metric(s) moved: {unexpected}\033[0m")
@@ -424,6 +433,12 @@ def main():
     )
     parser.add_argument("--limit", type=int, default=None, help="Process at most N runs.")
     parser.add_argument("--run-ids", nargs="+", default=None, help="Only these W&B run ids.")
+    parser.add_argument(
+        "--rtol",
+        type=float,
+        default=1e-3,
+        help="Relative change above which a non-SSIM/EPD metric blocks the update.",
+    )
     args = parser.parse_args()
 
     api = wandb.Api()
@@ -469,7 +484,7 @@ def main():
             )
             # Diff against the live summary *before* touching it — the only chance to notice
             # a metric moving that shouldn't, since the old values are not backed up anywhere.
-            only_expected = diff_all_metrics(dict(run.summary._json_dict), metrics)
+            only_expected = diff_all_metrics(dict(run.summary._json_dict), metrics, args.rtol)
             if args.dry_run:
                 print("    DRY RUN — W&B not modified.")
                 continue
