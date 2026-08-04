@@ -64,16 +64,26 @@ def _ssim_255_unclipped(x: np.ndarray, y: np.ndarray) -> float:
 
 
 def _grad_mag(img: np.ndarray) -> np.ndarray:
-    """Central-difference gradient magnitude, matching the C++ compute_epd."""
+    """Central-difference gradient magnitude, matching the C++ ``compute_epd``.
+
+    The C++ fills only the interior (``r in [1,H-2]`` AND ``c in [1,W-2]``), so the entire
+    border stays zero. ``src/utils/metrics.py::epd`` instead leaves border rows non-zero
+    wherever ``gx`` is defined; reproducing board output requires the C++ convention.
+    """
     gx, gy = np.zeros_like(img), np.zeros_like(img)
     gx[:, 1:-1] = img[:, 2:] - img[:, :-2]
     gy[1:-1, :] = img[2:, :] - img[:-2, :]
-    return np.sqrt(gx * gx + gy * gy)
+    gm = np.sqrt(gx * gx + gy * gy)
+    gm[0, :] = gm[-1, :] = gm[:, 0] = gm[:, -1] = 0.0
+    return gm
 
 
 def _epd_unclipped(recon: np.ndarray, ref: np.ndarray) -> float:
     """EPD without the AMP_LIN_99 clip — the pre-fix definition."""
-    gr, gf = _grad_mag(recon), _grad_mag(ref)
+    # float64 accumulation: the C++ compute_epd sums in double, and float32 pairwise
+    # summation over 65k pixels otherwise costs ~1e-3 of agreement.
+    gr = _grad_mag(recon).astype(np.float64)
+    gf = _grad_mag(ref).astype(np.float64)
     denom = float((gf * gf).sum())
     return float((gr * gf).sum() / denom) if denom > 0 else float("nan")
 
