@@ -182,6 +182,7 @@ def evaluate_model_captured(
     hydra_cfg: DictConfig,
     log_dir: Path,
     run_id: str = "unknown",
+    skip_full_test: bool = False,
 ):
     """Run Lightning test loop and return metrics dict, capturing callback logs."""
 
@@ -231,7 +232,7 @@ def evaluate_model_captured(
         hdf5_dir=hydra_cfg.data.get("hdf5_dir", None),
         batch_size=hydra_cfg.data.get("batch_size", 1),
         num_workers=hydra_cfg.data.get("num_workers", 0),
-        skip_full_test=False,
+        skip_full_test=skip_full_test,
     )
 
     # Add metrics captured by the callback (e.g. from DictLogger)
@@ -247,15 +248,20 @@ def evaluate_model_captured(
     return final_metrics, media_artifacts
 
 
-def clean_summary_dict(summary_dict: dict) -> dict:
-    """Remove 'old_test/*' keys, 'test/*' keys, and new dual test set prefix keys to start
-    fresh."""
-    cleaned = {}
-    for k, v in summary_dict.items():
-        if k.startswith("test_full/") or k.startswith("test/") or k.startswith("test_sub500/"):
-            continue
-        cleaned[k] = v
-    return cleaned
+def clean_summary_dict(summary_dict: dict, keep_full_test: bool = False) -> dict:
+    """Remove the test-metric keys that are about to be rewritten, so stale ones cannot survive.
+
+    ``keep_full_test`` preserves the ``test/*`` block (the full test set). Set it whenever the
+    evaluation is subset-only: the full test set costs ~4 min/run against ~20 s for the 500-patch
+    subset, and no figure reads ``test/*`` (``_plotkit.METRIC_PREFIX == "test_sub500"``), so it is
+    normally skipped — but skipping it must not delete the existing values.
+    """
+    drop = (
+        ("test_full/", "test_sub500/")
+        if keep_full_test
+        else ("test_full/", "test/", "test_sub500/")
+    )
+    return {k: v for k, v in summary_dict.items() if not k.startswith(drop)}
 
 
 _SHOW_KEYS = [
@@ -364,7 +370,12 @@ def diff_all_metrics(before: dict, after: dict, rtol: float = 5e-3) -> list:
 
 
 def update_wandb_run(
-    run_obj, cfg, new_metrics: dict, output_dir: Path, media_artifacts: Optional[dict] = None
+    run_obj,
+    cfg,
+    new_metrics: dict,
+    output_dir: Path,
+    media_artifacts: Optional[dict] = None,
+    keep_full_test: bool = False,
 ):
     """Update W&B summary and config for the run using a resumed run context.
 
@@ -382,7 +393,7 @@ def update_wandb_run(
 
     # We use the API object to clean the summary first (faster than doing it in the run context)
     # This ensures old keys are actually removed, not just overwritten in history
-    cleaned_summary = clean_summary_dict(current_summary)
+    cleaned_summary = clean_summary_dict(current_summary, keep_full_test=keep_full_test)
     run_obj.summary._json_dict = cleaned_summary
     run_obj.update()
 
@@ -445,6 +456,14 @@ def main():
     )
     parser.add_argument("--limit", type=int, default=None, help="Process at most N runs.")
     parser.add_argument(
+        "--skip-full-test",
+        action="store_true",
+        help=(
+            "Evaluate only the 500-patch subset (test_sub500/*), ~5x faster. Existing "
+            "test/* summary keys are left untouched rather than deleted."
+        ),
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Skip (do not write) any run whose non-SSIM/EPD metrics moved materially.",
@@ -498,7 +517,7 @@ def main():
             )
             test_loader = build_test_dataloader(hydra_cfg)
             metrics, media = evaluate_model_captured(
-                model, test_loader, hydra_cfg, output_dir, run.id
+                model, test_loader, hydra_cfg, output_dir, run.id, args.skip_full_test
             )
             # Diff against the live summary *before* touching it — the only chance to notice
             # a metric moving that shouldn't, since the old values are not backed up anywhere.
@@ -513,7 +532,9 @@ def main():
                 print("    --strict: skipping W&B update for this run.")
                 skipped.append(run.id)
                 continue
-            update_wandb_run(run, hydra_cfg, metrics, output_dir, media)
+            update_wandb_run(
+                run, hydra_cfg, metrics, output_dir, media, keep_full_test=args.skip_full_test
+            )
             written.append(run.id)
         except Exception as e:
             print(f"    ERROR processing run {run.id}: {e}")
