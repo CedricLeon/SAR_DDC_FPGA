@@ -129,6 +129,7 @@ columns; `nn_latency_ms`/`host_latency_ms`). Quality is precision-correct: **FP3
 `wandb_run_id` from each model's manifest) for GPU/CPU, **INT8** from `metrics.json` for FPGA.
 
 Every plot is **argument-driven** (`series=[...]`, `scenario=`, `qmetric=`, `size_by_bpp=`, `save=`):
+
 - grouped bars: latency, throughput, energy/inference, energy-delay product (EDP) — ×-vs-CPU annotated.
 - per-stage stacked breakdown (shared Y) — shows the NN↔entropy bottleneck shift across platforms.
 - quality-vs-cost scatter — `qmetric=` selects any canonical quality key (`quality_keys()`); circle ∝ bpp.

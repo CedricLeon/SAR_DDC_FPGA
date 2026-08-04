@@ -103,6 +103,11 @@ public:
     void init_s1();
     bool has_s1() const { return has_s1_; }
 
+    // Toggle the NEON (--neon) path for stage_normalize / stage_denorm (default off = scalar).
+    // Runtime flag so scalar and NEON coexist in one binary for A/B comparison and rollback.
+    void set_neon(bool on) { use_neon_ = on; }
+    bool use_neon() const { return use_neon_; }
+
     // Allocate a PatchState with all buffers pre-sized for this model's output
     // shapes and H×W input.  Call once per worker; reuse across iterations.
     PatchState make_patch_state(int H, int W) const;
@@ -169,6 +174,7 @@ private:
     GaussianConditional gc_;
     bool has_gc_  = false;
     bool has_s1_  = false;
+    bool use_neon_ = false;
 };
 
 } // namespace ddc
