@@ -44,6 +44,12 @@ def _canon(path) -> Path:
     return Path(path).resolve()
 
 
+def _short(path: Path) -> str:
+    """Path from ``logs/`` down, for readable listings."""
+    parts = path.parts
+    return str(Path(*parts[parts.index("logs") :])) if "logs" in parts else str(path)
+
+
 def wandb_run_dirs(source: str) -> Set[Path]:
     """Every ``paths.output_dir`` known to W&B, live or from the exported CSV."""
     if source == "csv":
@@ -131,7 +137,9 @@ def main() -> None:
 
     print(f"\n{'orphan run dir':<80s}{'size':>10s}")
     for p, s in sorted(sizes.items(), key=lambda kv: -kv[1])[:25]:
-        print(f"{str(p.relative_to(REPO_ROOT)):<80s}{s / 2**30:>9.2f}G")
+        # Not relative_to(REPO_ROOT): logs/ may be reached through a worktree symlink, so the
+        # resolved path can sit outside the repo root.
+        print(f"{_short(p):<80s}{s / 2**30:>9.2f}G")
     if len(sizes) > 25:
         print(f"... and {len(sizes) - 25} more")
     print(f"\n  orphans : {total / 2**30:8.1f} GB  ({len(orphans)} dirs)")

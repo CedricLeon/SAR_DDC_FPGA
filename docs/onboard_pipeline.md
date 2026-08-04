@@ -383,9 +383,9 @@ the board's real INT8 decode.
   far below the cap; (2) the overlap study scores SSIM **coherently with PSNR/MSE**: clip recon+GT to
   `AMP_LIN_99` and use `data_range = AMP_LIN_99 = 545` (`stitch_ddc.score_arrays`). This is the fixed,
   cross-model-comparable basis — it avoids both `max(GT) ≈ 1e5` (saturates SSIM toward 1) and
-  `max(recon) ≈ 2100` (non-comparable across models, since the recon max varies). The broader question of
-  the same `data_range` bug in the training/test-set metrics (`sar_ddc_module.py::test_step` uses
-  `max(clean_im)`) is a separate re-evaluation, briefed in `docs/ssim_data_range_issue.md`; (3) the board
+  `max(recon) ≈ 2100` (non-comparable across models, since the recon max varies). This basis is now used
+  by every distortion metric, host and board (SSIM, MS-SSIM and EPD included); re-evaluating the model set
+  against it is tracked in `docs/ssim_data_range_issue.md`; (3) the board
   genuinely cannot represent bright targets — a fix-point-7 re-quantization would lift the cap to ~44 k at
   half the precision, if ever needed.
 
