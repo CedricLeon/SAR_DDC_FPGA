@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import hydra
@@ -124,9 +125,18 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("test"):
         log.info("Starting testing!")
         assert isinstance(trainer.checkpoint_callback, ModelCheckpoint)
-        ckpt_path = trainer.checkpoint_callback.best_model_path
-        if ckpt_path == "":
-            log.warning("Best ckpt not found! Using current weights for testing...")
+        # Test the LAST checkpoint, not `best_model_path`. For despeckling+compression the
+        # monitored metric does not capture what actually matters (visual quality keeps improving
+        # with longer training), so the "best" checkpoint is often an early epoch. It is also the
+        # only choice consistent with the rest of the pipeline: FPGA quantisation
+        # (deploy.py / model_quant.py) and re-evaluation (update_wandb_runs.py) both load
+        # `checkpoints/last.ckpt`, so testing `best_model_path` made the W&B float32 summary
+        # describe a different model than every downstream artefact.
+        ckpt_path = str(Path(trainer.checkpoint_callback.dirpath) / "last.ckpt")
+        if not Path(ckpt_path).exists():
+            log.warning(
+                f"last.ckpt not found at {ckpt_path}! Using current weights for testing..."
+            )
             ckpt_path = None
         run_dual_evaluation(
             trainer=trainer,
@@ -138,7 +148,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             num_workers=cfg.data.get("num_workers", 0),
         )
 
-        log.info(f"Best ckpt path: {ckpt_path}")
+        log.info(f"Tested ckpt path: {ckpt_path}")
 
     test_metrics = trainer.callback_metrics
 
