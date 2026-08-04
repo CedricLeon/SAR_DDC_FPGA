@@ -102,27 +102,25 @@ apply it identically to SSIM and MS-SSIM and document it next to the PSNR clip.
 - **FPGA scores**: After the float32 scores, it might be necessary to re-evaluate the SSIM of the INT8 models on the FPGA. Then all models need to be re-deployed and their inference re-run, their results fetched. Maybe recompilation is not necessary and simply updating the results/ folder of each compiled_models/ is faster.
 - **Plots/tables:** regenerate every manuscript figure/table that uses SSIM/MS-SSIM (find them in the
   analysis notebooks + `LaTeX/` draft).
-- **Rewrite**: the sectiosn referring SSIM or that derive from the previous conclusion. Most of the work will be done by the user, see `LaTeX/SAR_DDC_FPGA_TGRS_2026/main.tex`.
+- **Rewrite**: the sections referring SSIM or that derive from the previous conclusion. Most of the work will be done by the user, but you will help identify parts that need an update (see the current manuscript at `LaTeX/SAR_DDC_FPGA_TGRS_2026/main.tex`).
 
 ## Effort estimate
 
-- Fix + convention decision: small (≈½ day, mostly deciding + a coherent 2-line change + a self-test).
+- Fix + convention decision: small (1 hour, mostly deciding + a coherent 2-line change + a self-test).
 - Float re-eval: automatable sweep, ~1–2 min/model on GPU → a few GPU-hours for a few hundred models.
-- INT8 re-eval: cost depends on the pipeline (Docker quant model ≈ host-fast; board ≈ slow, deploy per
-  model). This is the main unknown — scope it first.
-- W&B update + plot/table regen + conclusion re-assessment (needs the manuscript): the careful part,
-  ≈1 day.
+- INT8 re-eval: cost depends on the pipeline (Re-compile? Deploy per model and re-evaluation). This is the main unknown — scope it first.
+- W&B update + plot/table regen + conclusion re-assessment (needs the manuscript): the careful part, ≈1 day.
 - **Overall: ~1–2 focused days**, dominated by the W&B/plots/interpretation, not the code.
 
 ## What the new session should do
 
-1. Read the manuscript draft; list every conclusion that rests on SSIM/MS-SSIM (esp. the PTQ
+1. Clearly identify the problem and reproduce the artifact on the real test set for a couple of representative models (float + INT8).
+2. Read the manuscript draft; list every conclusion that rests on SSIM/MS-SSIM (esp. the PTQ
    float-vs-int8 claim and any cross-model SSIM ranking).
-2. Reproduce the artifact on the real test set for a couple of representative models (float + INT8).
 3. Decide + implement the `data_range` fix; add a self-test/known-answer.
-4. Re-evaluate the model set, update W&B, regenerate the SSIM plots/tables.
-5. Report which conclusions change and by how much.
+4. Re-evaluate the model set and update W&B
+5. Jointly with the user, regenerate the SSIM plots/tables and slowly tackle the manuscript changes
 
 Pointers: `src/utils/metrics.py` (metric defs), `src/models/sar_ddc_module.py::test_step` (eval),
 `src/utils/constants.py` (`AMP_LIN_99`, `AMP_MIN/MAX`), `docs/onboard_pipeline.md` §10 (the 2100 INT8
-cap), `scripts/evaluation/{symmetrization_study.py,update_wandb_runs.py}` (model loading + W&B edits).
+cap), `scripts/evaluation/update_wandb_runs.py` (W&B edits), `scripts/fpga/deploy/`.

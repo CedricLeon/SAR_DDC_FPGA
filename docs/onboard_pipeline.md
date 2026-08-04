@@ -347,6 +347,10 @@ the board's real INT8 decode.
   counts, byte-identical gate across seq/s1/p0/windowed/prefetch at overlap 0 & 8, and the decode
   round-trip all pass. overlap=0 is the snap-covered baseline; expected patch inflation (to be measured in
   the sweep) **+3.3 % / +6.7 % / +14.4 %** at 4 / 8 / 16 px.
+  - **Cost-measurement caveat.** Each overlap point is a single full-scene run (`iters=1` — the
+    ~7,482-patch average is itself the measurement, stable) under the thermal cooldown gate (die ≤ 58 °C
+    before each run, §8). A53 throttle is sampled per run and flagged in the JSON (`thermal.throttled`) but
+    **not excluded**, so read sub-~1 % latency/energy deltas as within run-to-run noise, not signal.
 - **Pass 2 — reconstruction (board).** ✅ `stream_pipeline --decode` decodes each patch with the real
   INT8 `h_s`+`g_s`+rANS and **stream-writes** it straight to the `[n,P,P]` NPY (via
   `npy_write_header_float32`) — no ~2.2 GB buffer at full-scene+overlap. Board-verified byte-identical to
@@ -354,8 +358,15 @@ the board's real INT8 decode.
 - **Pass 3 — stitch + score (host).** ✅ `scripts/evaluation/stitch_ddc.py` (+ `src/utils/tiling.py`):
   reads the `.ddc` header, reproduces the snap offsets, ramp-blends the decoded per-patch linA into the
   full `[H,W]` tile in host RAM (no board OOM), optional scoring vs the MERLIN GT. Validated on a board
-  round-trip: overlap-0 stitch = plain reassembly bit-for-bit; overlap-8 coherent. Remaining: the
-  overlap→quality line plot (measured latency per point) + a 50×50 patch-corner seam crop.
+  round-trip: overlap-0 stitch = plain reassembly bit-for-bit; overlap-8 coherent.
+  - **Blend + score domain = linear amplitude.** The board's `g_s` denorm emits linA, so both the blend
+    and the metrics live in linear amplitude — the project convention (metrics in linear amplitude,
+    visualization in log; CLAUDE.md) and the same domain as §5. No log↔linA transform enters the loop, so
+    there is no domain-mismatch seam and the §5 (symmetrization) and this study's numbers are on one basis.
+  - **Seam-sensitive scoring.** `score_arrays` reports full-tile PSNR/SSIM **plus** a split into the
+    **seam band** (±3 px of the non-overlap 256-grid boundaries, ≈4.6 % of pixels — where independent-patch
+    seams live) and the **interior**. The full-tile mean dilutes the seam effect ~21×, so `PSNR_interior −
+    PSNR_seam` is the sensitive number that isolates what overlap actually fixes.
 - **MERLIN GT.** ✅ `scripts/evaluation/merlin_full_gt.py`: the project's own MERLIN despeckle on the
   whole-image-symmetrized scene, seam-free heavy-overlap (64 px) blend — consistent with §5. Validated on
   the 1024² crop vs the project's existing `linA_MERLIN.npy` (PSNR 54.8 dB, corr 0.991). Remaining: run it
@@ -369,10 +380,14 @@ the board's real INT8 decode.
   model has no such cap: on the same scene it reaches **~85 k (FP) / ~68 k (ResSHyp)**, near MERLIN's
   ~127 k, so the board clips the brightest **~0.7 %** of pixels (point scatterers) down to 2100.
   *Consequences:* (1) invisible to the reported metrics — PSNR/SSIM/MSE clip to `AMP_LIN_99 = 545` first,
-  far below the cap; (2) SSIM scoring must use `data_range = max(recon) ≈ 2100` (as
-  `sar_ddc_module.py::test_step` does), not `max(GT) ≈ 1e5`, which saturates it; (3) the board genuinely
-  cannot represent bright targets — a fix-point-7 re-quantization would lift the cap to ~44 k at half the
-  precision, if ever needed.
+  far below the cap; (2) the overlap study scores SSIM **coherently with PSNR/MSE**: clip recon+GT to
+  `AMP_LIN_99` and use `data_range = AMP_LIN_99 = 545` (`stitch_ddc.score_arrays`). This is the fixed,
+  cross-model-comparable basis — it avoids both `max(GT) ≈ 1e5` (saturates SSIM toward 1) and
+  `max(recon) ≈ 2100` (non-comparable across models, since the recon max varies). The broader question of
+  the same `data_range` bug in the training/test-set metrics (`sar_ddc_module.py::test_step` uses
+  `max(clean_im)`) is a separate re-evaluation, briefed in `docs/ssim_data_range_issue.md`; (3) the board
+  genuinely cannot represent bright targets — a fix-point-7 re-quantization would lift the cap to ~44 k at
+  half the precision, if ever needed.
 
 > **On-ground SHyp `.ddc` decoder** (optional, decoupled — *not* a blocker for the overlap study).
 > *Idea:* reproduce the board's INT8 `h_s` on host so SHyp/ResSHyp `.ddc` decode in pure Python (FP
