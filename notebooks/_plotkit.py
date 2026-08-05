@@ -31,6 +31,9 @@ BENCH_HW_DIR = ROOT_DIR / "results" / "benchmark_hardware"
 BENCH_UNIFIED_DIR = ROOT_DIR / "results" / "benchmark_unified"
 PLOTS_DIR = ROOT_DIR / "results" / "plots"
 MANUSCRIPT_DIR = ROOT_DIR / "LaTeX" / "SAR_DDC_FPGA_TGRS_2026" / "figures" / "images"
+# Appended to every manuscript figure filename by ``export_manuscript``. Empty = overwrite the
+# current figures; set it (e.g. "_new") to write a side-by-side set instead.
+EXPORT_SUFFIX = ""
 
 # ANSI shortcuts (kept identical to the per-notebook definitions)
 r, g, b, y, e = "\033[31m", "\033[32m", "\033[34m", "\033[33m", "\033[0m"
@@ -312,11 +315,17 @@ def load_fpga_quality(
     compiled_dir: Path = COMPILED_MODELS_DIR,
     archs: list[str] | None = None,
     seeds: Sequence[int] = range(6),
+    metrics_name: str = "metrics.json",
     verbose: bool = True,
 ) -> pd.DataFrame:
     """Scan compiled_models/ -> tidy long DataFrame (backend='fpga').
 
     Folder names don't encode lr, so this picks up whichever INT8 model is currently deployed.
+
+    ``metrics_name`` selects which per-model JSON to read: ``metrics.json`` is the current
+    (AMP_LIN_99 basis) board result, ``metrics_pre_ssim_fix.json`` the pre-fix values recovered
+    off-board by ``scripts/evaluation/recover_pre_ssim_fpga_metrics.py`` — pass the latter to plot
+    the "before" FPGA curve.
     """
     _seeds = set(seeds)
     lookup = (
@@ -326,7 +335,7 @@ def load_fpga_quality(
     )
     rows = []
     for model_dir in sorted(Path(compiled_dir).iterdir()):
-        man_p, met_p = model_dir / "manifest.json", model_dir / "results" / "metrics.json"
+        man_p, met_p = model_dir / "manifest.json", model_dir / "results" / metrics_name
         if not man_p.exists() or not met_p.exists():
             continue
         man = json.loads(man_p.read_text())
@@ -394,10 +403,15 @@ def aggregate_rd(
 # 5. Plot core
 # ======================================================================================
 def export_manuscript(fig: Figure, manuscript_name: str | None, *, save: bool = True) -> None:
-    """Save a figure to the manuscript figures/images dir as PDF (overrides old PNG)."""
+    """Save a figure to the manuscript figures/images dir as PDF (overrides old PNG).
+
+    Set the module-level ``EXPORT_SUFFIX`` to write next to the existing figures instead of
+    replacing them (e.g. ``_plotkit.EXPORT_SUFFIX = "_new"`` → ``fig_crossprecision_RD_new.pdf``),
+    which is how a before/after pair is produced without losing the current manuscript version.
+    """
     if not (save and manuscript_name):
         return
-    dst = MANUSCRIPT_DIR / f"{manuscript_name}.pdf"
+    dst = MANUSCRIPT_DIR / f"{manuscript_name}{EXPORT_SUFFIX}.pdf"
     fig.savefig(dst, bbox_inches="tight")
     print(f"{g}→ manuscript:{e} {dst.relative_to(ROOT_DIR)}")
 
