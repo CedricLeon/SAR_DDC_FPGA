@@ -195,10 +195,28 @@ def _run_dir_from_wandb_run(run: Any) -> str:
     """Convert absolute output_dir from W&B config to VITIS_AI_ROOT-relative path.
 
     W&B stores paths.output_dir as an absolute host path (e.g. /home/.../DDC_FPGA/logs/...).
-    deploy.py expects RUN_DIR relative to VITIS_AI_ROOT  (e.g. DDC_FPGA/logs/...).
+    deploy.py expects RUN_DIR relative to VITIS_AI_ROOT (e.g. DDC_FPGA/logs/...), because the
+    quantisation step passes it into the Vitis-AI container, where that relative form is the
+    mount path.
+
+    Run from a git worktree, ``VITIS_AI_ROOT`` is the worktree's parent, so a run dir under the
+    main checkout is not relative to it. The absolute path is then returned instead: it is
+    correct for every phase except compilation (``VITIS_AI_ROOT / abs_path == abs_path``), and
+    compilation is the one phase that cannot work from a worktree anyway. Deploying *without*
+    ``--skip-compile`` from a worktree therefore raises rather than silently mounting the wrong
+    path in the container.
     """
     abs_path = Path(run.config["paths"]["output_dir"])
-    return str(abs_path.relative_to(VITIS_AI_ROOT))
+    try:
+        return str(abs_path.relative_to(VITIS_AI_ROOT))
+    except ValueError:
+        if not _is_compiled(_compiled_name_from_wandb_run(run)):
+            raise RuntimeError(
+                f"Run dir {abs_path} is outside VITIS_AI_ROOT ({VITIS_AI_ROOT}) — this happens "
+                "when running from a git worktree. Compilation needs the container-relative "
+                "path, so compile this model from the main checkout first."
+            ) from None
+        return str(abs_path)
 
 
 def _compiled_name_from_wandb_run(run: Any) -> str:
@@ -371,6 +389,15 @@ def main() -> None:
             "after a binary fix."
         ),
     )
+    g_infer.add_argument(
+        "--save-recons",
+        action="store_true",
+        help=(
+            "Pass --save-recons to each deploy.py call: store every test-subset "
+            "reconstruction so future metric changes can be re-scored off-board "
+            "(~69 MB compressed per model)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -510,6 +537,8 @@ def main() -> None:
                     cmd.append("--image-graph")
                 if args.skip_test_set:
                     cmd.append("--skip-test-set")
+                if args.save_recons:
+                    cmd.append("--save-recons")
 
                 print(f"[CMD] {' '.join(cmd)}")
 

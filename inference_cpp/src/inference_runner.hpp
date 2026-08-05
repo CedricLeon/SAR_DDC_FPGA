@@ -33,6 +33,9 @@ namespace ddc
         int subset = 100;                  // how many test-set patches to evaluate
         bool verbose = false;
         bool skip_test_set = false;        // skip test-subset phase, run tile eval only
+        // Dump every test-subset reconstruction (linA, float32) so metrics can be re-scored
+        // off-board without a redeploy. Costs subset*H*W*4 B (~131 MB at 500x256x256).
+        bool save_recons = false;
         // If >= 0: enable verbose logging only for this patch index (0-based).
         // Useful for diagnosing Python/C++ divergence on a specific patch.
         int debug_patch = -1;

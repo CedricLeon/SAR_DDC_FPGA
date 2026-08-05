@@ -49,6 +49,9 @@ double compute_mse(const float* a, const float* b, int n);
 double compute_psnr(const float* a, const float* b, int n);
 
 // SSIM: via cv::quality::QualitySSIM (OpenCV). a and b are H×W float images.
+// Clips both to AMP_LIN_99 and scores at data_range = AMP_LIN_99 (see metrics.cpp for how
+// that is obtained from OpenCV's fixed constants) — same basis as MSE/PSNR and as
+// src/utils/metrics.py::ssim.
 double compute_ssim(const float* a, const float* b, int H, int W);
 
 // ENL on linear intensity (= square of amplitude).
@@ -56,7 +59,7 @@ double compute_ssim(const float* a, const float* b, int H, int W);
 double compute_enl(const float* a, int H, int W,
                    const Roi* roi = nullptr);
 
-// EPD: gradient-magnitude correlation between recon and ref (linA).
+// EPD: gradient-magnitude correlation between recon and ref (linA), both clipped to AMP_LIN_99.
 double compute_epd(const float* recon, const float* ref, int H, int W);
 
 // ratio_mean: mean(noisy_I / (recon_I + 1e-10))

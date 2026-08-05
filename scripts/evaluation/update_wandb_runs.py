@@ -12,6 +12,7 @@ this script:
         - Logs a timestamp in config["retested_on"]
 """
 
+import argparse
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -181,6 +182,7 @@ def evaluate_model_captured(
     hydra_cfg: DictConfig,
     log_dir: Path,
     run_id: str = "unknown",
+    skip_full_test: bool = False,
 ):
     """Run Lightning test loop and return metrics dict, capturing callback logs."""
 
@@ -230,7 +232,7 @@ def evaluate_model_captured(
         hdf5_dir=hydra_cfg.data.get("hdf5_dir", None),
         batch_size=hydra_cfg.data.get("batch_size", 1),
         num_workers=hydra_cfg.data.get("num_workers", 0),
-        skip_full_test=False,
+        skip_full_test=skip_full_test,
     )
 
     # Add metrics captured by the callback (e.g. from DictLogger)
@@ -246,15 +248,20 @@ def evaluate_model_captured(
     return final_metrics, media_artifacts
 
 
-def clean_summary_dict(summary_dict: dict) -> dict:
-    """Remove 'old_test/*' keys, 'test/*' keys, and new dual test set prefix keys to start
-    fresh."""
-    cleaned = {}
-    for k, v in summary_dict.items():
-        if k.startswith("test_full/") or k.startswith("test/") or k.startswith("test_sub500/"):
-            continue
-        cleaned[k] = v
-    return cleaned
+def clean_summary_dict(summary_dict: dict, keep_full_test: bool = False) -> dict:
+    """Remove the test-metric keys that are about to be rewritten, so stale ones cannot survive.
+
+    ``keep_full_test`` preserves the ``test/*`` block (the full test set). Set it whenever the
+    evaluation is subset-only: the full test set costs ~4 min/run against ~20 s for the 500-patch
+    subset, and no figure reads ``test/*`` (``_plotkit.METRIC_PREFIX == "test_sub500"``), so it is
+    normally skipped — but skipping it must not delete the existing values.
+    """
+    drop = (
+        ("test_full/", "test_sub500/")
+        if keep_full_test
+        else ("test_full/", "test/", "test_sub500/")
+    )
+    return {k: v for k, v in summary_dict.items() if not k.startswith(drop)}
 
 
 _SHOW_KEYS = [
@@ -301,8 +308,74 @@ def _print_before_after(before: dict, after: dict) -> None:
         print(f"    {key:<35} {b_str:>{col_w}}  {a_str:>{col_w}}{changed}")
 
 
+def diff_all_metrics(before: dict, after: dict, rtol: float = 5e-3) -> list:
+    """Print a full before/after diff of every test metric; return the material non-SSIM movers.
+
+    Returns a list of ``(key, relative_change)`` for metrics that moved materially and are *not*
+    expected to move. An empty list means the run behaved exactly as the AMP_LIN_99 basis change
+    predicts.
+
+    Unlike ``_print_before_after`` (a fixed whitelist), this compares **every** ``test/`` and
+    ``test_sub500/`` key present in either summary. The AMP_LIN_99 basis change may only move
+    ``ssim_*``, ``ms_ssim_*`` and ``epd_*``. A material move anywhere else (PSNR, MSE, bpp, ENL,
+    ratios) is worth seeing, because W&B history is not backed up.
+
+    In practice such moves have two very different causes, which the printed magnitude separates:
+
+    * **~1e-4 relative** — re-running the same checkpoint on a different GPU/cuDNN algorithm
+      (measured: PSNR 0.0007 dB, MSE 0.016 %). Not a behaviour change.
+    * **1e-2 to 1e-1 relative** — the stored summary predates commit ``5f52f98`` (2026-04-30),
+      which added ``nan_to_num``/``clamp(0,1)`` sanitisation of ``x_hat`` in ``test_step``. Those
+      summaries were computed from unclamped reconstructions and are simply stale; re-evaluating
+      corrects them (e.g. ResSHyp λ1000: psnr_merlin 28.14 → 27.68).
+
+    ``rtol`` defaults to 5e-3: above the natural sensitivity of the variance-ratio metrics
+    (``enl_recon``, ``ratio_*`` jitter up to ~1e-3) and well below the stale-summary signal.
+    """
+    expected = ("ssim", "ms_ssim", "epd")
+
+    def _is_expected(key: str) -> bool:
+        return key.split("/", 1)[-1].startswith(expected)
+
+    keys = sorted(k for k in set(before) | set(after) if k.startswith(("test/", "test_sub500/")))
+    moved, unexpected, worst = [], [], 0.0
+    for k in keys:
+        b, a = before.get(k), after.get(k)
+        if not isinstance(b, (int, float)) or not isinstance(a, (int, float)):
+            continue
+        if a == b:
+            continue
+        rel = abs(a - b) / max(abs(b), 1e-12)
+        moved.append((k, b, a, rel))
+        if not _is_expected(k):
+            worst = max(worst, rel)
+            if rel > rtol:
+                unexpected.append((k, rel))
+
+    print(f"\n    {'Metric':<38}{'Before':>13}{'After':>13}{'Δ':>13}{'rel':>10}")
+    print(f"    {'-' * 38}{'-' * 13}{'-' * 13}{'-' * 13}{'-' * 10}")
+    for k, b, a, rel in moved:
+        flag = "" if _is_expected(k) else ("   <-- UNEXPECTED" if rel > rtol else "   (jitter)")
+        print(f"    {k:<38}{b:>13.5f}{a:>13.5f}{a - b:>+13.5f}{rel:>10.2e}{flag}")
+    print(f"    ({len(moved)} of {len(keys)} metrics moved, {len(keys) - len(moved)} identical)")
+    print(f"    largest non-SSIM/EPD deviation: {worst:.2e} relative (blocks above {rtol:.0e})")
+
+    if unexpected:
+        keys = [k for k, _ in unexpected]
+        print(
+            f"\n    \033[33m{len(unexpected)} non-SSIM metric(s) moved materially: {keys}\033[0m"
+        )
+        print("    Likely a stale pre-2026-04-30 summary (see docstring); re-evaluating fixes it.")
+    return unexpected
+
+
 def update_wandb_run(
-    run_obj, cfg, new_metrics: dict, output_dir: Path, media_artifacts: Optional[dict] = None
+    run_obj,
+    cfg,
+    new_metrics: dict,
+    output_dir: Path,
+    media_artifacts: Optional[dict] = None,
+    keep_full_test: bool = False,
 ):
     """Update W&B summary and config for the run using a resumed run context.
 
@@ -320,7 +393,7 @@ def update_wandb_run(
 
     # We use the API object to clean the summary first (faster than doing it in the run context)
     # This ensures old keys are actually removed, not just overwritten in history
-    cleaned_summary = clean_summary_dict(current_summary)
+    cleaned_summary = clean_summary_dict(current_summary, keep_full_test=keep_full_test)
     run_obj.summary._json_dict = cleaned_summary
     run_obj.update()
 
@@ -375,12 +448,43 @@ def filter_runs_by_creation_date(runs: list, limit_date: datetime) -> list:
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Re-evaluate and print the full metric diff, but do NOT write to W&B.",
+    )
+    parser.add_argument("--limit", type=int, default=None, help="Process at most N runs.")
+    parser.add_argument(
+        "--skip-full-test",
+        action="store_true",
+        help=(
+            "Evaluate only the 500-patch subset (test_sub500/*), ~5x faster. Existing "
+            "test/* summary keys are left untouched rather than deleted."
+        ),
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Skip (do not write) any run whose non-SSIM/EPD metrics moved materially.",
+    )
+    parser.add_argument("--run-ids", nargs="+", default=None, help="Only these W&B run ids.")
+    parser.add_argument(
+        "--rtol",
+        type=float,
+        default=5e-3,
+        help="Relative change above which a non-SSIM/EPD metric is reported as material.",
+    )
+    args = parser.parse_args()
+
     api = wandb.Api()
     runs = api.runs(f"{ENTITY}/{PROJECT}")
     print(f"Found {len(runs)} total runs in {ENTITY}/{PROJECT}")
 
     # ----- Filtering -----
     matching_runs = [r for r in runs if run_matches_config_filters(r.config)]
+    if args.run_ids:
+        matching_runs = [r for r in matching_runs if r.id in args.run_ids]
     # matching_runs = [r for r in matching_runs if r.id in list_of_runs_id_in_the_filter]
     # One safe + one problematyic run = ['lwks3okq', 'jvsj0ut4']
     # All 24 runs with NaN problems (GDN + output_padding, for lambdas 50,100,2000,1000 all seeds = ['jvsj0ut4', 'we73n9uj', '5h78ir4k', 'zrw08hbz', 'elp40xh9', 'x4qu6p2x', 'vkd9treb', 'n5gsa2fo', '0rru19sn', '4p4ghwww', 'atv9gmhm', '9tfd1snp', 'ltec20ym', '5tj53usr', 'p9dl5f81', 'f5fs0s9d', 'hg6f3jgu', 'cj2n50np', '5wa47ncm', 'w870mauv', 'ljfcdsty', '0fftmoe3', 'gpesw2xn', 'pn1kgfwh']]
@@ -389,7 +493,13 @@ def main():
     # Filter by creation date using the helper to avoid timezone errors
     # matching_runs = filter_runs_by_creation_date(matching_runs, datetime(2026, 2, 11, 10, 0, 0))
     print(f"{len(matching_runs)} runs match the filters: {FILTERS_CONFIG}")
+    if args.limit is not None:
+        matching_runs = matching_runs[: args.limit]
+        print(f"Limited to the first {len(matching_runs)} run(s)")
+    if args.dry_run:
+        print("\033[33mDRY RUN — re-evaluating and diffing only, W&B will not be written\033[0m")
 
+    stale_runs, written, skipped, failed = [], [], [], []
     for i, run in enumerate(matching_runs):
         print(
             f"\n\033[32mProcessing run {i + 1}/{len(matching_runs)}: ID={run.id} ({run.name}), lambda={run.config.get('lambda', None)}, seed={run.config.get('seed', None)}, created {run.created_at}...\033[0m"
@@ -407,15 +517,48 @@ def main():
             )
             test_loader = build_test_dataloader(hydra_cfg)
             metrics, media = evaluate_model_captured(
-                model, test_loader, hydra_cfg, output_dir, run.id
+                model, test_loader, hydra_cfg, output_dir, run.id, args.skip_full_test
             )
-            update_wandb_run(run, hydra_cfg, metrics, output_dir, media)
+            # Diff against the live summary *before* touching it — the only chance to notice
+            # a metric moving that shouldn't, since the old values are not backed up anywhere.
+            movers = diff_all_metrics(dict(run.summary._json_dict), metrics, args.rtol)
+            if movers:
+                worst_key, worst_rel = max(movers, key=lambda kv: kv[1])
+                stale_runs.append((run.id, run.name, len(movers), worst_key, worst_rel))
+            if args.dry_run:
+                print("    DRY RUN — W&B not modified.")
+                continue
+            if movers and args.strict:
+                print("    --strict: skipping W&B update for this run.")
+                skipped.append(run.id)
+                continue
+            update_wandb_run(
+                run, hydra_cfg, metrics, output_dir, media, keep_full_test=args.skip_full_test
+            )
+            written.append(run.id)
         except Exception as e:
             print(f"    ERROR processing run {run.id}: {e}")
             import traceback
 
             traceback.print_exc()
+            failed.append(run.id)
             continue
+
+    # ---- End-of-sweep report ----
+    print(f"\n{'=' * 100}\nSWEEP SUMMARY")
+    print(f"  written : {len(written)}   skipped: {len(skipped)}   failed: {len(failed)}")
+    if failed:
+        print(f"  failed ids: {failed}")
+    if stale_runs:
+        print(
+            f"\n  {len(stale_runs)} run(s) had non-SSIM/EPD metrics move above {args.rtol:.0e} — "
+            "these had stale summaries (pre-2026-04-30 clamp fix) that this sweep also corrected:"
+        )
+        print(f"    {'run id':<12}{'name':<48}{'#moved':>7}{'worst metric':>26}{'rel':>10}")
+        for rid, name, n, key, rel in sorted(stale_runs, key=lambda r: -r[4]):
+            print(f"    {rid:<12}{name[:47]:<48}{n:>7}{key[-25:]:>26}{rel:>10.2e}")
+    else:
+        print("\n  No run moved a non-SSIM/EPD metric materially.")
 
 
 if __name__ == "__main__":
