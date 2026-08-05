@@ -162,3 +162,37 @@ Figures to regenerate once the sweeps land: `fig_crossprecision_RD` (SSIM row) f
 `notebooks/RD-curve_ablation.ipynb`. The GPU side of those notebooks reads
 `notebooks/SAR_DDC_FPGA_all_runs_WandB.csv`, so re-export it with `notebooks/fetch_wandb_runs.py`
 after the W&B update.
+
+## Supplemental: why the INT8 penalty is larger in EPD than in SSIM
+
+Not in the manuscript — kept here as the supporting detail behind the claim that the two perceptual
+metrics disagree.
+
+EPD is a normalised gradient inner product, `Σ‖∇r‖‖∇ref‖ / Σ‖∇ref‖²`, so it measures whether edges
+occur *where* the reference has them. Over the 24 matched float32/INT8 tile pairs at λ=1000
+(4 architectures × 6 seeds, Hamburg 1024² tile, both clipped to `AMP_LIN_99`):
+
+| | gradient energy vs MERLIN | gradient correlation with MERLIN | EPD |
+| --- | --- | --- | --- |
+| FP | 0.824 → 0.791 | 0.800 → 0.733 | 0.729 → 0.666 |
+| ResFP | 0.831 → 0.805 | 0.802 → 0.754 | 0.737 → 0.668 |
+| SH | 0.840 → 0.836 | 0.804 → 0.755 | 0.745 → 0.713 |
+| ResSH | 0.882 → 0.874 | 0.847 → 0.817 | 0.809 → 0.776 |
+
+Aggregate: quantisation costs **2.2 % of gradient energy** (sd 3.5) but **5.9 % of gradient
+correlation** (sd 4.8) — the misplacement is ~2.7× the attenuation. So INT8 reconstructions are not
+meaningfully blurrier; they carry almost the same edge content in slightly the wrong places.
+"Quantisation preserves edge energy but degrades edge localisation" is the accurate statement;
+"erases fine structure" is not.
+
+SSIM is a product of luminance, contrast and structure terms averaged over 11×11 Gaussian windows.
+Local means and variances survive quantisation, and in dark SAR scenes those terms dominate, masking
+the structure term's degradation. EPD has no luminance or contrast component, so the same
+displacement hits it undiluted. This is why the INT8 penalty reads ≈ −0.02 in SSIM and ≈ −0.42 in
+EPD on the same models.
+
+**Tile bitrate convention.** `patch_infer` (host) originally *averaged* per-patch bpp, while the
+board reports total bits / tile area. With overlap 16 on a 1024² tile the patches cover 1.5625× the
+image, so the host understated the tile bitrate by that factor and the two backends were not
+comparable. Both now use total-bits-over-image-pixels; the RD-curve (500-patch, non-overlapped)
+bitrates were never affected.

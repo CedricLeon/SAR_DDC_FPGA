@@ -357,4 +357,16 @@ def patch_infer(
 
     criterion_avg: Dict[str, Any] = {k: v / patch_count for k, v in criterion_sums.items()}
 
+    # Bitrates are *rates over the image*, not per-patch quantities to be averaged. With
+    # overlap the patches cover more pixels than the image (25 x 256² vs 1024² = 1.5625x at
+    # overlap 16), and every one of those bits is actually transmitted — so the honest tile
+    # bitrate is total bits / image pixels. Averaging per-patch bpp silently discards the
+    # overlap cost and made the GPU tile bitrate incomparable with the board, which already
+    # reports total_bytes / (TH*TW) (inference_cpp/src/inference_runner.cpp::_run_tile_eval_impl).
+    # criterion_sums[k] = Σ(bits_i / patch_size²), so scaling by patch_size²/(H*W) is exact.
+    _rate_scale = (patch_size * patch_size) / float(H * W)
+    for _k in ("bpp", "bpp_bitstream"):
+        if _k in criterion_sums:
+            criterion_avg[_k] = criterion_sums[_k] * _rate_scale
+
     return output, criterion_avg
