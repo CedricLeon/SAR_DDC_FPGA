@@ -17,6 +17,10 @@ Implementation of [Amao-Oliva et al. (2024)](https://www.sciencedirect.com/scien
 
 ### Code quality
 
+- [ ] Clean doc before release. For example, in `docs/`, the onboard_pipeline should be broken down between the existing docs where relevant and/or renamed pipeline. We should delete the ssim_data_range_issue, the python to cpp migration, and the Vitis AI journey.
+- [ ] Clean results: there are a lot of folders in there. Takes too much space.
+- [ ] Clean scripts before release. Here again, CLAUDE grew way too many scripts in `scripts/evaluation` or `scripts/fpga/benchmark`
+- [ ] Add acknowledgement on the use of CLAUDE code in the repo
 
 ### Planned experiments
 

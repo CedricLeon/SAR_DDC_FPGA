@@ -46,6 +46,7 @@ Read only what's relevant to the task at hand.
 | GPU/CPU host benchmark + cross-platform (CPU/GPU/FPGA) comparison & unified runner | `docs/GPU_benchmark.md` |
 | Onboard streaming pipeline (receive→compress→downlink) — plan, feasibility, ZCU102 memory/storage facts, symmetrization study | `docs/onboard_pipeline.md` ← **planning** |
 | Analysis notebooks: purpose, data flow, shared modules (`_plotkit`, `_benchmark_loader`) | `docs/Notebooks.md` |
+| Metric basis (AMP_LIN_99 clip + data_range), checkpoint mismatch, manuscript-number impact | `docs/ssim_data_range_issue.md` |
 | Vitis-AI issues, deployment journal | `docs/Vitis-AI_journey.md` (check here before debugging Vitis-AI issues) |
 
 ---
