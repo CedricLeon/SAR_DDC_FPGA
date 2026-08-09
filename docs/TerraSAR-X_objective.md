@@ -35,8 +35,11 @@ We want three numbers, each a different **deadline**:
 3. **Downlink-fit** — is the compressed product small enough for the X-band link?
 
 Everything below exists to turn TSX specs into those three numbers. The single hardware fact from our
-side: one ZCU102 running the factorized-prior (FP) model in the `p0` schedule compresses at
-**≈ 34 MB/s of SLC** (measured; see `onboard_pipeline.md` §8, **to be updated once design evolves**).
+side: one ZCU102 running the factorized-prior (FP) model at its best schedule compresses SLC at
+**≈ 34.7 MB/s warm** (the compute ceiling with storage non-limiting — representative of a focuser- or
+SSMM-fed stream) and **≈ 22.7 MB/s cold** (SD-card testbed, read-bound). Measured, λ=20, snap grid.
+`onboard_pipeline.md` §8 is the authoritative source for these numbers — **do not hardcode them
+elsewhere; they evolve with the design.**
 
 ---
 
@@ -152,8 +155,17 @@ Space-segment / ground-segment:
 | --- | --- | --- |
 | **X-band downlink** | **270 Mb/s net** (300 Mb/s gross channel) | net: [Pitz p.617]; gross: [eoP], [W&B] |
 | **SSMM** (solid-state mass memory = the on-board recorder) | **384 Gbit BOL / 256 Gbit EOL** | [Pitz p.618]; EOL also [eoP] |
-| Acquisition constraint | ≤ 180 s monostatic per orbit (now ~¼ of that, battery ageing) | colleague — *to confirm* |
+| **Orbit period** | **~94.9 min** | two independent derivations, below |
+| Ground contact frequency | ~1 contact per orbit | [eoP] — *weak, pin before citing* |
+| Acquisition constraint | **≤ 180 s monostatic per orbit** (physical ceiling set by the power budget), now ~¼ of that, battery ageing | via colleague [Fritz] |
 | Ground contact window | ~5–10 min; Neustrelitz ~90 GB/day | colleague — *to confirm* |
+
+> **Orbit period — ~94.9 min, cross-checked two ways.** (i) Repeat-cycle: 11 d × 1440 min ÷ 167 orbits
+> = 94.85 min — *loose*, since a repeat ground track closes over 11 **nodal** days, not 11 solar days.
+> (ii) Independent orbital mechanics: circular orbit at the cited 514.8 km mean altitude,
+> $T = 2\pi\sqrt{a^3/\mu}$ with $a = R_e + h$, $\mu = 398\,600.44$ km³/s² → **94.92 min**. The two agree
+> to 0.07 min, so **~94.9 min is safe**; over the quoted 505–533 km altitude range it spans
+> 94.72–95.30 min. Route (ii) is the one to cite.
 
 > **SSMM** = *Solid-State Mass Memory*: the on-board data recorder that buffers SAR data between
 > acquisition and the brief, infrequent ground contacts (you cannot downlink in real time).
@@ -268,16 +280,19 @@ storage feasible.
 ## 4. The three deadlines vs. our current implementation
 
 Requirements are the **worst case** (a 358 MB/s stream / a 64.5 GB take). "Current implementation" = the
-measured single-ZCU102 `p0` schedule; we state **both models explicitly**, as these numbers will change
-as the design evolves:
+measured single-ZCU102 best schedule (`p0+s1+prefetch+neon`), **warm** basis (compute ceiling, storage
+non-limiting — representative of a focuser/SSMM-fed stream), **cold** SD-testbed in parentheses; λ=20
+(throughput is λ-independent). We state **both models explicitly**, as these numbers evolve with the design:
 
-- **FP** (factorized-prior, CPU-bound): **34.4 MB/s** of SLC, ~21.7× compression
-- **ResSHyp** (residual scale-hyperprior, DPU-bound): **5.8 MB/s** of SLC, ~26.1× compression
+- **FP** (factorized-prior, CPU-bound): **34.7 MB/s warm** (22.7 cold), ~21.3× compression (λ1000)
+- **ResSHyp** (residual scale-hyperprior, DPU-bound): **6.0 MB/s** (SD read fully hidden → warm ≈ cold),
+  ~25.6× compression (λ1000)
 
-- **(a) Real-time** — compress as fast as acquired (**needs 358 MB/s**): FP → **10.4× short**;
-  ResSHyp → **62× short**.
+- **(a) Real-time** — compress as fast as acquired (**needs 358 MB/s**): FP → **10.3× short warm**
+  (15.8× cold); ResSHyp → **59× short**.
 - **(b) Before next contact** — finish the 64.5 GB take before the next pass ~92 min away (**needs
-  11.7 MB/s**): FP → **met, 2.9× headroom** ✅; ResSHyp → **2.0× short**.
+  11.7 MB/s**): FP → **met, 3.0× headroom warm** (1.9× cold — met on every basis) ✅; ResSHyp →
+  **1.9× short**.
 - **(c) Downlink-fit** — compressed output must fit the 33.75 MB/s net link: FP → **16.5 MB/s, fits
   2.0×** ✅; ResSHyp → **13.7 MB/s, fits 2.5×** ✅ (set by compression ratio, not throughput).
 
@@ -304,16 +319,17 @@ Cite these from other docs. **Table A** is what the mission/specs give (independ
 Platform constants: downlink **270 Mb/s net / 300 gross**; SSMM **384 Gbit BOL / 256 EOL (48/32 GB)**;
 ground swath **30 km**; SLC **int16 4 B/px**.
 
-**Table B — current implementation vs. the worst-case objective** (single ZCU102 `p0`; *evolves with the design*):
+**Table B — current implementation vs. the worst-case objective** (single ZCU102, best schedule
+`p0+s1+prefetch+neon`, λ=20; **warm** basis, **cold** SD-testbed in parentheses; *evolves with the design*):
 
 | metric | FP (CPU-bound) | ResSHyp (DPU-bound) | requirement |
 | --- | --- | --- | --- |
-| SLC throughput | 34.4 MB/s | 5.8 MB/s | — |
-| compression ratio | 21.7× | 26.1× | — |
+| SLC throughput | 34.7 (22.7 cold) MB/s | 6.0 MB/s (read hidden) | — |
+| compression ratio (λ1000) | 21.3× | 25.6× | — |
 | compressed worst-case take | 3.0 GB | 2.5 GB | ≤ contact budget |
-| (a) real-time | 10.4× short | 62× short | 358 MB/s |
-| (b) before-contact (92 min) | ✅ 2.9× headroom | 2.0× short | 11.7 MB/s |
-| (c) downlink-fit | ✅ fits 2.0× | ✅ fits 2.5× | ≤ 33.75 MB/s net |
+| (a) real-time | 10.3× short (15.8× cold) | 59× short | 358 MB/s |
+| (b) before-contact (92 min) | ✅ 3.0× headroom (1.9× cold) | 1.9× short | 11.7 MB/s |
+| (c) downlink-fit | ✅ fits 2.0× | ✅ fits 2.4× | ≤ 33.75 MB/s net |
 
 ---
 
@@ -347,6 +363,7 @@ ground swath **30 km**; SLC **int16 4 B/px**.
   <https://patents.google.com/patent/US6255987B1/en>.
 - **[Mandapati et al.]** Mandapati, Balss & Breit, *Real Time Floating Point SAR Focusing on FPGA*,
   EUSAR 2024, pp. 60–65, <https://ieeexplore.ieee.org/document/10659675>.
+- **[Buckreuss, 2018]** *Ten Years of TerraSAR-X Operations*, REMOTE SENSING. `docs/references/Ten_Years_of_TerraSAR-X_Operations_Buckreuss_2018.pdf` Not a lot here except that battery life deteriorated, so can cite for claims like "data-take length is battery-limited" @TODO: clean
 
 ---
 

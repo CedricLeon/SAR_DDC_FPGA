@@ -3,10 +3,10 @@
 Question
 --------
 `symmetrize()` (MERLIN zero-Doppler centering) is a **whole-image FFT**, which would break a
-per-patch streaming pipeline. But it is an integer spectral roll = spatial phase ramp, so it
-**preserves per-image amplitude exactly** and only redistributes energy between the real/imag
-channels. Hypothesis: since despeckling is amplitude-dominated, cheaper *local* symmetrization costs
-little quality and can live inside the per-patch/per-block pipeline. This script measures it.
+per-patch streaming pipeline. Its purpose is to **decorrelate the real/imag channels** so MERLIN's
+Noise2Noise training can treat them as i.i.d. Hypothesis: at inference the residual Re/Im correlation
+is small, so skipping symmetrization — or coarsening it to a patch/block — costs little quality and can
+live inside the per-patch/per-block pipeline (or be dropped). This script measures it.
 
 For one DDC model, it runs the model on the same patches pre-processed four ways and scores the
 reconstructions (linear amplitude) against two references:

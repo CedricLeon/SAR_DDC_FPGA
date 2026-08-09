@@ -11,11 +11,9 @@
 > measured here**); `Data.md` (`.cos` source, normalisation).
 
 Status: **implemented + measured.** The on-board streaming compressor, the parallel/I/O optimizations
-(§4), and the full-scene throughput/latency/energy sweep + memory/roofline analysis (§8) are done and
-board-verified. Remaining (§10): **baseline grid snap-fix + §8 re-run** (the old grid dropped the far
-edge sliver), the **overlap study** (in implementation — measured cost + board-decode/host-stitch
-quality), a stacked time-per-patch figure, and figure rigor/polish. The on-ground `.ddc` decoder is
-optional/decoupled. Last updated 2026-08-02.
+(§4), the full-scene throughput/latency/energy sweep + memory/roofline analysis (§8), and the overlap
+study (§10) are done and board-verified. Remaining (§11): the DATE'27 experiments (N1 core-scaling,
+N2 Jetson, N5 CCSDS) and figure polish. Last updated 2026-08-09.
 
 **Questions opened/answered**:
 
@@ -28,10 +26,8 @@ optional/decoupled. Last updated 2026-08-02.
 - [x] **U3**: How do we stay organized given all the configs/setups? *See §7 — one base-schedule preset
   + composable flags, all held to a byte-identical gate.*
 - [x] **U4**: How do we store the compressed patches + tile? *A `.ddc` container format — see §6.*
-- [ ] **U5**: Non-overlapping patch compression leaves seam/edge artifacts when the tile is recombined.
-  How do we prevent that? *Being answered — the overlap study (§10, in implementation) sweeps a
-  `--overlap {0,4,8,16}` px knob and measures reconstructed-image quality vs the latency/bitrate it
-  costs, on the same streaming pipeline as §8; reconstruction via board INT8 decode + host stitch.*
+- [x] **U5**: Non-overlapping patch compression leaves seam/edge artifacts when the tile is recombined.
+  How do we prevent that? *Answered — overlap 2 closes the seam at ~1 % cost (§10); reconstruct there.*
 
 ---
 
@@ -42,8 +38,7 @@ optional/decoupled. Last updated 2026-08-02.
   (patch/s)** + **full-tile latency** (read → compress → write).
 - **Models:** ResSHyp (DPU-bound) + FP (CPU-bound) primary; SHyp/ResFP come ~free (arch
   auto-detected from `manifest.json`).
-- **Overlap:** deferred — non-overlapping per-patch bitstreams for now; the overlap sweep is future
-  work (§10).
+- **Overlap:** studied (§10) — reconstruct at overlap 2 (closes the seam at ~1 % cost).
 - **Language:** C++ on-board (only inference path). Python only for the offline symmetrization study
   (§5) and the `.ddc` verifier (§6).
 
@@ -112,7 +107,6 @@ Sources: [UG1182 ZCU102 Eval Board UG](https://docs.amd.com/v/u/en-US/ug1182-zcu
 | 7 write bits | DDR → SD | generate `.ddc` product per tile (§6) |
 
 
-
 **Optimizations.** Everything below layers on the sequential `seq` baseline (the step table above) and
 is **gated byte-identical to it** (correctness gate §7): any schedule that changes a single output byte
 fails loudly, and the decoded recon is bit-identical to `inference_hybrid` (MSE=0). So the knobs are
@@ -141,11 +135,11 @@ purely about *speed and energy*, never quality. Measured effects → §8.
 
 ## 5. Experiment E1 — symmetrization granularity (local GPU, no retraining)
 
-**Why:** `symmetrize()` is a whole-image FFT → would break streaming. But it is an **integer spectral
-roll = spatial phase ramp → |amplitude| is exactly preserved**; it only redistributes energy between
-real/imag. **Hypothesis:** despeckling is amplitude-dominated and the model processes real/imag
-separately, so local symmetrization should cost little quality → it can live *inside* the
-per-patch/per-block pipeline.
+**Why:** `symmetrize()` is a whole-image FFT → would break streaming. Its purpose is to **decorrelate
+the real/imag parts** so MERLIN's Noise2Noise training can treat them as i.i.d. **Hypothesis:** at
+inference the residual Re/Im correlation is small, so skipping symmetrization — or coarsening it to a
+patch/block — is only slightly suboptimal, and it can live *inside* the per-patch/per-block pipeline
+(or be dropped entirely).
 
 - **Variants** (preprocess the raw `.cos`, then run the DDC model): (1) whole-image *(reference)*,
   (2) none, (3) per-256²-patch, (4) per-1024²-block.
@@ -315,83 +309,28 @@ Three exploratory scripts under `scripts/fpga/benchmark/` (output → `results/b
 
 > ⚠️ **First-pass sketches — feel, not final.** They build intuition but likely oversimplify; the Gantt
 > and roofline both need a rigor + polish pass before the manuscript (audit the axes, the roofs, and what
-> each point actually represents). → §10.
+> each point actually represents). → §11.
 >
 > ⚠️ **All three are DPU + SD-read only** — none decomposes the CPU (entropy + normalize) load: the
 > roofline is DPU by construction, the system roofline's only compute roof is the DPU, and the throughput
 > plot bakes the CPU into the numbers without drawing it (for FP, the warm ceiling *is* the CPU entropy
-> limit). The dedicated CPU view is the stacked-time figure → §10.
+> limit). The dedicated CPU view is the stacked-time figure (done: Fig. 3).
 
 ---
 
-## 10. TODO
+## 10. Overlap study (U5) — seam vs cost
 
-**Overlap study — reconstructed-tile quality vs cost (U5).** *Status: complete — full-scene sweep
-(FP + ResSHyp × λ{20, 1000} × overlap {0, 2, 4, 8, 16}, cold + warm) scored vs the MERLIN full-tile GT
-with coherent seam-band metrics; **Result** below. Remaining = manuscript-figure polish only.*
-Non-overlapping patches leave seam artifacts when the despeckled tile is recombined; overlap +
-ramp-blend removes them at a latency/bitrate cost. Measured on the **same streaming pipeline as §8**
-(cost is measured, not estimated) and **decoupled from the host decoder below** — reconstruction uses
-the board's real INT8 decode.
+**Complete.** Full-scene sweep FP + ResSHyp × λ{20,1000} × overlap {0,2,4,8,16} (cold+warm), scored vs
+the project's own MERLIN full-tile GT (`merlin_full_gt.py`; whole-image-symmetrized, 64-px seam-free
+blend). Reconstruction = board INT8 decode (`stream_pipeline --decode`) + host ramp-blend/stitch
+(`stitch_ddc.py`, `src/utils/tiling.py`); grid offsets `stride = 256 − overlap`, snapped to the edge;
+blend + metrics in **linear amplitude** (same basis as §5). Cost measured on the §8 pipeline (directly
+comparable). Data → `results/benchmark_stream_overlap/overlap_table.{md,csv}`.
 
-- **Grid rule (single source of truth).** Offsets = `make_offsets(dim, 256, stride)`, `stride = 256 −
-  overlap`, last patch snapped to `dim − 256`. Board = `stream_pipeline.cpp::make_offsets`; host =
-  `src/utils/tiling.py::make_offsets` (+ `blend_patches`), pinned byte-for-byte-close to the canonical
-  `processing_utils.patch_infer` blend by `tiling._selftest` (max err 3.6e-7). The `.ddc` header carries
-  `stride`, so `overlap = patch − stride` is recoverable — **no new `.ddc` field needed** (resolves U4).
-- **Pass 1 — cost (board, timed).** ✅ `stream_pipeline --overlap N` (snap grid). Board-verified: grid
-  counts, byte-identical gate across seq/s1/p0/windowed/prefetch at overlap 0 & 8, and the decode
-  round-trip all pass. overlap=0 is the snap-covered baseline; expected patch inflation (to be measured in
-  the sweep) **+3.3 % / +6.7 % / +14.4 %** at 4 / 8 / 16 px.
-  - **Cost-measurement caveat.** Each overlap point is a single full-scene run (`iters=1` — the
-    ~7,482-patch average is itself the measurement, stable) under the thermal cooldown gate (die ≤ 58 °C
-    before each run, §8). A53 throttle is sampled per run and flagged in the JSON (`thermal.throttled`) but
-    **not excluded**, so read sub-~1 % latency/energy deltas as within run-to-run noise, not signal.
-- **Pass 2 — reconstruction (board).** ✅ `stream_pipeline --decode` decodes each patch with the real
-  INT8 `h_s`+`g_s`+rANS and **stream-writes** it straight to the `[n,P,P]` NPY (via
-  `npy_write_header_float32`) — no ~2.2 GB buffer at full-scene+overlap. Board-verified byte-identical to
-  the prior buffered decode.
-- **Pass 3 — stitch + score (host).** ✅ `scripts/evaluation/stitch_ddc.py` (+ `src/utils/tiling.py`):
-  reads the `.ddc` header, reproduces the snap offsets, ramp-blends the decoded per-patch linA into the
-  full `[H,W]` tile in host RAM (no board OOM), optional scoring vs the MERLIN GT. Validated on a board
-  round-trip: overlap-0 stitch = plain reassembly bit-for-bit; overlap-8 coherent.
-  - **Blend + score domain = linear amplitude.** The board's `g_s` denorm emits linA, so both the blend
-    and the metrics live in linear amplitude — the project convention (metrics in linear amplitude,
-    visualization in log; CLAUDE.md) and the same domain as §5. No log↔linA transform enters the loop, so
-    there is no domain-mismatch seam and the §5 (symmetrization) and this study's numbers are on one basis.
-  - **Seam-sensitive scoring.** `score_arrays` reports full-tile PSNR/SSIM **plus** a split into the
-    **seam band** (±3 px of the non-overlap 256-grid boundaries, ≈4.6 % of pixels — where independent-patch
-    seams live) and the **interior**. The full-tile mean dilutes the seam effect ~21×, so `PSNR_interior −
-    PSNR_seam` is the sensitive number that isolates what overlap actually fixes.
-- **MERLIN GT.** ✅ `scripts/evaluation/merlin_full_gt.py`: the project's own MERLIN despeckle on the
-  whole-image-symmetrized scene, seam-free heavy-overlap (64 px) blend — consistent with §5. Validated on
-  the 1024² crop vs the project's existing `linA_MERLIN.npy` (PSNR 54.8 dB, corr 0.991). The full-scene GT
-  (`data/visualization/MERLIN/linA_MERLIN_full_Hamburg.npy`, `(32901, 14686)`) is generated and is the
-  scoring reference for the sweep. (`…/MERLIN_DDS/linA_MERLIN_DDS_full_Hamburg.npy` exists but is the
-  original-study checkpoint → a cross-check only.)
-- **INT8 recon caps bright scatterers at 2100 — metric-invisible, and it sets the SSIM `data_range`.**
-  *Observed* while scoring: full-scene SSIM sat at a saturated ~0.99 until the `data_range` was corrected.
-  The on-board recon amplitude is hard-capped at **exactly 2100.1** (every tile / overlap / arch) because
-  the DPU `g_s` output tensor is INT8 at **fix-point 8** — its largest code (127) maps to `x_hat =
-  127/256 = 0.496`, which the denorm `exp(x_hat·(AMP_MAX−AMP_MIN)+AMP_MIN)` turns into 2100.1. The float32
-  model has no such cap: on the same scene it reaches **~85 k (FP) / ~68 k (ResSHyp)**, near MERLIN's
-  ~127 k, so the board clips the brightest **~0.7 %** of pixels (point scatterers) down to 2100.
-  *Consequences:* (1) invisible to the reported metrics — PSNR/SSIM/MSE clip to `AMP_LIN_99 = 545` first,
-  far below the cap; (2) the overlap study scores SSIM **coherently with PSNR/MSE**: clip recon+GT to
-  `AMP_LIN_99` and use `data_range = AMP_LIN_99 = 545` (`stitch_ddc.score_arrays`). This is the fixed,
-  cross-model-comparable basis — it avoids both `max(GT) ≈ 1e5` (saturates SSIM toward 1) and
-  `max(recon) ≈ 2100` (non-comparable across models, since the recon max varies). This basis is now used
-  by every distortion metric, host and board (SSIM, MS-SSIM and EPD included); re-evaluating the model set
-  against it is tracked in `docs/ssim_data_range_issue.md`; (3) the board
-  genuinely cannot represent bright targets — a fix-point-7 re-quantization would lift the cap to ~44 k at
-  half the precision, if ever needed.
+**Seam metric.** Full-tile means dilute the seam ~21× (seam band = ±3 px of the 256-grid ≈ 4.6 % of
+pixels), so the sensitive number is `PSNR_interior − PSNR_seam`.
 
-**Result — overlap 2 removes the seam at ~1 % cost; more buys nothing.** Full table (all archs, λ, cold +
-warm, full/seam/interior PSNR & SSIM) → `results/benchmark_stream_overlap/overlap_table.{md,csv}`. The
-seam is real but local: at **overlap 0** the reconstruction is **1.2–2.8 dB worse in the ±3 px seam band**
-than in the interior, and its SSIM drops ~0.06–0.08 there — while the full-tile mean barely moves (the
-seam is 4.6 % of pixels, so it is diluted ~21×). **Overlap 2 fully closes the seam** (deficit → ~0.02 dB);
-overlaps 4/8/16 add nothing to the seam and only cost more.
+**Result — overlap 2 closes the seam at ~1 % cost; more buys nothing.**
 
 | config | seam Δ @ ov0 (dB) | seam Δ @ ov2 | SSIM seam→interior @ ov0 | full-tile PSNR ov0→ov16 |
 | --- | --- | --- | --- | --- |
@@ -400,43 +339,130 @@ overlaps 4/8/16 add nothing to the seam and only cost more.
 | ResSHyp λ1000 | 2.75 | 0.03 | 0.811 → 0.889 | 27.48 → 27.72 |
 | ResSHyp λ20 | 2.06 | 0.01 | 0.737 → 0.810 | 25.37 → 25.53 |
 
-*(seam Δ = PSNR_interior − PSNR_seam; all PSNR clipped to `AMP_LIN_99`.)*
+*(seam Δ = PSNR_interior − PSNR_seam; PSNR clipped to `AMP_LIN_99`.)*
 
-**Cost of overlap 2** (measured on the §8 pipeline, so it is directly comparable):
+**Cost of ov2:** latency +0.7–1.0 % warm / free cold-FP (read-bound); downlink +0.78 % (patches
+7,482→7,540, bpp flat); J/patch flat. Overlap 16 costs +14–19 % latency / +14.35 % downlink for no
+further seam gain → **reconstruct at overlap 2**.
 
-- **Latency** — **+0.7–1.0 % warm** (compute-bound: FP λ1000 +0.68 %, ResSHyp λ1000 +0.89 %) and
-  **free cold** on FP (read-bound — the extra compute hides behind the SD read; the whole ov sweep stays
-  within ±2 % of ov0, no monotonic trend). By contrast overlap 16 costs **+14 % (ResSHyp / FP λ20 warm)
-  to +19 % (FP λ1000 warm)**.
-- **Downlink** — patch count grows **+0.78 %** at ov2 (7,482 → 7,540), vs +14.35 % at ov16; bpp-per-pixel
-  is flat, so the `.ddc` grows in proportion to the patch count.
-- **Energy** — J/patch flat across overlap (within run-to-run noise, all archs).
+**INT8 bright-scatterer cap (metric-invisible).** The DPU `g_s` output is INT8 at fix-point 8, so recon
+amplitude hard-caps at **2100.1** (code 127 → `exp(0.496·range+min)`); the float model reaches ~85 k
+(FP) / ~68 k (ResSHyp). This clips the brightest **~0.7 %** of pixels (point scatterers). Invisible to
+the reported metrics (all clip to `AMP_LIN_99 = 545` first), which also sets the SSIM `data_range` (the
+fixed, cross-model-comparable basis; see `docs/ssim_data_range_issue.md`). A fix-point-7 requant would
+lift the cap to ~44 k at half precision, if ever needed.
 
-So the pipeline should reconstruct at **overlap 2**: it erases a genuine, visible per-patch seam for
-about **1 % latency and 0.8 % downlink**, and anything beyond 2 px pays a growing latency/bitrate cost for
-no further seam gain.
+---
 
-> **On-ground SHyp `.ddc` decoder** (optional, decoupled — *not* a blocker for the overlap study).
-> *Idea:* reproduce the board's INT8 `h_s` on host so SHyp/ResSHyp `.ddc` decode in pure Python (FP
-> already does). *Why it's hard:* the Gaussian decode needs the board's scales to land in the same
-> `gc_scale_table` bucket (64 log-spaced, ~13 % wide) for **every** element — an FP32-checkpoint `h_s`
-> crosses buckets and desyncs rANS. A faithful decoder needs the INT8 `h_s`: the quant artifacts aren't
-> on disk (would re-quantize in Docker from `original_run_dir`) and bit-exactness vs the board is unproven
-> (`export_xmodel(deploy_check=False)`). *Value if built:* off-board verification + a real ground-station
-> decoder. The overlap study sidesteps it entirely via board decode (pass 2).
+## 11. TODO
 
-> **Stacked time-per-patch figure.**
-> *Idea:* a stacked bar (read / DPU / normalize / entropy) per arch × schedule — the figure that shows
-> **CPU load explicitly**, which the roofline/system plots miss (§9). ResSHyp's bar is DPU-dominated,
-> FP's is entropy-dominated; NEON visibly shrinks the normalize slice.
-> *Builds on:* §9. Data already exist (`benchmark_hardware` stage means + `benchmark_stream` read
-> times) — no new board runs.
+### Next experiments — DATE'27 priority
 
-> **Figure rigor + polish pass.**
-> *Idea:* the Gantt + roofline + system plots are feel-only sketches; before the manuscript, audit what
-> each axis/roof/point means, then polish for legibility. Consider a dedicated read-ceiling figure.
-> *Builds on:* §9.
+Both are driven by `docs/DATE27_paper_plan.md`; do these before any figure-polish work.
 
-> **Naming: `stream_pipeline`?**
-> *Remark:* the binary does a sequential path + a worker-pool (`--p0`), not a classic per-stage pipeline
-> — the name reads more pipeline-y than it is. Low priority; rename (`stream_compress`?) or leave.
+**N1 — Fill the third DPU core by fanning patches out, and explain why ResSHyp currently does not
+scale.** *Status: not implemented; next experiment. The research question has changed — see below.*
+Supersedes the `P3 (deferred)` entry in `FPGA_benchmark.md` §10.
+
+**The schedule.** The board has **3× B4096 cores** (§2) but `--s1` uses only two, splitting
+`g_a(re)‖g_a(im)` *within* a patch. Because the **onboard compress path never runs `g_s`**
+(decode-only), the per-patch DPU work (for hyperprior models) is just `2× g_a + h_a + h_s` — there is no third concurrent
+subgraph inside one patch, so the third core can only be filled **across** patches. The right way to do
+that is **plain data-parallel fan-out**: give each of 3 workers its own runner set on its own core and
+let each process a whole patch independently (`g_a(re,N)`, `g_a(re,N+1)`, `g_a(re,N+2)`, then the imag
+halves). Steady-state throughput is identical to any interleaved variant — 3 `g_a` calls per 36.59 ms
+either way — but fan-out is simpler, needs no cross-patch choreography, and reuses the existing
+`nn_only --dpu-cores N` machinery. It also means **`--s1` becomes redundant** at 3 lanes: channel
+parallelism and patch parallelism compete for the same cores. Today's `p0` serialises the DPU behind a
+mutex, so the change is to drop that mutex and give each worker its own lane.
+
+**The naive ceiling.** From `results/benchmark_hardware/*/s0_compress.json` (ResSHyp λ1000):
+`g_a` = 36.59 ms/call → DPU work = 2(36.59) + 1.39 + 0.84 = **75.40 core-ms/patch**. That gives 26.5
+patch/s on 2 cores (measured `p0+s1` = 23.1, i.e. 87 % of it) and **39.8 patch/s on 3** — a naive 1.50×.
+
+**But the measured (patch only, no full tile streaming) fan-out data contradicts that**, see`nn_only_compress_dpu{1,2,3}.json` already measures exactly this schedule as a pure DPU ceiling:
+
+| arch | dpu1 | dpu2 | dpu3 |
+| --- | --- | --- | --- |
+| FP | 37.03 fps (1.00×) | 72.27 (1.95×) | 103.36 (**2.79×**) |
+| ResFP | 11.19 (1.00×) | 22.14 (1.98×) | 33.08 (**2.96×**) |
+| SHyp | 29.48 (1.00×) | 49.92 (1.69×) | 73.99 (**2.51×**) |
+| **ResSHyp** | 10.28 (1.00×) | 20.34 (1.98×) | 18.58 (**1.81× — regresses**) |
+
+Two live hypotheses, to be settled by diagnosis *before* any implementation — they imply **different fixes**:
+
+1. **Memory-bound weight/feature-map loading (CL's leading expectation).** ResSHyp has the largest
+   weight set and `h_a`/`h_s` are weight-load-bound (§9); a third concurrent lane may saturate the
+   on-chip weight-buffer / DDR weight-load path so the extra core simply cannot be fed. If so, the
+   finding is that multi-subgraph hyperpriors hit a *memory* roof before a compute one under core
+   fan-out, and the design lever is **footprint / schedule co-design, not more cores**.
+2. **VART runner-creation-order core collision.** VART has **no core pinning** and assigns cores
+   round-robin at creation time, so 3 lanes × 4 subgraphs = 12 runners can collide concurrent pairs on
+   one core unless the creation order is choreographed, exactly as `init_s1` had to be
+   (`FPGA_benchmark.md` §11). FP/ResFP (2 subgraphs) are far likelier to land cleanly by luck. If so,
+   the lever is a **deterministic runner→core mapping**.
+
+DDR contention as a *global* bottleneck is unlikely (§8 puts DPU traffic ~20× under the ceiling), but
+per-lane weight-load contention (hypothesis 1) is a different, local effect. **Diagnosis first**:
+re-run `nn_only` at dpu3 with instrumented runner-to-core assignment *and* per-lane weight-load / DDR
+traffic, and confirm which roof is hit before building anything.
+
+*If the cause is creation order, this becomes a genuine finding rather than an engineering fix:* a
+concrete, reproducible scaling trap for multi-subgraph models on a fixed-overlay accelerator. That is
+DATE-shaped in a way the raw speedup was not. **First step is diagnosis, not implementation** — re-run
+`nn_only` at dpu3 with instrumented runner-to-core assignment and confirm or kill the hypothesis
+before building anything. Keep the result behind a runtime flag per [[project_ablation_table]].
+
+*Also worth noting:* FP should gain nothing end-to-end regardless — it is CPU/read-bound (DPU ceiling 192
+patch/s vs 132 measured).
+It might also be worth measuring SHyp as ga without residual blocks has 10x less OPs the regression across 10 cores might not be there (because of a declutter of weight-load or what not).
+
+**N2 — Embedded-GPU baseline (NVIDIA Jetson).** *Status: not started; hardware reportedly attached to
+this host — access route to be confirmed with a colleague.* Supplies the recognisable
+`N× vs a named baseline` that DATE expects and frames an honest
+onboard-payload question: **embedded GPU vs FPGA SoC**.
+
+- **Scope:** the *same end-to-end streaming pipeline* (read → normalize → NN → rANS → `.ddc`), not
+  per-patch — a per-patch comparison would only reproduce the TGRS cross-platform table.
+- **Precision:** probably **float32 throughout** on the Jetson (no INT8/TensorRT quantization work, depends on what the Jetson can run. To check first.).
+- **Port cost:** the rANS coder is portable C++ and should move across directly; float32 checkpoints (before any Vitis AI adaptation) are present on Host and can be found using `manifest.json`.
+- Keep the existing desktop-GPU (A4000) + Xeon CPU numbers from `results/benchmark_unified/` alongside
+  as context — they cost nothing and are informative.
+
+**N3 — Deadline/budget-driven rate allocation.** Vary λ *across the scene* under a bit-budget or
+wall-clock deadline: **user-cancelled: tricky to implement cleanly*.
+
+**N5 — CCSDS baseline (recognisable ratio).** CCSDS 122.0 is the de-facto onboard *image* codec
+(wavelet + bit-plane — the space-grade JPEG2000-lite, widely in rad-hard hardware): the recognisable
+baseline a DATE/space reviewer knows, and it disambiguates "compression" from model compression. However, it probably does not support SAR SLC data compression (effectively) out-of-the-box, need some deep checks.
+A literature comparison is cheap; running it on the Hamburg tile is more work (open implementations
+exist). **Metric caveat:** CCSDS-122 does not despeckle, so DDC wins on rate partly *because* it removes
+high-entropy speckle — a fair comparison needs a common reference. First step: characterise CCSDS-122
+RD behaviour from the literature, then decide paper-only vs reimplemented. Cost: low (paper) to medium (run).
+
+**N4 (dropped as a standalone experiment).** The INT8 `g_s` output cap at 2100.1 (clips the brightest
+~0.7 % of pixels) is metric-invisible; it lives as a one-line **limitation** in `main.tex` §Discussion,
+not as a deepening study.
+
+**A4 — Optimization-ladder figure: warm per rung.** Today only the last rung has a warm run. Re-run the
+sweep with **warm for every rung** and show cold+warm per rung (paired bars — warm behind with cold in the
+front and a pattern). Consider making **warm the primary series** (a fast/no-SD store is the expected onboard
+case) with cold as the testbed overlay. Needs a board re-run. *(figure: `optimization_ladder.py`.)*
+
+**A5 — Hardware platform details (HW-community venue).** Gather and report the accelerator's internal
+design: DPU `3× B4096 @ 300 MHz` (see if DSP run at double clock frequency), PS DDR4 ≈17 GB/s, ZU9EG (base facts in §2),
+**plus PL resource utilisation** (LUT/FF/BRAM/URAM/DSP) and clocks from the Vivado/DPU report — as a short
+platform table in `main.tex` (Background or Setup).
+
+### Deferred / optional
+
+- **On-ground SHyp `.ddc` decoder** (optional, decoupled). Reproduce the board INT8 `h_s` on host so
+  SHyp/ResSHyp `.ddc` decode in pure Python (FP already does); hard because the Gaussian decode needs
+  every element's scale in the same `gc_scale_table` bucket and an FP32 `h_s` desyncs rANS. The overlap
+  study (§10) sidesteps it via board decode; value if built = off-board verification + a real ground
+  decoder.
+- **Figures.** The §9 sketches (`stream_gantt`/`stream_roofline`/`stream_sysplot`) are *feel-only* and
+  superseded by the DATE manuscript figures (`figures/scripts/`, LaTeX repo); the stacked time-per-patch
+  figure is **done** (Fig. 3). A dedicated read-ceiling / CPU-view figure could still help.
+- **Naming.** `stream_pipeline` runs a sequential path + a worker-pool (`--p0`), not a classic per-stage
+  pipeline — rename (`stream_compress`?) or leave. Low priority.
