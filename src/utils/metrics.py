@@ -70,7 +70,7 @@ def _clip_to_amp99(*linA: Tensor) -> Tuple[Tensor, ...]:
     per-image ``data_range`` (e.g. ``max(predicted)``) is not comparable across models: the SSIM
     stabilisers scale with ``data_range²``, so a recon with a bright pixel is scored on a larger
     ``C1/C2`` and saturates toward 1. That matters most for float32 vs INT8, where the DPU caps the
-    recon at 2100 while float32 reaches ~1e5 (see docs/ssim_data_range_issue.md). It is also why EPD
+    recon at 2100 while float32 reaches ~1e5. It is also why EPD
     clips: gradients at bright scatterers otherwise dominate its sums.
     """
     return tuple(torch.clamp(t, max=AMP_LIN_99) for t in linA)

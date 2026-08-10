@@ -13,9 +13,6 @@ Read **only** the document(s) relevant to your current task — do not load all 
 | Data source, preprocessing pipeline, HDF5 schema, normalisation | [docs/Data.md](../docs/Data.md) |
 | FPGA inference pipeline, DPU runners, entropy models, known issues | [docs/FPGA_inference.md](../docs/FPGA_inference.md) |
 | Benchmark: ZCU102 hardware, methodology, power, results, future work | [docs/FPGA_benchmark.md](../docs/FPGA_benchmark.md) |
-| Deployment journal, resolved/open Vitis-AI issues, changelog | [docs/Vitis-AI_journey.md](../docs/Vitis-AI_journey.md) |
-
-> Before deep-diving an FPGA-related bug, check `docs/Vitis-AI_journey.md` — the issue may already be documented.
 
 This documentation is a live, condensed representation of the code. While it provides a high-level overview and key details, it is not a substitute for reading the code itself. Always refer to the source code for the definitive implementation and logic.
 Always update the documentation if you make changes to the code that affect the overall understanding of the project.

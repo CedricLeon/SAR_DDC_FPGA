@@ -42,12 +42,9 @@ Read only what's relevant to the task at hand.
 | Data source, preprocessing, HDF5 schema, normalisation | `docs/Data.md` |
 | FPGA inference pipeline (C++), DPU runners, entropy models | `docs/FPGA_inference.md` ← read first for inference work |
 | Benchmark: ZCU102 hardware, methodology, power, results, future work + journal | `docs/FPGA_benchmark.md` |
-| Why/how we ported Python→C++, before/after numbers, bug archive | `docs/python_to_cpp_migration_journal.md` |
 | GPU/CPU host benchmark + cross-platform (CPU/GPU/FPGA) comparison & unified runner | `docs/GPU_benchmark.md` |
 | Onboard streaming pipeline (receive→compress→downlink) — plan, feasibility, ZCU102 memory/storage facts, symmetrization study | `docs/onboard_pipeline.md` ← **planning** |
 | Analysis notebooks: purpose, data flow, shared modules (`_plotkit`, `_benchmark_loader`) | `docs/Notebooks.md` |
-| Metric basis (AMP_LIN_99 clip + data_range), checkpoint mismatch, manuscript-number impact | `docs/ssim_data_range_issue.md` |
-| Vitis-AI issues, deployment journal | `docs/Vitis-AI_journey.md` (check here before debugging Vitis-AI issues) |
 
 ---
 
@@ -145,7 +142,7 @@ The Python→C++ migration is done; **C++ is the only inference path** (no Pytho
 
 - **`inference_hybrid`** — board-validated: 100/100 patches pass the gate
   `|PSNR_cpp_vs_MERLIN − PSNR_py_vs_MERLIN| < 0.1 dB` (mean Δ = +0.083 dB; C++ ≥ Python vs MERLIN).
-  Architecture + run reference → `docs/FPGA_inference.md`; bug archive → `docs/python_to_cpp_migration_journal.md` §6.
+  Architecture + run reference → `docs/FPGA_inference.md`.
 - **`benchmark_hardware`** — M1–M3 board-verified: S0 per-stage baseline, native INA226/PMBus power
   sampler, S1 channel-parallel (g_a 1.95× / g_s 1.96×, byte-identical to S0), data-parallel ceilings
   (nn_only/entropy_only ~1.97× at N=2). Hardware, methodology, results → `docs/FPGA_benchmark.md`.

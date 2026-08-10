@@ -4,7 +4,7 @@ Every reference-based distortion metric (MSE, PSNR, SSIM, MS-SSIM, EPD) clips to
 and SSIM/MS-SSIM score at ``data_range = AMP_LIN_99``. Before this convention, SSIM used
 ``data_range = max(predicted)``, which made scores depend on the brightest pixel of each
 reconstruction and therefore non-comparable across models — inflating float32 (peak ~1e5) against
-INT8 (DPU-capped at 2100). See docs/ssim_data_range_issue.md.
+INT8 (DPU-capped at 2100).
 """
 
 import numpy as np

@@ -10,7 +10,7 @@ pair is scored twice:
   * ``old``  — SSIM/MS-SSIM at ``data_range = max(predicted)``, EPD unclipped (the convention
     behind the current manuscript numbers);
   * ``new``  — everything clipped to ``AMP_LIN_99`` with ``data_range = AMP_LIN_99``
-    (``src.utils.metrics``, see docs/ssim_data_range_issue.md).
+    (``src.utils.metrics``).
 
 Writes a tidy per-model CSV plus a per-architecture summary of how much of the reported
 float32→INT8 quality drop was convention rather than quantization. Reads only; it never

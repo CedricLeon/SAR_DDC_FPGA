@@ -349,7 +349,7 @@ further seam gain → **reconstruct at overlap 2**.
 amplitude hard-caps at **2100.1** (code 127 → `exp(0.496·range+min)`); the float model reaches ~85 k
 (FP) / ~68 k (ResSHyp). This clips the brightest **~0.7 %** of pixels (point scatterers). Invisible to
 the reported metrics (all clip to `AMP_LIN_99 = 545` first), which also sets the SSIM `data_range` (the
-fixed, cross-model-comparable basis; see `docs/ssim_data_range_issue.md`). A fix-point-7 requant would
+fixed, cross-model-comparable basis; the convention lives in `src/utils/metrics.py`). A fix-point-7 requant would
 lift the cap to ~44 k at half precision, if ever needed.
 
 ---

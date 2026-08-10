@@ -2,7 +2,7 @@
 
 > Host-side (GPU + CPU) benchmarking of the SAR-DDC pipeline, and how it joins the FPGA results for
 > a fair cross-platform comparison. FPGA-only benchmarking is in `FPGA_benchmark.md`; inference in
-> `FPGA_inference.md`; the Python→C++ history in `python_to_cpp_migration_journal.md`.
+> `FPGA_inference.md`.
 
 ---
 

@@ -1,8 +1,7 @@
 # FPGA Inference — C++ Pipeline Reference
 
 > How on-board inference works **now**: the C++ `inference_hybrid` binary on the Xilinx ZCU102.
-> For *why* it was ported from Python and the before/after numbers, see
-> `python_to_cpp_migration_journal.md`. For benchmarking, see `FPGA_benchmark.md`.
+> For benchmarking, see `FPGA_benchmark.md`.
 
 ---
 
@@ -186,7 +185,7 @@ Outputs in `<model>/results/`: `metrics.json` (averaged task metrics), `<tile>_m
 In C++ the pipeline is **DPU-dominated** for the residual models (ResSHyp ≈ 78% DPU, 12% entropy,
 10% normalize/denorm) and more balanced for the small models (FP ≈ 37% DPU; normalize/denorm and
 entropy dominate). This is the *reverse* of the Python era, where entropy coding dominated — the C++
-rANS collapsed the entropy cost. Full numbers: `python_to_cpp_migration_journal.md` §3 / `FPGA_benchmark.md`.
+rANS collapsed the entropy cost. Full numbers: `FPGA_benchmark.md`.
 
 ---
 
@@ -212,5 +211,4 @@ rANS collapsed the entropy cost. Full numbers: `python_to_cpp_migration_journal.
 `deploy.py` (host): quantize/compile in the Vitis-AI Docker (`model_quant.py` + `vai_c_xir`) →
 `export_entropy_params` writes `entropy_params/*.npy` → `rsync --exclude=results active_model/` →
 build/run the C++ binary on the board → fetch `results/`. `--rebuild-cpp` (or `batch_deploy.py`)
-pushes updated C++ sources and recompiles. Step-by-step notes + historical issues:
-`Vitis-AI_journey.md`.
+pushes updated C++ sources and recompiles.

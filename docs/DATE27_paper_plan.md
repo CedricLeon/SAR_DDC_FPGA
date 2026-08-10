@@ -153,8 +153,7 @@ deployment into the method. **Symmetrization** — why it exists (MERLIN needs i
 breaks streaming (whole-tile FFT), why skipping is defensible (the Re/Im correlation it removes for
 Noise2Noise training is small, so skipping is only slightly suboptimal), cost ≤0.54 dB across archs/rates. **Overlap** —
 independent patches leave a seam; overlap-2 removes it; beyond 2 px buys nothing. **Fig: qualitative
-crop ov0 vs ov2 at a patch boundary** (one visible artifact > one plot); optionally the seam-vs-interior
-+ cost curve.
+crop ov0 vs ov2 at a patch boundary** (one visible artifact > one plot); optionally the seam-vs-interior + cost curve.
 
 **V. Evaluation** — setup (board, two archs spanning CPU/DPU-bound, scene, λ=20 with the λ-independence
 justification, warm = representative / cold = SD-testbed, power sampling). **Fig: optimization ladder**

@@ -39,10 +39,16 @@ echo "Activating vitis-ai-pytorch environment..."
 conda activate vitis-ai-pytorch
 
 echo "Installing dependencies..."
-# Using --user to avoid permission issues if any, though root is default in these containers often
+# Install only what quantisation/compilation needs, on top of the container's stock
+# torch 1.13.1+cu117. Do NOT add `lightning` here: pip resolves it by bumping torch to 2.4.x,
+# which is ABI-incompatible with the vaic/vart wheels (built against torch 1.13) and fails at
+# import with an OSError. compressai is pinned to 1.2.8 (parameter names changed after 1.2.6,
+# which otherwise breaks checkpoint loading with "unexpected keys").
 pip install h5py omegaconf compressai torchmetrics
 
 echo "Exporting required library..."
+# The stock container libstdc++ is too old (missing GLIBCXX_3.4.29) for our ops; preload conda's
+# newer libstdc++ so the symbol resolves.
 export LD_PRELOAD=$CONDA_PREFIX/lib/libstdc++.so.6:$LD_PRELOAD
 
 echo "============================================"

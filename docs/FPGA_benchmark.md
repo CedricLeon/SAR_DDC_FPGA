@@ -2,9 +2,8 @@
 
 > The benchmark reference for the SAR DDC pipeline on the Xilinx ZCU102: hardware, the
 > `benchmark_hardware` C++ binary, measurement methodology, results, future work, and a decisions
-> log. **Inference** itself is documented in `FPGA_inference.md`; the **Python→C++ migration**
-> before/after is in `python_to_cpp_migration_journal.md`; the **GPU/CPU** benchmark and the legacy
-> cross-platform tooling live (raw) in `GPU_benchmark.md`.
+> log. **Inference** itself is documented in `FPGA_inference.md`; the **GPU/CPU** benchmark and the
+> legacy cross-platform tooling live (raw) in `GPU_benchmark.md`.
 >
 > This doc consolidates the former `performance_benchmark_implementation.md` (Python-era hardware /
 > methodology, kept) and `benchmark_hardware_design.md` (C++ dev journal). Python-specific *how-to*
@@ -173,7 +172,7 @@ shorter DPU work, fixed thread overhead proportionally larger).
 
 **Bottleneck in C++:** DPU-dominated for residual models (ResSHyp ~78% DPU / 12% entropy / 10%
 normalize+denorm); FP ~37% DPU (normalize/denorm + entropy dominate → NEON is the lever, not
-scheduling). The full Python-vs-C++ per-stage before/after lives in `python_to_cpp_migration_journal.md` §3.
+scheduling).
 
 **xdputil synthetic vs real-world:** real per-call adds ~10–19% on g_a/g_s (quant/dequant + dispatch)
 and far more on h_a/h_s (fixed overhead dominates their sub-ms compute).
@@ -261,5 +260,4 @@ extracted); **[D]** argument safeguards (`warn_ignored`). **[C]** subcommand CLI
 ## 12. References
 
 Vitis-AI 3.0 User Guide (VART/xdputil); DPUCZDX8G PG338 (resource utilisation); TI INA226 datasheet;
-Maxim PMBus telemetry. Model/MERLIN theory: `docs/Method.md`. Migration before/after:
-`python_to_cpp_migration_journal.md`. Inference: `FPGA_inference.md`.
+Maxim PMBus telemetry. Model/MERLIN theory: `docs/Method.md`. Inference: `FPGA_inference.md`.
