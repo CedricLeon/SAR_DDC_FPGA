@@ -542,6 +542,12 @@ namespace ddc
 
         std::vector<float> vis_noisy, vis_recon, vis_adam, vis_merlin; // log-I, HW each
 
+        // --save-recons: every recon in linA, so any later metric-convention change can be
+        // re-scored off-board instead of costing another full deploy sweep.
+        std::vector<float> all_recons;
+        if (cfg_.save_recons)
+            all_recons.reserve(static_cast<size_t>(N) * H * W);
+
         auto t0_all = std::chrono::steady_clock::now();
 
         for (int i = 0; i < N; ++i)
@@ -584,6 +590,9 @@ namespace ddc
                 adam_lina[p] = sample[p * 4 + 2];
                 merlin_lina[p] = sample[p * 4 + 3];
             }
+
+            if (cfg_.save_recons)
+                all_recons.insert(all_recons.end(), recon_lina.begin(), recon_lina.end());
 
             acc_noisy.update(recon_lina.data(), noisy_lina.data(), H, W, res.num_bytes);
             acc_adam.update(recon_lina.data(), adam_lina.data(), H, W, res.num_bytes);
@@ -693,6 +702,15 @@ namespace ddc
                              {nv, static_cast<size_t>(H), static_cast<size_t>(W)});
             npy_save_float32((vis_dir / "vis_merlin.npy").string(), vis_merlin.data(),
                              {nv, static_cast<size_t>(H), static_cast<size_t>(W)});
+        }
+
+        if (cfg_.save_recons)
+        {
+            auto recon_path = vis_dir / "recon_test_set_linA.npy";
+            npy_save_float32(recon_path.string(), all_recons.data(),
+                             {static_cast<size_t>(N), static_cast<size_t>(H),
+                              static_cast<size_t>(W)});
+            LOG_INFO("  Saved " + std::to_string(N) + " reconstructions -> " + recon_path.string());
         }
     }
 

@@ -751,7 +751,7 @@ def phase_transfer(model_name: str) -> None:
 # ============================================================
 
 
-def phase_infer(subset: int, skip_test_set: bool = False) -> None:
+def phase_infer(subset: int, skip_test_set: bool = False, save_recons: bool = False) -> None:
     """Run C++ inference binary on the FPGA by SSHing in and executing
     build_cpp/inference_hybrid."""
     print_header("Phase 3: Inference on FPGA")
@@ -765,6 +765,8 @@ def phase_infer(subset: int, skip_test_set: bool = False) -> None:
     )
     if skip_test_set:
         infer_cmd += " --skip-test-set"
+    if save_recons:
+        infer_cmd += " --save-recons"
     print(f"  SSH command: {infer_cmd}")
     # Output streams live to this terminal (no capture).
     run(["ssh", FPGA_HOST, infer_cmd])
@@ -788,6 +790,18 @@ def phase_fetch() -> None:
     print(f"  Fetching {remote_results} -> {local_dest}")
     run(["scp", "-r", remote_results, local_dest])
     print(f"  Results saved to: {local_results}")
+
+    # --save-recons writes ~131 MB of float32 patches; store them losslessly compressed
+    # (~1.9x) so the whole model set stays a reasonable size on disk.
+    recon_npy = local_results / "reconstructions_test_set" / "recon_test_set_linA.npy"
+    if recon_npy.exists():
+        recons = np.load(recon_npy)
+        np.savez_compressed(recon_npy.with_suffix(".npz"), recon_linA=recons)
+        recon_npy.unlink()
+        print(
+            f"  Compressed {recons.shape[0]} reconstructions -> "
+            f"{recon_npy.with_suffix('.npz').name}"
+        )
 
 
 # ============================================================
@@ -905,6 +919,15 @@ def main() -> None:
             "a binary fix without repeating the full test-set sweep."
         ),
     )
+    g_infer.add_argument(
+        "--save-recons",
+        action="store_true",
+        help=(
+            "Pass --save-recons to the C++ binary: dump every test-subset reconstruction "
+            "(linA) and store it compressed next to metrics.json. Lets a later metric change "
+            "be re-scored off-board instead of costing another deploy sweep."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -963,7 +986,9 @@ def main() -> None:
             if args.rebuild_cpp:
                 ensure_cpp_binary()
             tee.verbose = PHASE3_VERBOSE  # toggle: may mute FPGA inference output
-            phase_infer(args.subset, skip_test_set=args.skip_test_set)
+            phase_infer(
+                args.subset, skip_test_set=args.skip_test_set, save_recons=args.save_recons
+            )
             tee.verbose = True  # restore for phase 4 and Done summary
 
         if not args.skip_fetch:

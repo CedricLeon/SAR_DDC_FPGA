@@ -18,17 +18,18 @@ from tqdm import tqdm
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
-from src.data.sar_datamodule import TSXSSCDataModule  # noqa: E402
-from src.models.merlin_module import MerlinModule  # noqa: E402
-from src.models.sar_ddc_module import SARDDCModule  # noqa: E402
-from src.utils.constants import AMP_MAX, AMP_MIN, EPS  # noqa: E402
-from src.utils.metrics import (  # noqa: E402
+from src.data.sar_datamodule import TSXSSCDataModule
+from src.models.merlin_module import MerlinModule
+from src.models.sar_ddc_module import SARDDCModule
+from src.utils.constants import EPS
+from src.utils.metrics import (
     estimate_likelihoods_bpp,
     get_all_distortion_metrics,
 )
-from src.utils.pylogger import RankedLogger  # noqa: E402
-from src.utils.sar_utils import load_cosar, symmetrize  # noqa: E402
-from src.utils.utils import extras  # noqa: E402
+from src.utils.pylogger import RankedLogger
+from src.utils.reconstruction import denorm_to_linA, predict_linA
+from src.utils.sar_utils import load_cosar, symmetrize
+from src.utils.utils import extras
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
@@ -75,7 +76,7 @@ def _instantiate_model_and_load_weights(train_cfg: DictConfig, ckpt_path: Path) 
     return model
 
 
-def _count_layers(module: torch.nn.Module) -> Dict[str, int]:
+def _count_layers(module: torch.nn.Module) -> dict[str, int]:
     """Count the number of layers in the model.
 
     Args:
@@ -103,7 +104,7 @@ def _count_layers(module: torch.nn.Module) -> Dict[str, int]:
     return counts
 
 
-def _params_and_size_mb(module: torch.nn.Module) -> Tuple[int, int, float]:
+def _params_and_size_mb(module: torch.nn.Module) -> tuple[int, int, float]:
     """Compute total and trainable parameters, and size in MB.
 
     Args:
@@ -115,14 +116,14 @@ def _params_and_size_mb(module: torch.nn.Module) -> Tuple[int, int, float]:
     """
     total: int = sum(p.numel() for p in module.parameters())
     trainable: int = sum(p.numel() for p in module.parameters() if p.requires_grad)
-    state: Dict[str, Tensor] = module.state_dict()
+    state: dict[str, Tensor] = module.state_dict()
     total_bytes: int = sum(t.element_size() * t.nelement() for t in state.values())
     return total, trainable, total_bytes / (1024**2)
 
 
 def _profile_flops_macs_latency(
     module: torch.nn.Module, device: torch.device, input_size: int
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Compute MACs/FLOPs using ptflops only, and measure latency.
 
     Fails fast if ptflops is unavailable.
@@ -185,7 +186,7 @@ def _profile_flops_macs_latency(
     }
 
 
-def _compute_model_stats(model: LightningModule, input_size: int) -> Dict[str, Any]:
+def _compute_model_stats(model: LightningModule, input_size: int) -> dict[str, Any]:
     """Compute various model statistics: layers, parameters, size, MACs/FLOPs, latency.
     Args:
         model (LightningModule): The model to analyze.
@@ -194,15 +195,15 @@ def _compute_model_stats(model: LightningModule, input_size: int) -> Dict[str, A
         model_stats (Dict[str, Any]): Dictionary with model statistics.
     """
     net: torch.nn.Module = getattr(model, "net", model)
-    layer_counts: Dict[str, int] = _count_layers(net)
+    layer_counts: dict[str, int] = _count_layers(net)
     params_total, params_trainable, weights_size_mb = _params_and_size_mb(net)
 
     # MACs/FLOPs + CPU latency
-    stats_cpu: Dict[str, Any] = _profile_flops_macs_latency(net, torch.device("cpu"), input_size)
+    stats_cpu: dict[str, Any] = _profile_flops_macs_latency(net, torch.device("cpu"), input_size)
     # GPU latency (if available)
-    latency_gpu: Union[float, None] = None
+    latency_gpu: float | None = None
     if torch.cuda.is_available():
-        stats_gpu: Dict[str, Any] = _profile_flops_macs_latency(
+        stats_gpu: dict[str, Any] = _profile_flops_macs_latency(
             net, torch.device("cuda"), input_size
         )
         latency_gpu = stats_gpu.get("latency_s")
@@ -242,7 +243,7 @@ def _standardize_reference_name(name: str) -> str:
     return name.replace(" ", "_")
 
 
-def _load_reference_tile_outputs(methods: List[str], tile_dir: Path) -> Dict[str, np.ndarray]:
+def _load_reference_tile_outputs(methods: list[str], tile_dir: Path) -> dict[str, np.ndarray]:
     """Load reference denoised outputs for given methods from tile directory.
 
     Args:
@@ -251,11 +252,11 @@ def _load_reference_tile_outputs(methods: List[str], tile_dir: Path) -> Dict[str
     Returns:
         refs (Dict[str, np.ndarray]): Dictionary with loaded reference arrays.
     """
-    refs: Dict[str, np.ndarray] = {}
+    refs: dict[str, np.ndarray] = {}
     for m in methods:
         method_name: str = _standardize_reference_name(m)
         # Expected format: denoised_by_<method_name>_* .npy containing a dict or array
-        matches: List[Path] = list(tile_dir.glob(f"denoised_by_{method_name}_*.npy"))
+        matches: list[Path] = list(tile_dir.glob(f"denoised_by_{method_name}_*.npy"))
         if not matches:
             log.warning(
                 f"[REF MISSING] Reference output for '{m}' not found in {tile_dir}. "
@@ -271,7 +272,7 @@ def _evaluate_on_test(
     eval_cfg: DictConfig,
     data_dir: str,
     device: torch.device,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Evaluate the model on the test set and compute metrics.
 
     Args:
@@ -294,11 +295,11 @@ def _evaluate_on_test(
 
     model = model.to(device)
 
-    mse_list: List[float] = []
-    psnr_list: List[float] = []
-    ssim_list: List[float] = []
-    ms_ssim_list: List[float] = []
-    bpp_list: List[Tensor] = []
+    mse_list: list[float] = []
+    psnr_list: list[float] = []
+    ssim_list: list[float] = []
+    ms_ssim_list: list[float] = []
+    bpp_list: list[Tensor] = []
 
     if eval_cfg.short_test_set:
         log.info("Using short test set for quick evaluation (first 10 batches only).")
@@ -307,34 +308,24 @@ def _evaluate_on_test(
         for batch in tqdm(dm.test_dataloader()):
             real: Tensor = batch["real"].to(device)
             imag: Tensor = batch["imag"].to(device)
+            noisy_lin: Tensor = torch.cat([real, imag], dim=1).contiguous()
             if isinstance(model, SARDDCModule):
-                noisy_lin: Tensor = torch.cat([real, imag], dim=1).contiguous()
-                recon: Dict[str, Tensor] = model(noisy_lin)
+                recon: dict[str, Tensor] = model(noisy_lin)
                 bpp_list.append(Tensor(estimate_likelihoods_bpp(recon)))
-                recon_real: Tensor = recon["x_hat"]
-                recon_imag: Tensor = recon["x_hat"]
+                x_hat: Tensor = recon["x_hat"]
+                recon_linA: Tensor = denorm_to_linA(x_hat[:, 0], x_hat[:, 1])
             elif isinstance(model, MerlinModule):  # untested so far
-                recon_real: Tensor = model(real)
-                recon_imag: Tensor = model(imag)
+                recon_linA = predict_linA(model, noisy_lin)
             else:
                 raise ValueError(
                     "Model output format not supported for evaluation, the model is probably MerlinModule. @TODO: Implement support."
                 )
 
-            # Convert model output to linear amplitude
-            recon_real_denorm: Tensor = recon_real * (AMP_MAX - AMP_MIN) + AMP_MIN
-            recon_imag_denorm: Tensor = recon_imag * (AMP_MAX - AMP_MIN) + AMP_MIN
-            recon_real_lin: Tensor = torch.exp(recon_real_denorm)
-            recon_imag_lin: Tensor = torch.exp(recon_imag_denorm)
-            recon_linA: Tensor = torch.sqrt(
-                0.5 * (torch.square(recon_real_lin) + torch.square(recon_imag_lin))
-            )
-
             # Noisy image linear amplitude
             noisy_linA: Tensor = torch.sqrt(torch.square(real) + torch.square(imag))
 
             # Compute metrics
-            all_metrics: Dict[str, float] = get_all_distortion_metrics(recon_linA, noisy_linA)
+            all_metrics: dict[str, float] = get_all_distortion_metrics(recon_linA, noisy_linA)
             mse_list.append(all_metrics["mse"])
             psnr_list.append(all_metrics["psnr"])
 
@@ -349,7 +340,7 @@ def _evaluate_on_test(
     psnr_val: float = float(np.mean(psnr_list))
     ssim_val: float = float(np.mean(ssim_list))
     ms_ssim_val: float = float(np.mean(ms_ssim_list))
-    results: Dict[str, float] = {
+    results: dict[str, float] = {
         "mse": mse_val,
         "psnr": psnr_val,
         "ssim": ssim_val,
@@ -368,7 +359,7 @@ def _evaluate_tile_and_visualize(
     model: LightningModule,
     cfg: DictConfig,
     save_dir: Path,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Evaluate the model against references on a tile and generate visualization figure.
 
     Args:
@@ -387,7 +378,7 @@ def _evaluate_tile_and_visualize(
             raise FileNotFoundError(f"Failed to load patch from {tile_path}")
         patch = symmetrize(patch)
     else:
-        image: Union[np.ndarray, None] = load_cosar(tile_path)
+        image: np.ndarray | None = load_cosar(tile_path)
         if image is None:
             raise FileNotFoundError(f"Failed to load SAR tile from {tile_path}")
         image = symmetrize(image)  # [H,W,2]
@@ -405,36 +396,30 @@ def _evaluate_tile_and_visualize(
 
     with torch.inference_mode():
         # Patch-based forward to be consistent and memory-friendly
+        noisy_lin: Tensor = torch.cat([input_real, input_imag], dim=1).contiguous()
         if isinstance(model, SARDDCModule):
-            noisy_lin: Tensor = torch.cat([input_real, input_imag], dim=1).contiguous()
-            recon: Dict[str, Tensor] = model(noisy_lin)
-            recon_real: Tensor = recon["x_hat"]
-            recon_imag: Tensor = recon["x_hat"]
+            recon: dict[str, Tensor] = model(noisy_lin)
+            recon_linA_t: Tensor = denorm_to_linA(recon["x_hat"][:, 0], recon["x_hat"][:, 1])
             bpp: Tensor = Tensor(estimate_likelihoods_bpp(recon))
         elif isinstance(model, MerlinModule):  # untested so far
-            recon_real: Tensor = model(input_real)
-            recon_imag: Tensor = model(input_imag)
-            bpp: Tensor = Tensor(-1.0)
+            recon_linA_t = predict_linA(model, noisy_lin)
+            bpp = Tensor(-1.0)
         else:
             raise ValueError(
                 "Model output format not supported for evaluation, the model is probably MerlinModule. @TODO: Implement support."
             )
-    # # Average is done later in linear/log domains for visualization/metrics
-    # bpp_avg = 0.5 * (metrics_r.get("bpp", -1) + metrics_i.get("bpp", -1))
 
-    # Convert to linear amplitude per channel and build log-intensity like in callback
-    recon_real_lin: Tensor = torch.exp(recon_real.squeeze() * (AMP_MAX - AMP_MIN) + AMP_MIN)
-    recon_imag_lin: Tensor = torch.exp(recon_imag.squeeze() * (AMP_MAX - AMP_MIN) + AMP_MIN)
-    recon_I: Tensor = 0.5 * (recon_real_lin + recon_imag_lin)
-    recon_linA: Tensor = torch.sqrt(recon_I)
+    # Metrics use linear amplitude; visualization uses log-intensity.
+    recon_linA: Tensor = recon_linA_t.squeeze()
+    recon_I: Tensor = torch.square(recon_linA)
     recon_logI: Tensor = torch.log(recon_I + EPS)
 
     # Load references
     tile_vis_dir: Path = Path("data/visualization/for_evaluations/")
-    refs_linA: Dict[str, np.ndarray] = _load_reference_tile_outputs(
+    refs_linA: dict[str, np.ndarray] = _load_reference_tile_outputs(
         list(cfg.reference_methods), tile_vis_dir
     )
-    refs_logI: Dict[str, np.ndarray] = {
+    refs_logI: dict[str, np.ndarray] = {
         method: np.log(np.square(ref_linA) + EPS) for method, ref_linA in refs_linA.items()
     }
     nb_refs: int = len(refs_linA)
@@ -525,7 +510,7 @@ def _evaluate_tile_and_visualize(
     )
 
     # ----- Metrics on tile vs all references (Lin-A) -----
-    metrics: Dict[str, float] = {"bpp": float(bpp)}
+    metrics: dict[str, float] = {"bpp": float(bpp)}
     log.info(f"Tile (bpp: {bpp:.4f}) metrics vs references:")
 
     for method_name, ref_np in refs_logI.items():
@@ -533,7 +518,7 @@ def _evaluate_tile_and_visualize(
         ref_t: Tensor = torch.from_numpy(ref_np).to(device).float()
         ref_linA: Tensor = torch.sqrt(torch.exp(ref_t) + EPS)
 
-        all_metrics: Dict[str, float] = get_all_distortion_metrics(recon_linA, ref_linA)
+        all_metrics: dict[str, float] = get_all_distortion_metrics(recon_linA, ref_linA)
         metrics[f"mse_to_{method_name}"] = all_metrics["mse"]
         log.info(f"        - MSE: {metrics[f'mse_to_{method_name}']:.4f}")
         metrics[f"psnr_to_{method_name}"] = all_metrics["psnr"]
@@ -548,9 +533,9 @@ def _evaluate_tile_and_visualize(
 
 def _write_artifacts(
     out_dir: Path,
-    model_stats: Dict[str, Any],
-    test_metrics: Dict[str, float],
-    tile_info: Dict[str, float],
+    model_stats: dict[str, Any],
+    test_metrics: dict[str, float],
+    tile_info: dict[str, float],
     eval_cfg: Any,
     train_cfg: Any,
 ):
@@ -566,7 +551,7 @@ def _write_artifacts(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Create a hierarchical structure for all metrics
-    combined_metrics: Dict[str, Any] = {
+    combined_metrics: dict[str, Any] = {
         "run_name": eval_cfg.get("run_name"),
         "model_stats": model_stats,
         "test_metrics": test_metrics,
@@ -634,15 +619,15 @@ def main(cfg: DictConfig) -> None:
     model = model.to(device)
 
     # Model stats (on model.net if available)
-    model_stats: Dict[str, Any] = _compute_model_stats(model, int(cfg.patch_size))
+    model_stats: dict[str, Any] = _compute_model_stats(model, int(cfg.patch_size))
 
     # Test-set evaluation
-    test_metrics: Dict[str, float] = _evaluate_on_test(
+    test_metrics: dict[str, float] = _evaluate_on_test(
         model, cfg, str(train_cfg.data.hdf5_dir), device
     )
 
     # Tile evaluation + visuals
-    tile_metrics: Dict[str, float] = _evaluate_tile_and_visualize(model, cfg, eval_out_dir)
+    tile_metrics: dict[str, float] = _evaluate_tile_and_visualize(model, cfg, eval_out_dir)
 
     # Save artifacts and configs
     eval_cfg_dict = OmegaConf.to_container(cfg, resolve=True)

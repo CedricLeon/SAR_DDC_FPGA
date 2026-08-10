@@ -49,6 +49,13 @@ struct NpyArray {
             for (size_t i = 0; i < n; ++i)
                 out[i] = static_cast<float>(p[i]);
             return out;
+        } else if (dtype == "<i2" || dtype == "int16") {
+            // Raw complex SLC on the SD is stored as int16 I/Q (the .cos payload, 4 B/px).
+            const int16_t* p = reinterpret_cast<const int16_t*>(data.data());
+            std::vector<float> out(n);
+            for (size_t i = 0; i < n; ++i)
+                out[i] = static_cast<float>(p[i]);
+            return out;
         }
         throw std::runtime_error("NpyArray::to_float32_vec: unsupported dtype: " + dtype);
     }
@@ -166,6 +173,7 @@ inline NpyArray npy_load(const std::string& path) {
     size_t elem_size = 0;
     if (arr.dtype == "<f4" || arr.dtype == "float32") elem_size = 4;
     else if (arr.dtype == "<i4" || arr.dtype == "int32") elem_size = 4;
+    else if (arr.dtype == "<i2" || arr.dtype == "int16") elem_size = 2;
     else if (arr.dtype == "<i8" || arr.dtype == "int64") elem_size = 8;
     else if (arr.dtype == "<f8" || arr.dtype == "float64") elem_size = 8;
     else throw std::runtime_error("npy_load: unsupported dtype: " + arr.dtype);
@@ -189,14 +197,11 @@ inline std::vector<int32_t> npy_load_int32(const std::string& path) {
     return npy_load(path).to_int32_vec();
 }
 
-// Save a float32 array (2-D or 1-D) as NPY v1.0
-inline void npy_save_float32(const std::string& path,
-                              const float* data,
-                              const std::vector<size_t>& shape) {
-    std::ofstream f(path, std::ios::binary);
-    if (!f) throw std::runtime_error("npy_save: cannot open " + path);
-
-    // Build header string
+// Write the NPY v1.0 header for a float32 array of `shape` to an open binary stream. The caller then
+// appends the raw little-endian float data in any number of chunks (total = prod(shape) floats), so a
+// producer can stream rows/patches straight to disk without buffering the whole array. Single source
+// for the header layout (npy_save_float32 uses it too).
+inline void npy_write_header_float32(std::ostream& f, const std::vector<size_t>& shape) {
     std::ostringstream hdr;
     hdr << "{'descr': '<f4', 'fortran_order': False, 'shape': (";
     for (size_t i = 0; i < shape.size(); ++i) {
@@ -210,13 +215,19 @@ inline void npy_save_float32(const std::string& path,
     hdr_str.append(pad - 1, ' ');
     hdr_str += '\n';
 
-    // Write magic + version + header_len + header
     f.write("\x93NUMPY\x01\x00", 8);
     uint16_t hl = static_cast<uint16_t>(hdr_str.size());
     f.write(reinterpret_cast<const char*>(&hl), 2);
     f.write(hdr_str.data(), static_cast<std::streamsize>(hdr_str.size()));
+}
 
-    // Write data
+// Save a float32 array (2-D or 1-D) as NPY v1.0
+inline void npy_save_float32(const std::string& path,
+                              const float* data,
+                              const std::vector<size_t>& shape) {
+    std::ofstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("npy_save: cannot open " + path);
+    npy_write_header_float32(f, shape);
     size_t n = std::accumulate(shape.begin(), shape.end(), size_t(1),
                                std::multiplies<size_t>());
     f.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(n * 4));

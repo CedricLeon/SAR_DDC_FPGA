@@ -51,15 +51,39 @@ double compute_psnr(const float* a, const float* b, int n) {
 }
 
 // ---------------------------------------------------------------------------
+// clip_amp99 — shared basis of every reference-based distortion metric
+// ---------------------------------------------------------------------------
+// Mirrors src/utils/metrics.py::_clip_to_amp99: scores are taken on the 99th-percentile
+// amplitude so no metric is driven by the handful of bright scatterers above it. Matters
+// most on the board, where the DPU caps the recon at 2100 while float32 reaches ~1e5.
+static std::vector<float> clip_amp99(const float* x, int n) {
+    std::vector<float> out(n);
+    for (int i = 0; i < n; ++i)
+        out[i] = std::min(x[i], static_cast<float>(AMP_LIN_99));
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // compute_ssim — delegates to OpenCV QualitySSIM
 // ---------------------------------------------------------------------------
+// OpenCV hard-codes the SSIM stabilisers to C1=(0.01*255)^2, C2=(0.03*255)^2, i.e. it always
+// scores at data_range=255 and offers no way to pass one. SSIM is invariant to scaling both
+// images and the data_range together, so clipping to AMP_LIN_99 and rescaling by
+// 255/AMP_LIN_99 makes QualitySSIM return exactly SSIM at data_range=AMP_LIN_99 — the
+// convention used by src/utils/metrics.py::ssim, so board and host numbers are comparable.
 double compute_ssim(const float* a, const float* b, int H, int W) {
 #ifdef WITHOUT_OPENCV
     (void)a; (void)b; (void)H; (void)W;
     return 0.0; // stub — OpenCV not available in this build
 #else
-    cv::Mat a_mat(H, W, CV_32FC1, const_cast<float*>(a));
-    cv::Mat b_mat(H, W, CV_32FC1, const_cast<float*>(b));
+    const int n = H * W;
+    const float scale = 255.0f / static_cast<float>(AMP_LIN_99);
+    std::vector<float> a_clip = clip_amp99(a, n);
+    std::vector<float> b_clip = clip_amp99(b, n);
+    for (int i = 0; i < n; ++i) { a_clip[i] *= scale; b_clip[i] *= scale; }
+
+    cv::Mat a_mat(H, W, CV_32FC1, a_clip.data());
+    cv::Mat b_mat(H, W, CV_32FC1, b_clip.data());
     cv::Scalar result = cv::quality::QualitySSIM::compute(
         a_mat, b_mat, cv::noArray());
     // result[0] is the per-channel value; we have a single channel.
@@ -100,6 +124,12 @@ double compute_enl(const float* a, int H, int W, const Roi* roi) {
 // Gradient magnitude correlation between recon and ref.
 // ---------------------------------------------------------------------------
 double compute_epd(const float* recon, const float* ref, int H, int W) {
+    // Clipped to AMP_LIN_99 like every other reference-based metric (see clip_amp99):
+    // unclipped, the gradient sums are dominated by bright scatterers, so EPD measures
+    // point-target representation rather than edge preservation.
+    const std::vector<float> recon_clip = clip_amp99(recon, H * W);
+    const std::vector<float> ref_clip   = clip_amp99(ref, H * W);
+
     // Compute central-difference gradient magnitudes
     auto grad_mag = [H, W](const float* img) {
         std::vector<float> gm(H * W, 0.0f);
@@ -113,8 +143,8 @@ double compute_epd(const float* recon, const float* ref, int H, int W) {
         return gm;
     };
 
-    auto gm_recon = grad_mag(recon);
-    auto gm_ref   = grad_mag(ref);
+    auto gm_recon = grad_mag(recon_clip.data());
+    auto gm_ref   = grad_mag(ref_clip.data());
 
     double num   = 0.0;
     double denom = 0.0;

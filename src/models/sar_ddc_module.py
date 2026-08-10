@@ -2,8 +2,6 @@ from typing import Any, Dict, Optional, Tuple
 
 import lightning
 import torch
-import torchmetrics.functional as TMF
-import torchmetrics.functional.image as F
 from torch import Tensor
 
 from src.utils.constants import AMP_MAX, AMP_MIN, EPS
@@ -257,7 +255,6 @@ class SARDDCModule(lightning.LightningModule):
         if "adam_noc_ref" in batch and "merlin_ref" in batch:
             adam_noc_ref = batch["adam_noc_ref"]
             merlin_ref = batch["merlin_ref"]
-            peak = float(torch.max(clean_im))
 
             # MSE
             all_metrics[f"{prefix}/mse_adam_noc"] = mse(clean_im, adam_noc_ref)
@@ -269,24 +266,12 @@ class SARDDCModule(lightning.LightningModule):
             all_metrics[f"{prefix}/psnr_merlin"] = psnr(
                 clean_im, merlin_ref, mse_value=all_metrics[f"{prefix}/mse_merlin"]
             )
-            # SSIM
-            all_metrics[f"{prefix}/ssim_adam_noc"] = F.structural_similarity_index_measure(
-                clean_im, adam_noc_ref, data_range=peak
-            )
-            all_metrics[f"{prefix}/ssim_merlin"] = F.structural_similarity_index_measure(
-                clean_im, merlin_ref, data_range=peak
-            )
-            # MS-SSIM
-            all_metrics[f"{prefix}/ms_ssim_adam_noc"] = (
-                F.multiscale_structural_similarity_index_measure(
-                    clean_im, adam_noc_ref, data_range=peak
-                )
-            )
-            all_metrics[f"{prefix}/ms_ssim_merlin"] = (
-                F.multiscale_structural_similarity_index_measure(
-                    clean_im, merlin_ref, data_range=peak
-                )
-            )
+            # SSIM / MS-SSIM — clipped to AMP_LIN_99 with data_range=AMP_LIN_99, the same fixed
+            # basis as MSE/PSNR above (src.utils.metrics._clip_to_amp99).
+            all_metrics[f"{prefix}/ssim_adam_noc"] = ssim(clean_im, adam_noc_ref)
+            all_metrics[f"{prefix}/ssim_merlin"] = ssim(clean_im, merlin_ref)
+            all_metrics[f"{prefix}/ms_ssim_adam_noc"] = ms_ssim(clean_im, adam_noc_ref)
+            all_metrics[f"{prefix}/ms_ssim_merlin"] = ms_ssim(clean_im, merlin_ref)
             # EPD (Edge Preservation Degree, linA)
             all_metrics[f"{prefix}/epd_adam_noc"] = epd(clean_im, adam_noc_ref)
             all_metrics[f"{prefix}/epd_merlin"] = epd(clean_im, merlin_ref)
