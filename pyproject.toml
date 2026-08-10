@@ -33,3 +33,10 @@ ignore = ["E402"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
+
+[tool.isort]
+# Pin first-party packages so import grouping is deterministic across machines and CI.
+# Without this, isort infers first-party from the filesystem and can group `src`/`context`
+# differently on the GitHub runner than locally (the "passes locally, fails in CI" case).
+profile = "black"
+known_first_party = ["src", "context"]
