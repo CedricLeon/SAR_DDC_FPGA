@@ -42,6 +42,11 @@ _SUMMARY = re.compile(
 )
 _READ = re.compile(r"read=([\d.]+)")
 _POWER = re.compile(r"\[power\] ([\d.]+) W .*?([\d.]+) J \| ([\d.]+) J/patch")
+# Per-lane fan-out timing (one line per DPU lane); g_a ms/call across lanes is the placement proxy.
+_LANE = re.compile(
+    r"\[lane (\d+)\] patches=(\d+) \| g_a=([\d.]+) ms/patch \(([\d.]+)/call\) "
+    r"h_a=([\d.]+) h_s=([\d.]+) norm=([\d.]+) entropy=([\d.]+)"
+)
 
 
 def ssh_capture(remote_cmd: str) -> str:
@@ -87,6 +92,19 @@ def parse_run(stdout: str) -> dict:
     n, grid_a, grid_r, bpp, patch_s, total_s = m.groups()
     read = _READ.search(stdout)
     pw = _POWER.search(stdout)
+    lanes = [
+        {
+            "lane": int(m[0]),
+            "patches": int(m[1]),
+            "ga_ms_patch": float(m[2]),
+            "ga_ms_call": float(m[3]),
+            "ha_ms_patch": float(m[4]),
+            "hs_ms_patch": float(m[5]),
+            "norm_ms_patch": float(m[6]),
+            "entropy_ms_patch": float(m[7]),
+        }
+        for m in _LANE.findall(stdout)
+    ]
     return {
         "n_patches": int(n),
         "grid_a": int(grid_a),
@@ -98,6 +116,7 @@ def parse_run(stdout: str) -> dict:
         "avg_power_w": float(pw.group(1)) if pw else None,
         "energy_j": float(pw.group(2)) if pw else None,
         "j_per_patch": float(pw.group(3)) if pw else None,
+        "lanes": lanes,
     }
 
 
@@ -106,6 +125,10 @@ def schedule_flags(args) -> list:
     flags = []
     if args.schedule == "p0":
         flags += ["--p0", "--threads", str(args.threads)]
+    if args.fanout:
+        flags.append("--fanout")  # p0 modifier: --threads independent DPU lanes (excludes --s1)
+    if args.lane_major:
+        flags.append("--lane-major")  # naive pipeline-major placement baseline (else pinned/deterministic)
     if args.s1:
         flags.append("--s1")
     if not args.whole:
@@ -141,6 +164,8 @@ def label(args, cold: bool) -> str:
         parts.append("s1")
     if args.schedule == "p0":
         parts.append(f"t{args.threads}")
+    if args.fanout:
+        parts.append("lanemaj" if args.lane_major else "fo")
     if args.prefetch:
         parts.append("pf")
     if args.neon:
@@ -160,6 +185,17 @@ def parse_args():
     )
     p.add_argument("--schedule", choices=["seq", "p0"], default="p0", help="base schedule")
     p.add_argument("--s1", action="store_true", help="channel-parallel g_a (composes with both)")
+    p.add_argument(
+        "--fanout",
+        action="store_true",
+        help="p0 modifier: --threads independent DPU lanes (N1 data-parallel fan-out; excludes --s1)",
+    )
+    p.add_argument(
+        "--lane-major",
+        dest="lane_major",
+        action="store_true",
+        help="--fanout naive pipeline-major placement baseline (all g_a collide on one core; else pinned)",
+    )
     p.add_argument("--threads", type=int, default=4, help="worker count for --schedule p0")
     p.add_argument("--prefetch", action="store_true", help="double-buffer row-block reads")
     p.add_argument("--neon", action="store_true", help="NEON-vectorised normalize/denorm")
@@ -199,6 +235,10 @@ def main():
     args = parse_args()
     if args.prefetch and args.whole:
         raise SystemExit("--prefetch requires windowed streaming (drop --whole)")
+    if args.fanout and args.schedule != "p0":
+        raise SystemExit("--fanout is a --schedule p0 modifier")
+    if args.fanout and args.s1:
+        raise SystemExit("--fanout excludes --s1 (both contend for the same 3 DPU cores)")
     cold = not args.keep_cache
 
     if args.dry_run:
@@ -271,7 +311,10 @@ def main():
         "label": label(args, cold),
         "schedule": args.schedule,
         "s1": args.s1,
+        "fanout": args.fanout,
+        "lane_major": args.lane_major,
         "threads": args.threads if args.schedule == "p0" else None,
+        "lanes": runs[0].get("lanes", []),  # per-lane fan-out timing (placement diagnosis)
         "prefetch": args.prefetch,
         "neon": args.neon,
         "windowed": not args.whole,
