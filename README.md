@@ -1,35 +1,58 @@
 # Synthetic Aperture Radar (SAR) Despeckling and Data Compression (DDC) on Field Programmable Gate Arrays (FPGA)
 
+[![arXiv](https://img.shields.io/badge/arXiv-2608.11271-b31b1b.svg)](https://arxiv.org/abs/2608.11271)
 [![PyTorch](https://img.shields.io/badge/PyTorch-ee4c2c?logo=pytorch&logoColor=white)](https://pytorch.org/get-started/locally/)
 [![Lightning](https://img.shields.io/badge/-Lightning-792ee5?logo=pytorchlightning&logoColor=white)](https://pytorchlightning.ai/)
 [![Config: Hydra](https://img.shields.io/badge/Config-Hydra-89b8cd)](https://hydra.cc/)
 [![Template](https://img.shields.io/badge/-Lightning--Hydra--Template-017F2F?style=flat&logo=github&labelColor=gray)](https://github.com/ashleve/lightning-hydra-template)
 
-Implementation of [Amao-Oliva et al. (2024)](https://www.sciencedirect.com/science/article/pii/S0924271624004866) on FPGA: joint SAR image despeckling and compression using hyper-autoencoders (CompressAI) trained with the MERLIN self-supervised strategy. Neural network subgraphs run on the DPU of a Xilinx ZCU102 via Vitis-AI; entropy coding runs on the ARM CPU in C++.
+This repository hosts the implementation of the DDC framework developed by [Amao-Oliva et al. (2024)](https://www.sciencedirect.com/science/article/pii/S0924271624004866) on an FPGA-based MPSoC.
+The project is associated to a manuscript recently uploaded to [arXiv](http://arxiv.org/abs/2608.11271) and submitted to TGRS.
 
-## TODOs
+In a nutshell, we perform joint SAR image despeckling and compression using hyper-autoencoders implemented using [CompressAI](https://github.com/InterDigitalInc/CompressAI) and trained with the MERLIN self-supervised strategy.
+The models are then deployed to the FPGA-based board (ZCU102), where the neural network subgraphs run on the Vitis-AI DPU design and the entropy coding runs on the ARM CPU in C++.
 
-### Open investigations
+<p align="center">
+  <img src="docs/assets/SAR_DDC_inference_dataflow.png" alt="SAR-DDC inference dataflow: the g_a / h_a / h_s / g_s subgraphs run as INT8 on the DPU while entropy coding runs on the ARM CPU" width="85%">
+</p>
 
-- [ ] EPD values > 1 in [RD-curve_ablation.ipynb cell 11](notebooks/RD-curve_ablation.ipynb). EPD should be ≤ 1.
-- [ ] Clarify exact Python version per environment (main conda env appears to use 3.11, Vitis-AI Docker 3.8, board may be 3.9). Update `copilot-instructions.md` and code once confirmed.
-- [ ]  Consider if FPGA reconstruction performance would be better if we only evaluated the compression/encoding on the FPGA, transferred the bitstreams to the Host and then ran the decompression (in floating-point precision) on the GPU for example.
+## Getting started
 
-### Code quality
+```bash
+# 1. Clone
+git clone https://github.com/CedricLeon/SAR_DDC_FPGA.git
+cd SAR_DDC_FPGA
 
-- [ ] Clean doc before release. For example, in `docs/`, the onboard_pipeline should be broken down between the existing docs where relevant and/or renamed pipeline. We should delete the ssim_data_range_issue, the python to cpp migration, and the Vitis AI journey.
-- [ ] Clean results: there are a lot of folders in there. Takes too much space.
-- [ ] Clean scripts before release. Here again, CLAUDE grew way too many scripts in `scripts/evaluation` or `scripts/fpga/benchmark`
-- [ ] Add acknowledgement on the use of CLAUDE code in the repo
+# 2. Create and activate the conda environment
+conda env create -f environment.yaml
+conda activate DDC_FPGA
 
-### Planned experiments
+# 3. Install the project (editable) so `src` and `context` are importable
+pip install -e .
+```
 
-- [ ] Hardware-aware or per-layer quantization via `vaiq_pytorch` ([strategy doc](https://docs.amd.com/r/en-US/ug1414-vitis-ai/Hardware-Aware-Quantization-Strategy), [JSON config doc](https://docs.amd.com/r/en-US/ug1414-vitis-ai/Quantization-Strategy-Configuration?tocId=rGCaO9QY6VvNbAJV7l9i7Q)).
-- [ ] Quantization-aware training (`fast_finetuning` or full QAT) to recover accuracy lost during PTQ.
-- [ ] Investigate skip/merge of the real/imag concatenation step before the hyperprior.
-- [ ] Evaluate `ResidualBlockWithStride` / `ResidualBlockUpsample` from CompressAI as alternatives to current manual residual blocks.
+This sets up the **local** environment used for training, analysis notebooks, and host benchmarking.
+Working with the FPGA requires two further environments:
 
-## Project Structure
+- a Vitis AI Docker container (started automatically by `deploy.py`, but you need [Vitis AI](https://docs.amd.com/r/3.0-English/ug1414-vitis-ai/Installation-and-Setup) installed first) for quantization/compilation,
+- and the ZCU102 board itself for on-board inference (see [AMD's quickstart guide](https://xilinx.github.io/Vitis-AI/3.0/html/docs/quickstart/mpsoc.html) for a setup example).
+
+## Documentation & Project Structure
+
+As this is a relatively large project, the documentation has been split into several Markdown files.
+Because work is still ongoing, you should expect some inconsistencies between some documents.
+
+| File | Content |
+| ------ | --------- |
+| [docs/Method.md](docs/Method.md) | MERLIN theory, model architecture, loss & signal equations, references |
+| [docs/Data.md](docs/Data.md) | Data source, preprocessing pipeline, HDF5 schema, normalisation constants |
+| [docs/FPGA_inference.md](docs/FPGA_inference.md) | C++ on-board inference pipeline, DPU runners, entropy models |
+| [docs/FPGA_benchmark.md](docs/FPGA_benchmark.md) | ZCU102 hardware, benchmark methodology, power, results |
+| [docs/GPU_benchmark.md](docs/GPU_benchmark.md) | Host GPU/CPU benchmark and the unified cross-platform runner |
+| [docs/onboard_pipeline.md](docs/onboard_pipeline.md) | Onboard streaming pipeline (receive → despeckle + compress → downlink): design & results |
+| [docs/Notebooks.md](docs/Notebooks.md) | Analysis notebooks: purpose, data flow, shared modules (`_plotkit`, `_benchmark_loader`) |
+
+For people interested to follow the workflows described below and reproduce results, I organize the project as such:
 
 ```text
 DDC_FPGA/
@@ -37,7 +60,7 @@ DDC_FPGA/
 │   ├── train.yaml                 # Default training config
 │   ├── experiment/                # Experiment preset overrides
 │   └── model/, data/, trainer/,...
-├── data/                          # Data files (git-ignored; use symlinks to avoid copies)
+├── data/                          # Data files (git-ignored)
 │   ├── TSX_cos_files/             # Raw CoSAR/SSC downloads
 │   ├── processed_hdf5/            # HDF5 patch datasets (output of create_dataset.py)
 │   ├── visualization/             # Large tiles + ground-truth references for visualization
@@ -58,27 +81,13 @@ DDC_FPGA/
 │   │   ├── deploy/                # deploy.py, batch_deploy.py, model_quant.py, DPU_archs/, batch_deploy_configs/
 │   │   └── benchmark/             # benchmark_sweep.py, run_benchmarks.py, collect_roofline.py
 │   └── vitis_ai/                  # Docker container management scripts
-├── src/                           # Training source code
+├── src/
 │   ├── train.py                   # Main training entry point (Hydra)
 │   ├── data/                      # LightningDataModule
 │   ├── models/                    # LightningModules + model components (components/)
 │   └── utils/                     # Constants (AMP_MIN/MAX, EPS), processing utils
-├── tests/                         # Pytest unit tests
-└── CompressAI/                    # CompressAI fork (git submodule)
 ```
 
-## Documentation
-
-| File | Content |
-| ------ | --------- |
-| [docs/Method.md](docs/Method.md) | MERLIN theory, model architecture, references |
-| [docs/Data.md](docs/Data.md) | Data source, preprocessing pipeline, naming conventions, normalisation constants |
-| [docs/FPGA_inference.md](docs/FPGA_inference.md) | C++ FPGA inference pipeline, DPU runners, entropy models, future work |
-| [docs/FPGA_benchmark.md](docs/FPGA_benchmark.md) | Benchmark: ZCU102 hardware, methodology, power, results, future work + journal |
-| [docs/python_to_cpp_migration_journal.md](docs/python_to_cpp_migration_journal.md) | Python→C++ migration: why, before/after numbers, bug archive |
-| [docs/GPU_benchmark.md](docs/GPU_benchmark.md) | GPU/CPU benchmark tooling (legacy, raw — pending unified-runner refactor) |
-| [docs/Notebooks.md](docs/Notebooks.md) | Analysis notebooks: purpose, data flow, shared modules (`_plotkit`, `_benchmark_loader`) |
-| [docs/Vitis-AI_journey.md](docs/Vitis-AI_journey.md) | Deployment journal, known issues, changelog |
 
 ## Workflows
 
@@ -220,3 +229,34 @@ python scripts/benchmark/run_unified_benchmark.py --model-dir results/fpga/activ
 
 Host results → `results/benchmark_unified/<model>/`; FPGA results → `results/benchmark_hardware/<model>/`.
 Analysis notebook: `notebooks/benchmark_cross_platform_analysis.ipynb`.
+
+## Future work
+
+- **Quantization quality**: hardware-aware / per-layer PTQ via `vaiq_pytorch` ([strategy](https://docs.amd.com/r/en-US/ug1414-vitis-ai/Hardware-Aware-Quantization-Strategy)), and quantization-aware training (`fast_finetuning` or full QAT) to recover accuracy lost to PTQ.
+- **Architecture**: investigate skipping/merging the real/imag concatenation before the hyperprior; evaluate CompressAI `ResidualBlockWithStride` / `ResidualBlockUpsample` as alternatives to the current manual residual blocks.
+- **Split-precision decode**: encode on the FPGA but decode in floating point off-board (e.g. host GPU) for higher reconstruction quality.
+
+Onboard-streaming experiments are tracked in [docs/onboard_pipeline.md](docs/onboard_pipeline.md) §11.
+
+
+## Acknowledgements
+
+- Structured on the [Lightning-Hydra-Template](https://github.com/ashleve/lightning-hydra-template).
+- A lot of the code for MERLIN comes from the [deepdespeckling](https://github.com/hi-paris/deepdespeckling) implementation.
+- Large parts of this project (the Python→C++ inference port, the benchmarking infrastructure, and much of the documentation) were developed with the assistance of Claude Code.
+
+## Citation
+
+```bibtex
+@misc{leonard_hardware-aware_2026,
+      title = {Hardware-{Aware} {Deployment} of {Joint} {SAR} {Compression} and {Despeckling} on {FPGA}},
+      author = {Léonard, Cédric and Sica, Francescopaolo and Schulz, Martin},
+      url = {http://arxiv.org/abs/2608.11271},
+      doi = {10.48550/arXiv.2608.11271},
+      publisher = {arXiv},
+      urldate = {2026-08-13},
+      month = aug,
+      year = {2026},
+      keywords = {Computer Science - Machine Learning, Electrical Engineering and Systems Science - Image and Video Processing},
+}
+```
