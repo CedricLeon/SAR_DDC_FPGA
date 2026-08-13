@@ -15,7 +15,9 @@
 // DPU runner safety under concurrency is addressed in the P0/P2 milestone.
 
 #include <filesystem>
+#include <map>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "entropy_models.hpp"
@@ -91,6 +93,20 @@ public:
     // Throws std::runtime_error on failure.
     explicit BenchPipeline(const std::filesystem::path& xmodel_path,
                            const std::filesystem::path& params_dir);
+
+    // Lane-mode construction for the deterministic fan-out (docs/onboard_pipeline.md §11-N1): loads
+    // only the entropy models — NO graph. The caller then injects DPU runners with adopt_runner() in a
+    // controlled global order, so VART's round-robin pins each lane to its own core (instead of the
+    // per-lane deserialize + round-robin lottery). Throws on host builds (HAVE_DPU=OFF).
+    struct LaneMode {};
+    BenchPipeline(const std::filesystem::path& params_dir, LaneMode);
+
+#ifdef HAVE_DPU
+    // Inject a DPU runner for `role` (lane mode only). The order in which the fan-out creates runners
+    // across lanes sets the core assignment (subgraph-major: all lanes' g_a, then h_a, then h_s ⇒ lane
+    // i on core i); g_s is omitted on the compress path. See stream_pipeline.cpp.
+    void adopt_runner(const std::string& role, DPUSubgraphRunner&& r);
+#endif
 
     // True = ScaleHyperprior path (g_a→h_a→EB→h_s→GC→g_s).
     // False = FactorizedPrior path (g_a→EB→g_s).
@@ -169,6 +185,15 @@ private:
     XModelLoader loader_;
     std::optional<DPUSubgraphRunner> runner_ga2_;  // S1 duplicate for g_a(imag)
     std::optional<DPUSubgraphRunner> runner_gs2_;  // S1 duplicate for g_s(imag)
+    std::map<std::string, DPUSubgraphRunner> lane_runners_;  // injected runners (lane mode)
+    bool lane_mode_ = false;
+    // DPU runner for a role: injected (lane mode) or loaded from the shared graph (normal mode).
+    const DPUSubgraphRunner& dpu(const std::string& role) const {
+        return lane_mode_ ? lane_runners_.at(role) : loader_.runner(role);
+    }
+    bool has_dpu_role(const std::string& role) const {
+        return lane_mode_ ? (lane_runners_.count(role) > 0) : loader_.has_role(role);
+    }
 #endif
     EntropyBottleneck   eb_;
     GaussianConditional gc_;

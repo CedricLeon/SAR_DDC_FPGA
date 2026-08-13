@@ -75,9 +75,13 @@ class XModelLoader {
 public:
     // Load xmodel from xmodel_path.
     // meta_json_path: path to meta.json produced by Vitis-AI compiler.
+    // create_runners=false deserializes the graph and identifies subgraphs but creates NO runners —
+    // for callers that then create every runner themselves via create_duplicate_runner() in a
+    // controlled global order (the fan-out placement fix; runner-creation order sets the VART core).
     // Throws std::runtime_error on failure.
     void load(const std::string& xmodel_path,
-              const std::string& meta_json_path);
+              const std::string& meta_json_path,
+              bool create_runners = true);
 
     // True once load() has succeeded.
     bool is_loaded() const { return loaded_; }
