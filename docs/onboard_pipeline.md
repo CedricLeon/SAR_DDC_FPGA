@@ -12,8 +12,8 @@
 
 Status: **implemented + measured.** The on-board streaming compressor, the parallel/I/O optimizations
 (§4), the full-scene throughput/latency/energy sweep + memory/roofline analysis (§8), and the overlap
-study (§10) are done and board-verified. Remaining (§11): the DATE'27 experiments (N1 core-scaling,
-N2 Jetson, N5 CCSDS) and figure polish. Last updated 2026-08-09.
+study (§10), and the DPU fan-out core-scaling (§11-N1) are done and board-verified. Remaining (§11): the
+DATE'27 experiments (N6 four-arch ladder, N2 Jetson, N5 CCSDS) and figure polish. Last updated 2026-08-12.
 
 **Questions opened/answered**:
 
@@ -118,6 +118,10 @@ purely about *speed and energy*, never quality. Measured effects → §8.
 - **`--p0 --threads K` — worker pool.** K workers each run normalize → DPU (serialized by a mutex) →
   entropy → write, with records placed by patch index (deterministic output). The main lever for the
   CPU-bound FP (scales to 4 workers); ResSHyp plateaus at ~3 (DPU-serialized).
+- **`--fanout` — DPU data-parallel lanes (N1).** `--p0` modifier: K *independent* pipelines, one DPU
+  core per worker, the mutex dropped — so `g_a` runs on all 3 cores across patches (vs `--p0`'s single
+  serialized DPU). The DPU-bound lever beyond `--s1` (ResSHyp **2.85×** at 3 lanes; oversubscribing to 4
+  regresses — §11-N1). Excludes `--s1` (both fight for the same 3 cores).
 - **`--prefetch` — double-buffer I/O.** A producer thread reads row-block N+1 while the workers
   compress block N (bounded `RowBlockQueue`, depth 2). Byte-transparent; hides the SD read behind
   compute — fully for ResSHyp, partially for FP (toward its read ceiling).
@@ -360,69 +364,113 @@ lift the cap to ~44 k at half precision, if ever needed.
 
 ### Next experiments — DATE'27 priority
 
-Both are driven by `docs/DATE27_paper_plan.md`; do these before any figure-polish work.
+**Guiding principle:** the `main.tex` story is written *conveniently* — run what is most informative,
+let the results (not the outline) drive the narrative, and be ready for any experiment to resolve
+*against* the story. Each entry notes the manuscript slot it *would* unblock (**→ main.tex …**) purely
+as navigation, never as a hole that must be filled. Do these before figure-polish.
 
-**N1 — Fill the third DPU core by fanning patches out, and explain why ResSHyp currently does not
-scale.** *Status: not implemented; next experiment. The research question has changed — see below.*
-Supersedes the `P3 (deferred)` entry in `FPGA_benchmark.md` §10.
+**N6 — Four-architecture streaming ladder (cheap; validates the topology→schedule policy).** *Status:
+partly done — all four archs now have the **fan-out lane sweep** (§11-N1, `fanout_table.md`), which
+already validates the topology→schedule policy across archs (residual sets scaling strength, hyperprior
+sets the oversubscription cliff).* Still open: the **cumulative** optimization ladder
+(seq→s1→p0→prefetch→neon) for **SHyp** + **ResFP** — only FP + ResSHyp have it today (§8) — via the same
+`stream_sweep.py`; runtime-only, no new code.
 
-**The schedule.** The board has **3× B4096 cores** (§2) but `--s1` uses only two, splitting
-`g_a(re)‖g_a(im)` *within* a patch. Because the **onboard compress path never runs `g_s`**
-(decode-only), the per-patch DPU work (for hyperprior models) is just `2× g_a + h_a + h_s` — there is no third concurrent
-subgraph inside one patch, so the third core can only be filled **across** patches. The right way to do
-that is **plain data-parallel fan-out**: give each of 3 workers its own runner set on its own core and
-let each process a whole patch independently (`g_a(re,N)`, `g_a(re,N+1)`, `g_a(re,N+2)`, then the imag
-halves). Steady-state throughput is identical to any interleaved variant — 3 `g_a` calls per 36.59 ms
-either way — but fan-out is simpler, needs no cross-patch choreography, and reuses the existing
-`nn_only --dpu-cores N` machinery. It also means **`--s1` becomes redundant** at 3 lanes: channel
-parallelism and patch parallelism compete for the same cores. Today's `p0` serialises the DPU behind a
-mutex, so the change is to drop that mutex and give each worker its own lane.
+**N1 — DPU fan-out: streaming recovers the third core; the patch-only regression does *not* transfer.
+Done.** Supersedes `P3 (deferred)` in `FPGA_benchmark.md` §10. **→ main.tex §coretrap + §eval.** Kept
+behind the `--fanout` runtime flag ([[project_ablation_table]]).
 
-**The naive ceiling.** From `results/benchmark_hardware/*/s0_compress.json` (ResSHyp λ1000):
-`g_a` = 36.59 ms/call → DPU work = 2(36.59) + 1.39 + 0.84 = **75.40 core-ms/patch**. That gives 26.5
-patch/s on 2 cores (measured `p0+s1` = 23.1, i.e. 87 % of it) and **39.8 patch/s on 3** — a naive 1.50×.
+**What was built.** `--fanout` is a `--p0` modifier (`inference_cpp/src/stream/`): instead of K workers
+sharing one pipeline behind a DPU mutex (plain `p0`), it creates **K independent `BenchPipeline`s — one
+DPU lane per worker, mutex dropped** — so `g_a` runs on up to 3 cores concurrently, data-parallel across
+patches (the compress path has no `g_s`, so the third core is only fillable *across* patches; reuses the
+`run_nn_only` fan-out pattern inside the streaming loop). **Byte-identical to `seq`** (the §7 gate:
+seq / p0 / fanout / fanout+prefetch+neon all one sha256). Excludes `--s1` (both fight for the same 3
+cores). VART exposes **no runner→core API** (checked the board headers — `vart::Runner`/`RunnerExt` have
+none; `xir::DpuController::get_core_id` is unreachable from the handle), so each lane self-times `g_a`
+and **`g_a` ms/call across lanes is the placement proxy**: uniform ⇒ clean core split, one lane ~2× ⇒ a
+collision. Sweep: `stream_fanout_sweep.py` (lanes × cold/warm, cooldown-gated); table: `fanout_table.py`
+→ `results/benchmark_stream/fanout_table.md`.
 
-**But the measured (patch only, no full tile streaming) fan-out data contradicts that**, see`nn_only_compress_dpu{1,2,3}.json` already measures exactly this schedule as a pure DPU ceiling:
+**Result.** Full metrics — `g_a` ms/call, per-patch compute latency (normalize+DPU+entropy; the
+prefetched SD read is excluded), throughput, avg power, J/patch — for all four archs × lanes 1–4, each
+cell **cold / warm**, pinned (deterministic) placement (regenerate with `fanout_full_table.py`; per-lane stage bars → `fanout_lane_timings.png`):
 
-| arch | dpu1 | dpu2 | dpu3 |
+| arch (topology) | metric | 1 lane | 2 lanes | 3 lanes | 4 lanes |
+| --- | --- | --- | --- | --- | --- |
+| **FP** (factorized) | g_a [ms] | 5.2 / 5.2 | 5.4 / 5.4 | 5.7 / 5.7 | 6.3 / 6.4 |
+|  | latency [ms] | 21 / 21 | 22 / 22 | 23 / 23 | 25 / 25 |
+|  | throughput [patch/s] | 45.4 / 45.8 | 85.2 / 87.4 | 86.0 / 122.5 | 87.3 / 145.6 |
+|  | avg power [W] | 10.6 / 10.5 | 12.2 / 12.3 | 12.2 / 13.7 | 12.3 / 14.6 |
+|  | J/patch | 0.230 / 0.230 | 0.140 / 0.140 | 0.139 / 0.111 | 0.138 / 0.100 |
+| **SHyp** (hyperprior) | g_a [ms] | 5.2 / 5.2 | 5.4 / 5.4 | 5.6 / 5.6 | 6.4 / 6.3 |
+|  | latency [ms] | 29 / 29 | 31 / 31 | 32 / 32 | 37 / 37 |
+|  | throughput [patch/s] | 33.2 / 33.7 | 61.3 / 62.6 | 86.3 / 90.3 | 85.3 / 103.0 |
+|  | avg power [W] | 10.2 / 10.2 | 11.6 / 11.6 | 12.7 / 12.8 | 12.7 / 13.5 |
+|  | J/patch | 0.306 / 0.303 | 0.185 / 0.184 | 0.144 / 0.142 | 0.145 / 0.130 |
+| **ResFP** (factorized + residual) | g_a [ms] | 36.6 / 36.6 | 36.8 / 36.8 | 37.0 / 37.0 | 51.5 / 51.5 |
+|  | latency [ms] | 84 / 84 | 84 / 84 | 85 / 85 | 114 / 114 |
+|  | throughput [patch/s] | 11.8 / 11.9 | 23.3 / 23.5 | 33.5 / 34.0 | 35.6 / 36.1 |
+|  | avg power [W] | 12.0 / 12.0 | 15.2 / 15.2 | 18.1 / 18.2 | 18.8 / 18.8 |
+|  | J/patch | 1.014 / 1.012 | 0.648 / 0.648 | 0.535 / 0.535 | 0.523 / 0.521 |
+| **ResSHyp** (hyperprior + residual) | g_a [ms] | 36.6 / 36.6 | 36.8 / 36.8 | 37.0 / 37.0 | 49.4 / 49.5 |
+|  | latency [ms] | 92 / 92 | 93 / 93 | 93 / 93 | 143 / 143 |
+|  | throughput [patch/s] | 10.8 / 10.8 | 21.0 / 21.2 | 30.8 / 31.1 | 27.0 / 27.2 |
+|  | avg power [W] | 12.4 / 12.4 | 16.0 / 16.0 | 19.3 / 19.4 | 18.1 / 18.0 |
+|  | J/patch | 1.146 / 1.148 | 0.753 / 0.752 | 0.622 / 0.621 | 0.663 / 0.663 |
+
+Plain reading (measured; deeper causal stories are deliberately left out):
+
+- Giving each worker its own DPU core raises throughput. For the DPU-heavy models it is the best config
+  measured — ResSHyp 30.8 patch/s at 3 lanes vs 22.8 for the previous best (`p0+s1`).
+- Models with residual blocks (heavy `g_a`: ResFP, ResSHyp) gain the most from added lanes. The lighter
+  models (SHyp, FP) are limited more by CPU/entropy and the SD read, and gain most in the **warm**
+  (fast-storage) case.
+- On this 3-core board, 4 lanes slow **ResSHyp** down (its per-patch DPU time jumps — g_a/latency rows,
+  and `fanout_lane_timings.png`); the other three tolerate or slightly benefit. Matching lanes to cores
+  (3) is the safe default.
+- More lanes lower energy per patch for every arch.
+- **Placement was a run-to-run lottery — now fixed (deterministic).** Spotted via the per-lane Gantt:
+  at 3 lanes = 3 cores the runner→core placement was *random* (~7/8 runs collided two lanes' `g_a` on one
+  core) because each lane deserialized its own graph copy → different creation order
+  → VART's round-robin scattered `g_a`. **Fixed** by deserializing once and creating
+  runners **subgraph-major** so lane *k* pins to core *k* (dropping the never-run `g_s`); verified
+  deterministic — pinned `g_a` clean 10/10 runs, byte-identical output. `--fanout` = pinned (default);
+  `--lane-major` reproduces the naive baseline for the ablation. See the placement sketch below.
+- For context, the patch-only DPU benchmark (`nn_only`) had ResSHyp fall back at 3 cores (1.81×) while
+  the full streaming pipeline does not (2.85×). Why they differ is not established here.
+
+**Placement sketch.** VART assigns a DPU core by a deterministic round-robin over *runner-creation
+order* (1st→core 0, 2nd→1, 3rd→2, 4th→0, …), so the create order sets the mapping:
+
+```text
+                        create order → core (mod 3)
+  naive lane-major:  L0.ga L0.ha L0.hs   L1.ga L1.ha L1.hs   L2.ga L2.ha L2.hs
+     core:            0     1     2        0     1     2        0     1     2
+     ⇒ all three g_a on core 0 (creates 0,3,6) → serialized
+  fixed subgraph-major:  L0.ga L1.ga L2.ga   L0.ha L1.ha L2.ha   L0.hs L1.hs L2.hs
+     core:                0     1     2        0     1     2        0     1     2
+     ⇒ lane k entirely on core k → no g_a collision, every run
+```
+
+**`--lane-major` ablation** (naive vs pinned, cold, 3 lanes). The fix only bites when a lane creates
+>1 DPU runner (hyperprior) — factorized archs create just `g_a`, so lane-major ≡ subgraph-major there:
+
+| arch | pinned patch/s | lane-major patch/s (g_a) | pinned speedup |
 | --- | --- | --- | --- |
-| FP | 37.03 fps (1.00×) | 72.27 (1.95×) | 103.36 (**2.79×**) |
-| ResFP | 11.19 (1.00×) | 22.14 (1.98×) | 33.08 (**2.96×**) |
-| SHyp | 29.48 (1.00×) | 49.92 (1.69×) | 73.99 (**2.51×**) |
-| **ResSHyp** | 10.28 (1.00×) | 20.34 (1.98×) | 18.58 (**1.81× — regresses**) |
+| ResSHyp | 30.8 | 13.8 (96 ms) | **2.24×** |
+| SHyp | 86.3 | 79.9 (7 ms) | 1.08× |
+| ResFP | 33.5 | 33.6 (37 ms) | 1.00× |
+| FP | 86.0 | 87.5 (5 ms) | 0.99× |
 
-Two live hypotheses, to be settled by diagnosis *before* any implementation — they imply **different fixes**:
-
-1. **Memory-bound weight/feature-map loading (CL's leading expectation).** ResSHyp has the largest
-   weight set and `h_a`/`h_s` are weight-load-bound (§9); a third concurrent lane may saturate the
-   on-chip weight-buffer / DDR weight-load path so the extra core simply cannot be fed. If so, the
-   finding is that multi-subgraph hyperpriors hit a *memory* roof before a compute one under core
-   fan-out, and the design lever is **footprint / schedule co-design, not more cores**.
-2. **VART runner-creation-order core collision.** VART has **no core pinning** and assigns cores
-   round-robin at creation time, so 3 lanes × 4 subgraphs = 12 runners can collide concurrent pairs on
-   one core unless the creation order is choreographed, exactly as `init_s1` had to be
-   (`FPGA_benchmark.md` §11). FP/ResFP (2 subgraphs) are far likelier to land cleanly by luck. If so,
-   the lever is a **deterministic runner→core mapping**.
-
-DDR contention as a *global* bottleneck is unlikely (§8 puts DPU traffic ~20× under the ceiling), but
-per-lane weight-load contention (hypothesis 1) is a different, local effect. **Diagnosis first**:
-re-run `nn_only` at dpu3 with instrumented runner-to-core assignment *and* per-lane weight-load / DDR
-traffic, and confirm which roof is hit before building anything.
-
-*If the cause is creation order, this becomes a genuine finding rather than an engineering fix:* a
-concrete, reproducible scaling trap for multi-subgraph models on a fixed-overlay accelerator. That is
-DATE-shaped in a way the raw speedup was not. **First step is diagnosis, not implementation** — re-run
-`nn_only` at dpu3 with instrumented runner-to-core assignment and confirm or kill the hypothesis
-before building anything. Keep the result behind a runtime flag per [[project_ablation_table]].
-
-*Also worth noting:* FP should gain nothing end-to-end regardless — it is CPU/read-bound (DPU ceiling 192
-patch/s vs 132 measured).
-It might also be worth measuring SHyp as ga without residual blocks has 10x less OPs the regression across 10 cores might not be there (because of a declutter of weight-load or what not).
+Naive lane-major serializes all three `g_a` on one core for the hyperprior models; the win is largest
+for the DPU-heavy ResSHyp.
 
 **N2 — Embedded-GPU baseline (NVIDIA Jetson).** *Status: not started; hardware reportedly attached to
 this host — access route to be confirmed with a colleague.* Supplies the recognisable
 `N× vs a named baseline` that DATE expects and frames an honest
-onboard-payload question: **embedded GPU vs FPGA SoC**.
+onboard-payload question: **embedded GPU vs FPGA SoC**. **→ main.tex §eval + abstract** (the headline
+`N×` vs a recognizable baseline).
 
 - **Scope:** the *same end-to-end streaming pipeline* (read → normalize → NN → rANS → `.ddc`), not
   per-patch — a per-patch comparison would only reproduce the TGRS cross-platform table.

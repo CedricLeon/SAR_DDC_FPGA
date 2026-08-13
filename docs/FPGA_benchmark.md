@@ -211,8 +211,10 @@ and far more on h_a/h_s (fixed overhead dominates their sub-ms compute).
   `z_hat` from `eb_decompress` → no clean single-patch DPU‖CPU split; overlap unit is patch-level.
   Each pipeline thread needs its **own `BenchPipeline`** (runners/entropy hold mutable state).
 - **M5 — P2 multi-entropy + sweeps:** K entropy consumers; run `--dpu-cores`/`--entropy-threads` sweeps.
-- **P3 (deferred):** fine-grained per-subgraph pipeline + `DPUCoreAllocator` (track subgraph→core by
-  creation order, validate concurrent pairs on distinct cores). Gated on P0/P2 data.
+- **P3 (superseded by `onboard_pipeline.md` §11-N1):** the streaming DPU fan-out (`--fanout`, K
+  independent lanes) recovers the third core end-to-end — ResSHyp 2.76× at 3 lanes with clean per-lane
+  `g_a` — so the planned `DPUCoreAllocator` was unnecessary; VART round-robin places the 3 lanes cleanly
+  and the only trap is oversubscribing to 4 lanes.
 
 **Other:**
 
