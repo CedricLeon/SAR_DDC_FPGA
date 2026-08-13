@@ -41,6 +41,16 @@ double time_stage(F&& fn) {
     return ms(a, clk::now());
 }
 
+// One row on the --fanout timeline (CSV): who ran what, from when to when (ms, relative to the
+// start of the compress phase). lane -1 = the prefetch reader thread; patch = global patch index
+// (row-block index for reads). Consumed by scripts/fpga/benchmark/fanout_gantt.py.
+struct TraceEvent {
+    int lane;
+    int patch;
+    const char* stage;
+    double t0_ms, t1_ms;
+};
+
 // FNV-1a 64-bit over the sorted entropy_params/*.npy bytes — the .ddc decodability guard. Canonical
 // spec = src/utils/ddc_format.py::params_guard (the ground-side verifier); the constants below are
 // the STANDARD FNV-1a-64 offset basis / prime, written in hex to stay eyeball-checkable — a decimal
@@ -341,10 +351,46 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
     std::string model_name;
     const uint8_t arch_id = resolve_arch(opt, model_name);
 
-    BenchPipeline pipe(opt.xmodel, opt.params);
-    const bool hyper = pipe.uses_hyper();
-    pipe.set_neon(opt.neon);
-    if (opt.s1) pipe.init_s1();
+    // --fanout: K lanes, each its own DPU runner set + PatchState, DPU mutex dropped. The runner→core
+    // mapping is set by the *order* runners are created (VART round-robin, no core-select), so we
+    // deserialize the graph ONCE and create every lane's runners in a controlled global order:
+    //   default (subgraph-major): all lanes' g_a, then all h_a, then all h_s ⇒ lane k pinned to core k;
+    //   --lane-major (naive baseline): all of lane 0's runners, then lane 1's, … ⇒ every g_a collides
+    //   on one core. `g_s` is never created (decode-only). This replaces the old per-lane graph copies,
+    //   whose random pointer order made placement a run-to-run lottery (docs/onboard_pipeline.md §11-N1).
+    // Non-fanout p0: a single shared pipeline whose DPU is serialized by dpu_mtx (composes with --s1).
+    const int K = std::max(1, opt.threads);
+#ifdef HAVE_DPU
+    XModelLoader fanout_graph;  // declared first so it OUTLIVES pipes (their runners reference it)
+#endif
+    std::vector<std::unique_ptr<BenchPipeline>> pipes;
+    if (opt.fanout) {
+#ifdef HAVE_DPU
+        const auto meta_json = opt.xmodel.parent_path() / "meta.json";
+        fanout_graph.load(opt.xmodel.string(), meta_json.string(), /*create_runners=*/false);
+        pipes.reserve(static_cast<size_t>(K));
+        for (int k = 0; k < K; ++k)
+            pipes.push_back(std::make_unique<BenchPipeline>(opt.params, BenchPipeline::LaneMode{}));
+        std::vector<std::string> roles = {"g_a"};  // compress DPU roles, in pipeline order; NO g_s
+        if (pipes[0]->uses_hyper()) { roles.emplace_back("h_a"); roles.emplace_back("h_s"); }
+        auto make = [&](int k, const std::string& role) {
+            pipes[static_cast<size_t>(k)]->adopt_runner(
+                role, fanout_graph.create_duplicate_runner(
+                          role, "L" + std::to_string(k) + "_" + role));
+        };
+        if (opt.lane_major)
+            for (int k = 0; k < K; ++k) for (const auto& r : roles) make(k, r);
+        else
+            for (const auto& r : roles) for (int k = 0; k < K; ++k) make(k, r);
+#else
+        throw std::runtime_error("stream: --fanout requires a HAVE_DPU build");
+#endif
+    } else {
+        pipes.push_back(std::make_unique<BenchPipeline>(opt.xmodel, opt.params));
+        if (opt.s1) pipes[0]->init_s1();
+    }
+    for (auto& p : pipes) p->set_neon(opt.neon);
+    const bool hyper = pipes[0]->uses_hyper();
 
     StreamResult res;
     const int P = 256;
@@ -365,31 +411,73 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
     const int n = grid_a * grid_r;
 
     std::vector<DdcRecord> records(static_cast<size_t>(n));
-    const int K = std::max(1, opt.threads);
     std::vector<PatchState> states;
     states.reserve(static_cast<size_t>(K));
-    for (int k = 0; k < K; ++k) states.push_back(pipe.make_patch_state(P, P));
-    std::mutex dpu_mtx;
+    for (int k = 0; k < K; ++k)
+        states.push_back(pipes[opt.fanout ? static_cast<size_t>(k) : 0]->make_patch_state(P, P));
+    std::vector<LanePerf> lane_perf(static_cast<size_t>(K));
+    for (int k = 0; k < K; ++k) lane_perf[static_cast<size_t>(k)].lane = k;
+    std::mutex dpu_mtx;  // used only by the shared-pipeline (non-fanout) path
 
-    // Per-patch compress (s.noisy_hwc already filled) -> records[idx]. CPU stages run concurrently
-    // across workers; the DPU bursts are serialized by dpu_mtx.
-    auto process_patch = [&](PatchState& s, int idx) {
-        pipe.stage_normalize(s);
-        {
-            std::lock_guard<std::mutex> lk(dpu_mtx);
-            if (opt.s1) pipe.stage_ga_s1(s); else pipe.stage_ga(s);
-            if (hyper) pipe.stage_ha(s);
-        }
-        pipe.stage_eb_compress(s);
+    // --trace (fanout only): record each stage's [start,end] on a shared clock so a Gantt can show
+    // when lanes wait/collide. Each lane writes its own vector (single writer); read_trace is written
+    // only by the producer thread. Off by default -> zero overhead.
+    const bool tracing = !opt.trace_out.empty();
+    const auto trace_t0 = clk::now();
+    std::vector<std::vector<TraceEvent>> lane_traces(static_cast<size_t>(K));
+    std::vector<TraceEvent> read_trace;
+
+    // Per-patch compress (s.noisy_hwc already filled) -> records[idx]; CPU stages overlap across
+    // workers. Fan-out: worker wid owns pipes[wid] on its own DPU core (no lock) and its per-stage
+    // times accumulate into lane_perf[wid] for the placement diagnosis. Non-fanout: all workers share
+    // pipes[0] with the DPU serialized by dpu_mtx (the original p0, unchanged, still composes with s1).
+    auto process_patch = [&](int wid, PatchState& s, int idx) {
         DdcRecord rec;
-        if (hyper) {
-            pipe.stage_eb_decompress(s);
-            { std::lock_guard<std::mutex> lk(dpu_mtx); pipe.stage_hs(s); }
-            pipe.stage_gc_compress(s);
-            rec.z = s.z_bits;
-            rec.y = s.y_bits;
+        if (opt.fanout) {
+            BenchPipeline& pipe = *pipes[static_cast<size_t>(wid)];
+            LanePerf& L = lane_perf[static_cast<size_t>(wid)];
+            // Time a stage into `acc`, and (when tracing) log its [start,end] to this lane's timeline.
+            auto ts = [&](const char* stage, double& acc, auto&& fn) {
+                const auto a = clk::now();
+                fn();
+                const auto b = clk::now();
+                acc += ms(a, b);
+                if (tracing)
+                    lane_traces[static_cast<size_t>(wid)].push_back(
+                        TraceEvent{wid, idx, stage, ms(trace_t0, a), ms(trace_t0, b)});
+            };
+            ts("normalize", L.normalize_ms, [&] { pipe.stage_normalize(s); });
+            ts("g_a", L.ga_ms, [&] { pipe.stage_ga(s); });  // own core, no mutex
+            if (hyper) ts("h_a", L.ha_ms, [&] { pipe.stage_ha(s); });
+            ts("eb", L.entropy_ms, [&] { pipe.stage_eb_compress(s); });
+            if (hyper) {
+                ts("eb", L.entropy_ms, [&] { pipe.stage_eb_decompress(s); });
+                ts("h_s", L.hs_ms, [&] { pipe.stage_hs(s); });
+                ts("gc", L.entropy_ms, [&] { pipe.stage_gc_compress(s); });
+                rec.z = s.z_bits;
+                rec.y = s.y_bits;
+            } else {
+                rec.y = s.y_bits;
+            }
+            L.patches++;
         } else {
-            rec.y = s.y_bits;
+            BenchPipeline& pipe = *pipes[0];
+            pipe.stage_normalize(s);
+            {
+                std::lock_guard<std::mutex> lk(dpu_mtx);
+                if (opt.s1) pipe.stage_ga_s1(s); else pipe.stage_ga(s);
+                if (hyper) pipe.stage_ha(s);
+            }
+            pipe.stage_eb_compress(s);
+            if (hyper) {
+                pipe.stage_eb_decompress(s);
+                { std::lock_guard<std::mutex> lk(dpu_mtx); pipe.stage_hs(s); }
+                pipe.stage_gc_compress(s);
+                rec.z = s.z_bits;
+                rec.y = s.y_bits;
+            } else {
+                rec.y = s.y_bits;
+            }
         }
         records[static_cast<size_t>(idx)] = std::move(rec);  // distinct slot: no lock
     };
@@ -403,7 +491,7 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
             int pr;
             while ((pr = pr_next.fetch_add(1)) < grid_r) {
                 fill_patch(s, block, 0, static_cast<size_t>(col_offs[pr]), P, W);
-                process_patch(s, pa * grid_r + pr);
+                process_patch(wid, s, pa * grid_r + pr);
             }
         };
         std::vector<std::thread> pool;
@@ -419,7 +507,10 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
             for (int pa = 0; pa < grid_a; ++pa) {
                 const auto tr = clk::now();
                 auto blk = reader->read_row_block(static_cast<size_t>(row_offs[pa]), P);
-                read_ms += ms(tr, clk::now());  // only the producer touches read_ms
+                const auto tr_end = clk::now();
+                read_ms += ms(tr, tr_end);  // only the producer touches read_ms
+                if (tracing)
+                    read_trace.push_back(TraceEvent{-1, pa, "read", ms(trace_t0, tr), ms(trace_t0, tr_end)});
                 q.push(pa, std::move(blk));
             }
             q.close();
@@ -447,7 +538,7 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
                 const int pa = idx / grid_r, pr = idx % grid_r;
                 fill_patch(s, tile.data.data(), static_cast<size_t>(row_offs[pa]),
                            static_cast<size_t>(col_offs[pr]), P, W);
-                process_patch(s, idx);
+                process_patch(wid, s, idx);
             }
         };
         std::vector<std::thread> pool;
@@ -464,6 +555,20 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
 
     if (psok) fill_power(res, ps);
     finalize_result(res, grid_r, grid_a, n, P, opt, t0);  // per-stage buckets overlap in p0 -> 0
+    if (opt.fanout) res.lane_perf = std::move(lane_perf);  // per-lane placement diagnosis
+
+    if (tracing) {  // write the per-lane stage timeline (fanout_gantt.py reads this CSV)
+        std::ofstream tf(opt.trace_out.string());
+        if (!tf) throw std::runtime_error("stream: cannot open --trace file " + opt.trace_out.string());
+        tf << "lane,patch,stage,t0_ms,t1_ms\n";
+        auto dump = [&](const std::vector<TraceEvent>& v) {
+            for (const auto& e : v)
+                tf << e.lane << ',' << e.patch << ',' << e.stage << ',' << e.t0_ms << ',' << e.t1_ms
+                   << '\n';
+        };
+        dump(read_trace);
+        for (const auto& lt : lane_traces) dump(lt);
+    }
     return res;
 }
 

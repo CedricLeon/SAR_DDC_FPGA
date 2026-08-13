@@ -15,8 +15,8 @@ static const char* USAGE =
     "usage: stream_pipeline --xmodel <m.xmodel> --params <entropy_params> --tile <tile.npy> "
     "--out <out.ddc>\n"
     "                       [--manifest <manifest.json>] [--tile-id <name>] [--max-rows N]\n"
-    "                       [--overlap N] [--windowed] [--s1] [--p0] [--threads N] [--prefetch] [--neon]\n"
-    "                       [--power] [--verbose]   |   --neon-check  (print NEON log/exp error)";
+    "                       [--overlap N] [--windowed] [--s1] [--p0] [--fanout] [--lane-major] [--threads N] [--prefetch] [--neon]\n"
+    "                       [--power] [--trace <file.csv>] [--verbose]   |   --neon-check  (NEON err)";
 
 int main(int argc, char** argv) {
     ddc::StreamOptions o;
@@ -39,10 +39,13 @@ int main(int argc, char** argv) {
             else if (a == "--windowed") o.windowed = true;
             else if (a == "--s1") o.s1 = true;
             else if (a == "--p0") o.p0 = true;
+            else if (a == "--fanout") o.fanout = true;
+            else if (a == "--lane-major") o.lane_major = true;
             else if (a == "--threads") o.threads = std::stoi(next());
             else if (a == "--prefetch") o.prefetch = true;
             else if (a == "--neon") o.neon = true;
             else if (a == "--power") o.power = true;
+            else if (a == "--trace") o.trace_out = next();
             else if (a == "--verbose") o.verbose = true;
             else if (a == "-h" || a == "--help") { std::printf("%s\n", USAGE); return 0; }
             else if (a == "--neon-check") {
@@ -65,6 +68,14 @@ int main(int argc, char** argv) {
         }
         if (o.prefetch && (decoding || !o.windowed))
             throw std::runtime_error("--prefetch requires --windowed compression");
+        if (o.fanout && !o.p0)
+            throw std::runtime_error("--fanout is a --p0 modifier (add --p0)");
+        if (o.fanout && o.s1)
+            throw std::runtime_error("--fanout excludes --s1 (both contend for the same 3 DPU cores)");
+        if (!o.trace_out.empty() && !o.fanout)
+            throw std::runtime_error("--trace records the per-lane fan-out timeline (add --fanout)");
+        if (o.lane_major && !o.fanout)
+            throw std::runtime_error("--lane-major is a --fanout allocation baseline (add --fanout)");
 
         const ddc::StreamResult r =
             decoding ? ddc::stream_decode_ddc(o)
@@ -74,19 +85,31 @@ int main(int argc, char** argv) {
                         o.out_ddc.string().c_str(), static_cast<unsigned long long>(r.file_bytes));
         } else {
             const double thr = r.t_total_ms > 0 ? r.n_patches * 1000.0 / r.t_total_ms : 0.0;
-            const char* mode = o.p0 ? "p0" : (o.s1 ? "s1" : "seq");
+            const char* mode = o.p0 ? (o.fanout ? "p0+fanout" : "p0") : (o.s1 ? "s1" : "seq");
             std::printf(
                 "stream_pipeline [%s%s]: %d patches (%d x %d) | bpp=%.4f | %.2f patch/s | total=%.1f s\n",
                 mode, (o.p0 && o.s1) ? "+s1" : "", r.n_patches, r.grid_a, r.grid_r, r.bpp, thr,
                 r.t_total_ms / 1000.0);
             if (o.p0)
-                std::printf("  [p0] threads=%d ; read=%.1f write=%.1f ms (compute stages overlapped)\n",
+                std::printf("  [%s] threads=%d ; read=%.1f write=%.1f ms (compute stages overlapped)\n",
+                            o.fanout ? (o.lane_major ? "fanout/lane-major" : "fanout/pinned") : "p0",
                             o.threads, r.t_read_ms, r.t_write_ms);
             else
                 std::printf("  timing(ms): read=%.1f patchify=%.1f normalize=%.1f dpu=%.1f "
                             "entropy=%.1f write=%.1f\n",
                             r.t_read_ms, r.t_patchify_ms, r.t_normalize_ms, r.t_dpu_ms,
                             r.t_entropy_ms, r.t_write_ms);
+            // Per-lane placement diagnosis: g_a ms/call ~equal across lanes ⇒ clean core split;
+            // one lane ~2x ⇒ two lanes' g_a collided on a core; all lanes inflating with lane count
+            // ⇒ shared weight-load/DDR roof (docs/onboard_pipeline.md §11-N1).
+            if (o.fanout)
+                for (const auto& L : r.lane_perf) {
+                    const double n = L.patches > 0 ? static_cast<double>(L.patches) : 1.0;
+                    std::printf("  [lane %d] patches=%ld | g_a=%.2f ms/patch (%.2f/call) "
+                                "h_a=%.3f h_s=%.3f norm=%.2f entropy=%.2f (ms/patch)\n",
+                                L.lane, L.patches, L.ga_ms / n, L.ga_ms / (2.0 * n),
+                                L.ha_ms / n, L.hs_ms / n, L.normalize_ms / n, L.entropy_ms / n);
+                }
             if (o.prefetch)
                 std::printf("  [prefetch] row-block N+1 read overlapped with compress of N\n");
             if (r.power_ok)
