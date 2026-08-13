@@ -284,14 +284,14 @@ measured single-ZCU102 best schedule (`p0+s1+prefetch+neon`), **warm** basis (co
 non-limiting — representative of a focuser/SSMM-fed stream), **cold** SD-testbed in parentheses; λ=20
 (throughput is λ-independent). We state **both models explicitly**, as these numbers evolve with the design:
 
-- **FP** (factorized-prior, CPU-bound): **34.7 MB/s warm** (22.7 cold), ~21.3× compression (λ1000)
+- **FP** (factorized-prior, CPU-bound): **34.2 MB/s warm** (22.4 cold), ~21.3× compression (λ1000)
 - **ResSHyp** (residual scale-hyperprior, DPU-bound): **6.0 MB/s** (SD read fully hidden → warm ≈ cold),
   ~25.6× compression (λ1000)
 
-- **(a) Real-time** — compress as fast as acquired (**needs 358 MB/s**): FP → **10.3× short warm**
-  (15.8× cold); ResSHyp → **59× short**.
+- **(a) Real-time** — compress as fast as acquired (**needs 358 MB/s**): FP → **10.5× short warm**
+  (16.0× cold); ResSHyp → **59× short**.
 - **(b) Before next contact** — finish the 64.5 GB take before the next pass ~92 min away (**needs
-  11.7 MB/s**): FP → **met, 3.0× headroom warm** (1.9× cold — met on every basis) ✅; ResSHyp →
+  11.7 MB/s**): FP → **met, 2.9× headroom warm** (1.9× cold — met on every basis) ✅; ResSHyp →
   **1.9× short**.
 - **(c) Downlink-fit** — compressed output must fit the 33.75 MB/s net link: FP → **16.5 MB/s, fits
   2.0×** ✅; ResSHyp → **13.7 MB/s, fits 2.5×** ✅ (set by compression ratio, not throughput).
@@ -324,11 +324,11 @@ ground swath **30 km**; SLC **int16 4 B/px**.
 
 | metric | FP (CPU-bound) | ResSHyp (DPU-bound) | requirement |
 | --- | --- | --- | --- |
-| SLC throughput | 34.7 (22.7 cold) MB/s | 6.0 MB/s (read hidden) | — |
+| SLC throughput | 34.2 (22.4 cold) MB/s | 6.0 MB/s (read hidden) | — |
 | compression ratio (λ1000) | 21.3× | 25.6× | — |
 | compressed worst-case take | 3.0 GB | 2.5 GB | ≤ contact budget |
-| (a) real-time | 10.3× short (15.8× cold) | 59× short | 358 MB/s |
-| (b) before-contact (92 min) | ✅ 3.0× headroom (1.9× cold) | 1.9× short | 11.7 MB/s |
+| (a) real-time | 10.5× short (16.0× cold) | 59× short | 358 MB/s |
+| (b) before-contact (92 min) | ✅ 2.9× headroom (1.9× cold) | 1.9× short | 11.7 MB/s |
 | (c) downlink-fit | ✅ fits 2.0× | ✅ fits 2.4× | ≤ 33.75 MB/s net |
 
 ---

@@ -157,30 +157,32 @@ patch/block — is only slightly suboptimal, and it can live *inside* the per-pa
   python scripts/evaluation/symmetrization_study.py --aggregate results/symmetrization_study/
   ```
 
-- **Result** — ResSHyp + FP × λ∈{2,20,1000}, seed 0, **whole scene (7 296 patches)**, vs MERLIN GT
-  PSNR:
+- **Result** — ResSHyp + FP × λ∈{2,20,1000}, seed 0, **whole scene (7 482 patches, snap grid §3)**, vs
+  MERLIN GT PSNR:
 
   | model         | whole | none  | patch | block | Δ(skip) |
   |---------------|-------|-------|-------|-------|---------|
-  | ResSHyp λ1000 | 31.65 | 31.10 | 31.10 | 31.11 | 0.54    |
-  | ResSHyp λ20   | 28.61 | 28.36 | 28.41 | 28.42 | 0.25    |
-  | ResSHyp λ2    | 22.94 | 22.91 | 22.93 | 22.93 | 0.03    |
-  | FP λ1000      | 30.67 | 30.24 | 30.26 | 30.27 | 0.43    |
-  | FP λ20        | 28.87 | 28.64 | 28.65 | 28.66 | 0.22    |
-  | FP λ2         | 24.70 | 24.67 | 24.67 | 24.67 | 0.03    |
+  | ResSHyp λ1000 | 31.68 | 31.14 | 31.14 | 31.14 | 0.54    |
+  | ResSHyp λ20   | 28.65 | 28.40 | 28.44 | 28.45 | 0.25    |
+  | ResSHyp λ2    | 22.98 | 22.95 | 22.97 | 22.97 | 0.03    |
+  | FP λ1000      | 30.71 | 30.28 | 30.30 | 30.31 | 0.43    |
+  | FP λ20        | 28.90 | 28.68 | 28.69 | 28.69 | 0.22    |
+  | FP λ2         | 24.74 | 24.71 | 24.71 | 24.71 | 0.03    |
 
   *Δ(skip) = whole − none, from unrounded values (may differ ±0.01 from the rounded columns).*
 
-- SSIM:
+- SSIM (**`AMP_LIN_99` fixed-`data_range` basis**, `src/utils/metrics.py`; lower than any
+  pre-2026-08-05 SSIM figure, which predated the fixed-`data_range` fix `1bd79e8` — a metric-basis
+  change, **not** a grid effect. Δ(skip), the load-bearing quantity, is basis-robust):
 
   | model         | whole  | none   | patch  | block  | Δ(skip) |
   |---------------|--------|--------|--------|--------|---------|
-  | ResSHyp λ1000 | 0.9666 | 0.9627 | 0.9628 | 0.9628 | 0.0039  |
-  | ResSHyp λ20   | 0.9210 | 0.9190 | 0.9189 | 0.9190 | 0.0020  |
-  | ResSHyp λ2    | 0.6540 | 0.6539 | 0.6539 | 0.6537 | 0.0001  |
-  | FP λ1000      | 0.9592 | 0.9555 | 0.9556 | 0.9556 | 0.0037  |
-  | FP λ20        | 0.9348 | 0.9323 | 0.9327 | 0.9327 | 0.0025  |
-  | FP λ2         | 0.8464 | 0.8456 | 0.8454 | 0.8457 | 0.0008  |
+  | ResSHyp λ1000 | 0.9153 | 0.9062 | 0.9064 | 0.9065 | 0.0090  |
+  | ResSHyp λ20   | 0.8360 | 0.8315 | 0.8319 | 0.8320 | 0.0045  |
+  | ResSHyp λ2    | 0.6603 | 0.6601 | 0.6602 | 0.6602 | 0.0002  |
+  | FP λ1000      | 0.8929 | 0.8854 | 0.8857 | 0.8858 | 0.0075  |
+  | FP λ20        | 0.8379 | 0.8331 | 0.8335 | 0.8337 | 0.0047  |
+  | FP λ2         | 0.7079 | 0.7071 | 0.7073 | 0.7074 | 0.0008  |
 
   **Conclusion → skip symmetrization**. Granularity is irrelevant everywhere (none ≈ patch ≈ block
   within ≤0.06 dB). Dropping whole-image symmetrization costs **at most 0.54 dB** (ResSHyp λ1000) and
