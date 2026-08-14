@@ -12,11 +12,13 @@ synchronous (Phase 0: it blocks for the whole job, ``wait()`` is a no-op), so a 
 is the *exact* job-completion instant. We split the bar into the **compute** part (solid, its
 uncontended duration ``e``) and the **wait** part (white, hatched): a call that ended at ``t1`` and
 takes ``e`` uncontended must have executed during ``[t1-e, t1]`` and queued during ``[t0, t1-e]``, so
-``wait = measured span − e`` and the hatch sits before the solid (drawn only when the excess clears an
-absolute floor, so tiny-kernel jitter is not painted as queueing). The wait is therefore **inferred**
-(``measured − solo``), not a directly measured queue time. ``e`` (the *solo* exec) is the minimum span
-of that stage in ``--solo-csv`` (default: this file) — per-call granularity means even a contended
-trace usually contains a clean call, so the self-default is sound; pass a 1-lane trace to be safe.
+``wait = measured span − e`` and the hatch sits before the solid. A call is drawn as waiting only when
+it runs longer than **any clean call of that kernel** (the max span in ``--solo-csv``) — a data-derived
+threshold (no hardcoded floor), so a clean trace is wait-free by construction and the tiny h_a/h_s
+kernels don't paint jitter as waits. The wait is therefore **inferred** (``measured − solo min``), not a
+directly measured queue time. ``e`` (the *solo* exec) is the minimum span of that stage in ``--solo-csv``
+(default: this file); self is correct for a clean run, but for a contended trace pass a clean 1-lane /
+pinned trace (else the contended max hides the waits).
 A DPU span also includes the in-``run()`` int8 quantize/dequantize (~0.2–0.7 ms), which cancels in the
 subtraction. CPU and read bars are drawn as their measured span.
 
@@ -34,12 +36,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Patch, Rectangle  # noqa: E402
-
-# A DPU event is drawn with a "wait" split only if its excess over solo exceeds BOTH 15% and this
-# absolute floor (ms). The floor stops the *tiny* kernels (h_a/h_s ~1 ms) from painting spurious waits
-# from ordinary timing jitter: their real queue-behind-g_a waits are tens of ms, far above the floor,
-# while uncontended jitter is a few ms. g_a (~36 ms) is gated by the 15% term as before.
-MIN_WAIT_MS = 5.0
 
 # stage -> (colour, label). DPU cool, CPU warm, read grey. Order = pipeline order (for the legend).
 STAGES = {
@@ -72,16 +68,20 @@ def load(path: Path) -> list:
 
 
 def solo_durations(events: list) -> dict:
-    """Uncontended (solo) exec per DPU stage = the minimum span seen — the cleanest, least-queued
-    instance.
+    """Per DPU stage, the (min, max) uncontended span from the solo source.
 
-    Only DPU events are reconstructed; CPU/read stages are drawn as measured.
+    min = pure exec, used as the wait magnitude (wait = measured span − min). max = the clean-
+    jitter ceiling, used as the wait *threshold*: a call is drawn as 'waiting' only if it runs
+    longer than any clean call of that kernel ever did. Data-derived (no hardcoded floor), and it
+    makes a clean trace wait-free by construction — the tiny h_a/h_s kernels no longer paint
+    spurious waits from ordinary jitter, while the real queue-behind-g_a waits (tens of ms) sit far
+    above the ceiling. Only DPU events are reconstructed; CPU/read stages are drawn as measured.
     """
     d = defaultdict(list)
     for e in events:
         if e["kind"] == "dpu":
             d[e["stage"]].append(e["t1"] - e["t0"])
-    return {s: min(v) for s, v in d.items()}
+    return {s: (min(v), max(v)) for s, v in d.items()}
 
 
 def pick_window(events: list, n_patches: int, skip: int):
@@ -108,9 +108,9 @@ def consistency_check(events: list, solo: dict):
     """
     bad = 0
     for e in events:
-        if e["kind"] == "dpu":
-            base = solo.get(e["stage"])
-            if base and (e["t1"] - e["t0"]) < base * 0.98:
+        if e["kind"] == "dpu" and e["stage"] in solo:
+            lo, _hi = solo[e["stage"]]
+            if (e["t1"] - e["t0"]) < lo * 0.98:
                 bad += 1
     if bad:
         print(f"  ⚠ {bad} DPU events shorter than their solo exec — solo may be over-estimated")
@@ -153,12 +153,13 @@ def main():
         y = y_of[e["lane"]]
         x0, dur = e["t0"] - t_start, e["t1"] - e["t0"]
         color = STAGES.get(e["stage"], ("#333", ""))[0]
-        base = solo.get(e["stage"], dur)
-        if e["kind"] == "dpu" and dur - base > max(0.15 * base, MIN_WAIT_MS):
-            # synchronous execute_async -> the job ended at t1, so it ran during [t1-base, t1] and
-            # queued during [t0, t1-base]: draw the inferred wait (hatch) then the compute (solid).
-            bar(x0, dur - base, y, facecolor="white", hatch="////", edgecolor="#8a8a8a")
-            bar(x0 + (dur - base), base, y, facecolor=color, edgecolor="white")
+        lo, hi = solo.get(e["stage"], (dur, dur))
+        if e["kind"] == "dpu" and dur > hi:
+            # ran longer than any clean call of this kernel => it queued. Synchronous execute_async: it
+            # ended at t1, so it ran during [t1-lo, t1] (lo = pure exec) and queued during [t0, t1-lo]:
+            # draw the inferred wait (hatch) then the compute (solid).
+            bar(x0, dur - lo, y, facecolor="white", hatch="////", edgecolor="#8a8a8a")
+            bar(x0 + (dur - lo), lo, y, facecolor=color, edgecolor="white")
         else:
             bar(x0, dur, y, facecolor=color, edgecolor="white")
 
