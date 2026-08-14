@@ -120,6 +120,31 @@ def parse_run(stdout: str) -> dict:
     }
 
 
+def _median_opt(vals):
+    """Median of the non-None values, or None if they are all None (e.g. power off)."""
+    xs = [v for v in vals if v is not None]
+    return statistics.median(xs) if xs else None
+
+
+def median_lanes(runs: list) -> list:
+    """Per-lane median of every timing field across the timed iterations.
+
+    Lanes are matched by their stable ``lane`` id; load balancing makes per-lane ``patches``
+    vary slightly between runs, so that count is medianed too (it is informational). Reporting
+    the median (not the first iteration) is what makes the placement diagnosis robust to a single
+    unlucky run — the whole point of running ``--iters`` > 1 for the fan-out sweep.
+    """
+    by_lane: dict = {}
+    for r in runs:
+        for lane in r.get("lanes", []):
+            by_lane.setdefault(lane["lane"], []).append(lane)
+    out = []
+    for lane_id in sorted(by_lane):
+        group = by_lane[lane_id]
+        out.append({k: statistics.median(lane[k] for lane in group) for k in group[0]})
+    return out
+
+
 def schedule_flags(args) -> list:
     """Map the CLI knobs to stream_pipeline flags."""
     flags = []
@@ -316,7 +341,9 @@ def main():
         "fanout": args.fanout,
         "lane_major": args.lane_major,
         "threads": args.threads if args.schedule == "p0" else None,
-        "lanes": runs[0].get("lanes", []),  # per-lane fan-out timing (placement diagnosis)
+        "lanes": median_lanes(
+            runs
+        ),  # per-lane fan-out timing (median over iters; placement diagnosis)
         "prefetch": args.prefetch,
         "neon": args.neon,
         "windowed": not args.whole,
@@ -332,10 +359,10 @@ def main():
         "median_patch_s": med_patch_s,
         "scene_bytes": scene_bytes,
         "slc_mb_s": slc_mb_s,
-        "read_ms": runs[0]["read_ms"],
-        "avg_power_w": runs[0]["avg_power_w"],
-        "energy_j": runs[0]["energy_j"],
-        "j_per_patch": runs[0]["j_per_patch"],
+        "read_ms": _median_opt(r["read_ms"] for r in runs),
+        "avg_power_w": _median_opt(r["avg_power_w"] for r in runs),
+        "energy_j": _median_opt(r["energy_j"] for r in runs),
+        "j_per_patch": _median_opt(r["j_per_patch"] for r in runs),
         "overlap": args.overlap,
     }
     if args.cooldown and therms:
@@ -361,8 +388,8 @@ def main():
 
     print("-" * 68)
     pw = (
-        f" | {runs[0]['j_per_patch']:.4f} J/patch @ {runs[0]['avg_power_w']:.1f} W"
-        if runs[0]["avg_power_w"]
+        f" | {result['j_per_patch']:.4f} J/patch @ {result['avg_power_w']:.1f} W"
+        if result["avg_power_w"]
         else ""
     )
     print(

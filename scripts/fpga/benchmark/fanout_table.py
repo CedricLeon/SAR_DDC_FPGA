@@ -25,14 +25,19 @@ HW_DIR = REPO_ROOT / "results" / "benchmark_hardware"
 
 
 def load_fanout_runs(model_dir: Path) -> list:
-    """All fan-out result dicts in a model dir (fanout==True), each tagged with its source file."""
+    """All *pinned* fan-out result dicts in a model dir (fanout==True and not lane_major).
+
+    The lane-major runs are the separate collision ablation, not part of the pinned scaling table —
+    and they share the (threads, cold) key with the pinned runs, so including them here would let a
+    lane-major JSON silently overwrite the pinned run for that lane count.
+    """
     runs = []
     for f in sorted(model_dir.glob("*.json")):
         try:
             d = json.loads(f.read_text())
         except (json.JSONDecodeError, OSError):
             continue
-        if d.get("fanout"):
+        if d.get("fanout") and not d.get("lane_major"):
             runs.append(d)
     return runs
 
@@ -65,13 +70,32 @@ def nn_only_ceiling(model_name: str) -> dict:
     return out
 
 
-def ga_spread(run: dict) -> str:
-    """Min…max g_a ms/call across the run's lanes (the placement-collision proxy)."""
+def solo_ga_call(cold1: dict):
+    """1-lane g_a ms/call = the uncontended per-core reference, measured from this model's own
+    1-lane run (self-calibrated — no hardcoded 'expected' DPU time, so it holds for an unknown
+    network)."""
+    if not cold1:
+        return None
+    calls = [L["ga_ms_call"] for L in cold1.get("lanes", []) if L.get("patches", 0) > 0]
+    return min(calls) if calls else None
+
+
+def ga_diag(run: dict, solo) -> str:
+    """Per-lane g_a ms/call vs the 1-lane solo.
+
+    A lane exceeding solo by >25% is flagged as a collision (two lanes serialized on one core).
+    Reading the absolute value against solo — not the min…max spread — is what catches a
+    *symmetric* collision (all lanes uniformly slow, i.e. a narrow spread).
+    """
     calls = [L["ga_ms_call"] for L in run.get("lanes", []) if L.get("patches", 0) > 0]
     if not calls:
         return "—"
     lo, hi = min(calls), max(calls)
-    return f"{lo:.1f}" if abs(hi - lo) < 0.5 else f"{lo:.1f}…{hi:.1f}"
+    span = f"{lo:.1f}" if abs(hi - lo) < 0.5 else f"{lo:.1f}…{hi:.1f}"
+    if not solo:
+        return span
+    ratio = hi / solo
+    return f"{span} ({ratio:.2f}× solo{' ⚠' if ratio > 1.25 else ''})"
 
 
 def fmt_fps(run: dict, base_fps: float) -> str:
@@ -109,14 +133,16 @@ def build_model_table(model_dir: Path) -> str:
     warm1 = by.get((1, False))
     base_cold = cold1["median_patch_s"] if cold1 else (runs[0]["median_patch_s"])
     base_warm = warm1["median_patch_s"] if warm1 else base_cold
+    solo = solo_ga_call(cold1)  # 1-lane uncontended g_a reference for the collision flag
 
     lines = [
         f"### {model} — DPU fan-out lane scaling",
         "",
         f"Full scene (n={n_patches}, bpp={bpp:.3f}); ratio vs 1 lane (same mode). "
-        "g_a ms/call spread across lanes = placement proxy (wide ⇒ contended cores).",
+        "g_a ms/call vs the 1-lane solo = placement proxy (>1.25× ⇒ a lane's g_a collided on a shared "
+        "core; catches symmetric collisions a min…max spread would miss).",
         "",
-        "| lanes | cold patch/s (×) | warm patch/s (×) | cold J/patch @ W | cold g_a ms/call |",
+        "| lanes | cold patch/s (×) | warm patch/s (×) | cold J/patch @ W | cold g_a ms/call (vs solo) |",
         "| --- | --- | --- | --- | --- |",
     ]
     for L in lanes:
@@ -125,7 +151,7 @@ def build_model_table(model_dir: Path) -> str:
         note = "" if L <= 3 else " ⚠oversub"
         lines.append(
             f"| {L}{note} | {fmt_fps(c, base_cold)} | {fmt_fps(w, base_warm)} | "
-            f"{fmt_energy(c)} | {ga_spread(c) if c else '—'} |"
+            f"{fmt_energy(c)} | {ga_diag(c, solo) if c else '—'} |"
         )
 
     # References
