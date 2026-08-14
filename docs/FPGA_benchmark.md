@@ -212,7 +212,7 @@ and far more on h_a/h_s (fixed overhead dominates their sub-ms compute).
   Each pipeline thread needs its **own `BenchPipeline`** (runners/entropy hold mutable state).
 - **M5 — P2 multi-entropy + sweeps:** K entropy consumers; run `--dpu-cores`/`--entropy-threads` sweeps.
 - **P3 (superseded by `onboard_pipeline.md` §11-N1):** the streaming DPU fan-out (`--fanout`, K
-  independent lanes) recovers the third core end-to-end — ResSHyp 2.76× at 3 lanes with clean per-lane
+  independent lanes) recovers the third core end-to-end — ResSHyp 2.85× at 3 lanes with clean per-lane
   `g_a` — so the planned `DPUCoreAllocator` was unnecessary; VART round-robin places the 3 lanes cleanly
   and the only trap is oversubscribing to 4 lanes.
 

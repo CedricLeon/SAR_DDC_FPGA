@@ -440,8 +440,8 @@ Plain reading (measured; deeper causal stories are deliberately left out):
 - For context, the patch-only DPU benchmark (`nn_only`) had ResSHyp fall back at 3 cores (1.81×) while
   the full streaming pipeline does not (2.85×). Why they differ is not established here.
 
-**Placement sketch.** VART assigns a DPU core by a deterministic round-robin over *runner-creation
-order* (1st→core 0, 2nd→1, 3rd→2, 4th→0, …), so the create order sets the mapping:
+**Placement sketch.** Empirically, VART places runners by a deterministic round-robin over
+*runner-creation order* (1st→core 0, 2nd→1, 3rd→2, 4th→0, …), so the create order sets the mapping:
 
 ```text
                         create order → core (mod 3)
@@ -452,6 +452,12 @@ order* (1st→core 0, 2nd→1, 3rd→2, 4th→0, …), so the create order sets 
      core:                0     1     2        0     1     2        0     1     2
      ⇒ lane k entirely on core k → no g_a collision, every run
 ```
+
+> **We never observe the physical core.** VART exposes no runner→core API (above), so the core numbers
+> in this sketch are the *inferred* round-robin mapping, not a hardware readout. What is actually
+> measured is the timing signature it predicts: subgraph-major keeps every lane's `g_a` uncontended
+> (uniform-low ms/call, clean 10/10 runs), lane-major serializes them. The core indices are a mental
+> model consistent with that timing — a Gantt track is a *lane*, not a proven core.
 
 **`--lane-major` ablation** (naive vs pinned, cold, 3 lanes). The fix only bites when a lane creates
 >1 DPU runner (hyperprior) — factorized archs create just `g_a`, so lane-major ≡ subgraph-major there:
