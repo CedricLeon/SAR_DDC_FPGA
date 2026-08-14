@@ -14,7 +14,9 @@
 // Two threads calling stages on the *same* PatchState is a data race — don't.
 // DPU runner safety under concurrency is addressed in the P0/P2 milestone.
 
+#include <chrono>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -84,6 +86,15 @@ struct PatchState {
     std::vector<float> recon_lina;
 };
 
+// Optional per-substep timing sink for --trace: invoked with (label, start, end) for each internal
+// step of an instrumented stage — the CPU glue (label "g_a_cpu") and each individual DPU call
+// (label "g_a"), so a lane's two g_a calls become two separate timeline events. Null = no tracing
+// (zero overhead: the stage just runs its steps untimed). NOTE: a DPU-call span here brackets the
+// whole DPUSubgraphRunner::run() (kept pure), so it includes the in-run() int8 quantize/dequantize
+// (a few tenths of a ms); that CPU slice cancels in the Gantt's wait reconstruction (measured − solo).
+using SubStageSink = std::function<void(const char* label, std::chrono::steady_clock::time_point a,
+                                        std::chrono::steady_clock::time_point b)>;
+
 // ---------------------------------------------------------------------------
 // BenchPipeline
 // ---------------------------------------------------------------------------
@@ -141,7 +152,8 @@ public:
     // Stage 1 (DPU + CPU): split norm_hwc → real/imag, run g_a on each,
     //   interleave y, compute |y| for h_a.
     //   Throws if compiled without HAVE_DPU.
-    void stage_ga(PatchState& s);
+    //   sink (optional): per-substep timing callback (g_a_cpu / g_a×2) for the --trace timeline.
+    void stage_ga(PatchState& s, const SubStageSink* sink = nullptr);
 
     // Stage 1 S1 variant: same as stage_ga but dispatches g_a(real) and
     //   g_a(imag) on two separate DPU runners concurrently (one std::thread).

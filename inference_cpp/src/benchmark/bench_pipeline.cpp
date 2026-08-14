@@ -257,17 +257,30 @@ void BenchPipeline::stage_normalize(PatchState& s)
 // ---------------------------------------------------------------------------
 // Stage 1 — DPU g_a + CPU interleave
 // ---------------------------------------------------------------------------
-void BenchPipeline::stage_ga(PatchState& s)
+void BenchPipeline::stage_ga(PatchState& s, const SubStageSink* sink)
 {
-    channel_split(s);
+    // Run each step; when a --trace sink is attached, bracket it and report [start,end] so the two
+    // g_a DPU calls (real, imag) and the CPU glue become separate timeline events. No sink -> the
+    // step just runs (no clock reads), so the non-tracing path is unchanged.
+    auto timed = [&](const char* label, auto&& fn) {
+        if (sink) {
+            const auto a = std::chrono::steady_clock::now();
+            fn();
+            (*sink)(label, a, std::chrono::steady_clock::now());
+        } else {
+            fn();
+        }
+    };
+    timed("g_a_cpu", [&] { channel_split(s); });
 #ifdef HAVE_DPU
     const auto& ga = dpu("g_a");
-    ga.run(s.real_ch.data(), s.y_real.data());
-    ga.run(s.imag_ch.data(), s.y_imag.data());
+    timed("g_a", [&] { ga.run(s.real_ch.data(), s.y_real.data()); });
+    timed("g_a", [&] { ga.run(s.imag_ch.data(), s.y_imag.data()); });
 #else
+    (void)timed;
     throw std::runtime_error("stage_ga: compiled without HAVE_DPU");
 #endif
-    interleave_and_abs(s);
+    timed("g_a_cpu", [&] { interleave_and_abs(s); });
 }
 
 // ---------------------------------------------------------------------------

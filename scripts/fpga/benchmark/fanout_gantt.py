@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """fanout_gantt.py — execution-timeline (Gantt) of the DPU fan-out from a --trace CSV.
 
-`stream_pipeline --fanout --trace t.csv` writes one row per stage: ``lane,patch,stage,t0_ms,t1_ms``
-(lane -1 = the prefetch reader thread). This draws a swim-lane timeline — one track per DPU lane, plus
-the reader on top — over a short window of `--patches` steady-state patches.
+``stream_pipeline --fanout --trace t.csv`` writes one row per sub-step (schema v2):
+``lane,patch,stage,kind,t0_ms,t1_ms`` (lane -1 = the prefetch reader). ``stage`` is per-call —
+``g_a`` appears twice (real, imag), its CPU glue is ``g_a_cpu``, and EB compress/decompress are
+``eb_enc`` / ``eb_dec``. ``kind`` is ``dpu`` | ``cpu`` | ``read``. This draws a swim-lane timeline,
+one track per DPU lane plus the reader, over a short window of steady-state patches.
 
-Each **DPU** stage bar is split into the compute part (solid, its uncontended duration) and the **wait**
-part (white, hatched) — the time the call spent queued because another lane held its DPU core. So a
-collision reads directly as a hatched block, not a longer solid bar. The uncontended duration per stage
-is taken as the minimum seen in ``--solo-csv`` (a 1- or 3-lane trace; defaults to this file).
-
-The window is anchored on a real read event so the reader track is always shown, and every timeline is
-**shifted to start at t=0** for easy comparison across figures.
+**How a DPU bar is drawn (honest about measured vs inferred).** On this board ``execute_async`` is
+synchronous (Phase 0: it blocks for the whole job, ``wait()`` is a no-op), so a DPU event's end time
+is the *exact* job-completion instant. We split the bar into the **compute** part (solid, its
+uncontended duration ``e``) and the **wait** part (white, hatched): a call that ended at ``t1`` and
+takes ``e`` uncontended must have executed during ``[t1-e, t1]`` and queued during ``[t0, t1-e]``, so
+``wait = measured span − e`` and the hatch sits before the solid. The wait is therefore **inferred**
+(``measured − solo``), not a directly measured queue time. ``e`` (the *solo* exec) is the minimum span
+of that stage in ``--solo-csv`` (default: this file) — per-call granularity means even a contended
+trace usually contains a clean call, so the self-default is sound; pass a 1-lane trace to be safe.
+A DPU span also includes the in-``run()`` int8 quantize/dequantize (~0.2–0.7 ms), which cancels in the
+subtraction. CPU and read bars are drawn as their measured span.
 
     python scripts/fpga/benchmark/fanout_gantt.py --csv rsh_t4.csv --solo-csv rsh_t3.csv \
         --title "ResSHyp · 4 lanes" --patches 3
@@ -28,27 +34,29 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Patch, Rectangle  # noqa: E402
 
-# stage -> (colour, label). DPU cool, CPU warm, read grey.
+# stage -> (colour, label). DPU cool, CPU warm, read grey. Order = pipeline order (for the legend).
 STAGES = {
     "read": ("#999999", "read (producer)"),
     "normalize": ("#E69F00", "normalize (CPU)"),
+    "g_a_cpu": ("#F0E442", "g_a split/interleave (CPU)"),
     "g_a": ("#0072B2", "g_a (DPU)"),
     "h_a": ("#56B4E9", "h_a (DPU)"),
     "h_s": ("#009E73", "h_s (DPU)"),
-    "eb": ("#D55E00", "entropy: EB (CPU)"),
+    "eb_enc": ("#D55E00", "entropy: EB enc (CPU)"),
+    "eb_dec": ("#E8845E", "entropy: EB dec (CPU)"),
     "gc": ("#CC79A7", "entropy: GC (CPU)"),
 }
-DPU_STAGES = {"g_a", "h_a", "h_s"}  # these can wait on a shared core
 
 
 def load(path: Path) -> list:
-    """Read a trace CSV into event dicts."""
+    """Read a v2 trace CSV into event dicts."""
     with open(path) as f:
         return [
             {
                 "lane": int(r["lane"]),
                 "patch": int(r["patch"]),
                 "stage": r["stage"],
+                "kind": r["kind"],
                 "t0": float(r["t0_ms"]),
                 "t1": float(r["t1_ms"]),
             }
@@ -57,10 +65,15 @@ def load(path: Path) -> list:
 
 
 def solo_durations(events: list) -> dict:
-    """Uncontended duration per stage = the minimum observed (the cleanest instance)."""
+    """Uncontended (solo) exec per DPU stage = the minimum span seen — the cleanest, least-queued
+    instance.
+
+    Only DPU events are reconstructed; CPU/read stages are drawn as measured.
+    """
     d = defaultdict(list)
     for e in events:
-        d[e["stage"]].append(e["t1"] - e["t0"])
+        if e["kind"] == "dpu":
+            d[e["stage"]].append(e["t1"] - e["t0"])
     return {s: min(v) for s, v in d.items()}
 
 
@@ -82,6 +95,20 @@ def pick_window(events: list, n_patches: int, skip: int):
     return t_start, t_end
 
 
+def consistency_check(events: list, solo: dict):
+    """Cheap sanity report: a DPU event should never be shorter than its solo exec (that would mean
+    the solo estimate is too high). Print any violations so the reconstruction is not trusted blindly.
+    """
+    bad = 0
+    for e in events:
+        if e["kind"] == "dpu":
+            base = solo.get(e["stage"])
+            if base and (e["t1"] - e["t0"]) < base * 0.98:
+                bad += 1
+    if bad:
+        print(f"  ⚠ {bad} DPU events shorter than their solo exec — solo may be over-estimated")
+
+
 def main():
     """Entry point."""
     ap = argparse.ArgumentParser(
@@ -89,7 +116,7 @@ def main():
     )
     ap.add_argument("--csv", required=True)
     ap.add_argument(
-        "--solo-csv", default=None, help="clean trace for uncontended baselines (default: self)"
+        "--solo-csv", default=None, help="clean trace for uncontended solo exec (default: self)"
     )
     ap.add_argument("--title", default="")
     ap.add_argument("--patches", type=int, default=3)
@@ -99,6 +126,7 @@ def main():
 
     events = load(Path(args.csv))
     solo = solo_durations(load(Path(args.solo_csv)) if args.solo_csv else events)
+    consistency_check(events, solo)
     t_start, t_end = pick_window(events, args.patches, args.skip)
     span = t_end - t_start
     pad = 0.02 * span
@@ -119,9 +147,9 @@ def main():
         x0, dur = e["t0"] - t_start, e["t1"] - e["t0"]
         color = STAGES.get(e["stage"], ("#333", ""))[0]
         base = solo.get(e["stage"], dur)
-        if (
-            e["stage"] in DPU_STAGES and dur > base * 1.15
-        ):  # split: wait (hatch) then compute (solid)
+        if e["kind"] == "dpu" and dur > base * 1.15:
+            # synchronous execute_async -> the job ended at t1, so it ran during [t1-base, t1] and
+            # queued during [t0, t1-base]: draw the inferred wait (hatch) then the compute (solid).
             bar(x0, dur - base, y, facecolor="white", hatch="////", edgecolor="#8a8a8a")
             bar(x0 + (dur - base), base, y, facecolor=color, edgecolor="white")
         else:
@@ -144,7 +172,9 @@ def main():
     ax.set_yticks(list(y_of.values()))
     ax.set_yticklabels(["reader" if ln < 0 else f"lane {ln}" for ln in lanes])
     ax.invert_yaxis()
-    ax.set_xlabel("time (ms) — each timeline starts at 0")
+    ax.set_xlabel(
+        "time (ms) — each timeline starts at 0; DPU wait is inferred (measured − solo exec)"
+    )
     ax.grid(axis="x", color="#ececec", lw=0.8, zorder=0)
     for s in ("top", "right", "left"):
         ax.spines[s].set_visible(False)
@@ -163,7 +193,7 @@ def main():
             facecolor="white",
             hatch="////",
             edgecolor="#8a8a8a",
-            label="wait (queued for a DPU core)",
+            label="inferred wait (queued for a DPU core)",
         )
     )
     ax.legend(

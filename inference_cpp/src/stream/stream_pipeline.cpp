@@ -41,13 +41,17 @@ double time_stage(F&& fn) {
     return ms(a, clk::now());
 }
 
-// One row on the --fanout timeline (CSV): who ran what, from when to when (ms, relative to the
-// start of the compress phase). lane -1 = the prefetch reader thread; patch = global patch index
-// (row-block index for reads). Consumed by scripts/fpga/benchmark/fanout_gantt.py.
+// One row on the --fanout timeline (CSV): who ran what, of which kind, from when to when (ms, relative
+// to the start of the compress phase). lane -1 = the prefetch reader thread; patch = global patch
+// index (row-block index for reads). `stage` is per-call granular: g_a appears twice (real, imag), the
+// g_a CPU glue is "g_a_cpu", and EB compress/decompress are "eb_enc"/"eb_dec". `kind` is dpu | cpu |
+// read; the Gantt reconstructs waits only for DPU events (measured span − self-calibrated solo exec).
+// A DPU span includes the in-run() int8 quant/dequant (see SubStageSink). Read by fanout_gantt.py.
 struct TraceEvent {
     int lane;
     int patch;
     const char* stage;
+    const char* kind;
     double t0_ms, t1_ms;
 };
 
@@ -436,24 +440,38 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
         if (opt.fanout) {
             BenchPipeline& pipe = *pipes[static_cast<size_t>(wid)];
             LanePerf& L = lane_perf[static_cast<size_t>(wid)];
-            // Time a stage into `acc`, and (when tracing) log its [start,end] to this lane's timeline.
-            auto ts = [&](const char* stage, double& acc, auto&& fn) {
+            // Time a stage into `acc`, and (when tracing) log its [start,end] + kind to this lane's
+            // timeline. `kind` = dpu | cpu; the Gantt reconstructs waits only for DPU events.
+            auto ts = [&](const char* stage, const char* kind, double& acc, auto&& fn) {
                 const auto a = clk::now();
                 fn();
                 const auto b = clk::now();
                 acc += ms(a, b);
                 if (tracing)
                     lane_traces[static_cast<size_t>(wid)].push_back(
-                        TraceEvent{wid, idx, stage, ms(trace_t0, a), ms(trace_t0, b)});
+                        TraceEvent{wid, idx, stage, kind, ms(trace_t0, a), ms(trace_t0, b)});
             };
-            ts("normalize", L.normalize_ms, [&] { pipe.stage_normalize(s); });
-            ts("g_a", L.ga_ms, [&] { pipe.stage_ga(s); });  // own core, no mutex
-            if (hyper) ts("h_a", L.ha_ms, [&] { pipe.stage_ha(s); });
-            ts("eb", L.entropy_ms, [&] { pipe.stage_eb_compress(s); });
+            ts("normalize", "cpu", L.normalize_ms, [&] { pipe.stage_normalize(s); });
+            // g_a: the whole stage total still accumulates into L.ga_ms (LanePerf/stdout unchanged),
+            // but the timeline gets the two DPU calls + CPU glue as separate events, via the sink.
+            SubStageSink ga_sink;
+            if (tracing)
+                ga_sink = [&](const char* label, clk::time_point a, clk::time_point b) {
+                    lane_traces[static_cast<size_t>(wid)].push_back(TraceEvent{
+                        wid, idx, label, std::strcmp(label, "g_a") == 0 ? "dpu" : "cpu",
+                        ms(trace_t0, a), ms(trace_t0, b)});
+                };
+            {
+                const auto a = clk::now();
+                pipe.stage_ga(s, tracing ? &ga_sink : nullptr);  // own core, no mutex
+                L.ga_ms += ms(a, clk::now());
+            }
+            if (hyper) ts("h_a", "dpu", L.ha_ms, [&] { pipe.stage_ha(s); });
+            ts("eb_enc", "cpu", L.entropy_ms, [&] { pipe.stage_eb_compress(s); });
             if (hyper) {
-                ts("eb", L.entropy_ms, [&] { pipe.stage_eb_decompress(s); });
-                ts("h_s", L.hs_ms, [&] { pipe.stage_hs(s); });
-                ts("gc", L.entropy_ms, [&] { pipe.stage_gc_compress(s); });
+                ts("eb_dec", "cpu", L.entropy_ms, [&] { pipe.stage_eb_decompress(s); });
+                ts("h_s", "dpu", L.hs_ms, [&] { pipe.stage_hs(s); });
+                ts("gc", "cpu", L.entropy_ms, [&] { pipe.stage_gc_compress(s); });
                 rec.z = s.z_bits;
                 rec.y = s.y_bits;
             } else {
@@ -526,7 +544,8 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
                 const auto tr_end = clk::now();
                 read_ms += ms(tr, tr_end);  // only the producer touches read_ms
                 if (tracing)
-                    read_trace.push_back(TraceEvent{-1, pa, "read", ms(trace_t0, tr), ms(trace_t0, tr_end)});
+                    read_trace.push_back(
+                        TraceEvent{-1, pa, "read", "read", ms(trace_t0, tr), ms(trace_t0, tr_end)});
                 for (int pr = 0; pr < grid_r; ++pr) {
                     std::unique_lock<std::mutex> lk(qm);
                     q_not_full.wait(lk, [&] { return q.size() < q_cap; });
@@ -602,11 +621,11 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
     if (tracing) {  // write the per-lane stage timeline (fanout_gantt.py reads this CSV)
         std::ofstream tf(opt.trace_out.string());
         if (!tf) throw std::runtime_error("stream: cannot open --trace file " + opt.trace_out.string());
-        tf << "lane,patch,stage,t0_ms,t1_ms\n";
+        tf << "lane,patch,stage,kind,t0_ms,t1_ms\n";
         auto dump = [&](const std::vector<TraceEvent>& v) {
             for (const auto& e : v)
-                tf << e.lane << ',' << e.patch << ',' << e.stage << ',' << e.t0_ms << ',' << e.t1_ms
-                   << '\n';
+                tf << e.lane << ',' << e.patch << ',' << e.stage << ',' << e.kind << ',' << e.t0_ms
+                   << ',' << e.t1_ms << '\n';
         };
         dump(read_trace);
         for (const auto& lt : lane_traces) dump(lt);
