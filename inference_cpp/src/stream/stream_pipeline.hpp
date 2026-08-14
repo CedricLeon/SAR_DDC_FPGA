@@ -38,10 +38,12 @@ struct StreamOptions {
 };
 
 // Per-lane timing for --fanout diagnosis (empty unless fanout). Each lane = one worker owning its
-// own BenchPipeline on its own DPU core; comparing g_a across lanes tells collision from contention:
-// one lane ~2x slower ⇒ two lanes' g_a collided on a core (VART creation-order, hyp. 2); ALL lanes'
-// g_a uniformly inflating as lanes grow ⇒ shared weight-load/DDR roof (hyp. 1). Totals (ms); the
-// reporter divides by patches / (2·patches for g_a's two calls) for per-call means.
+// own BenchPipeline on its own DPU core. Placement proxy: compare each lane's g_a ms/call to the
+// 1-lane solo — ~1.0x = clean (own core), >~1.25x = that lane's g_a is queued behind another on a
+// shared core. A *uniform* inflation across lanes is NOT a DDR/weight-load roof: three g_a colliding
+// on one core (--lane-major) gives the same flat signature; the absolute ratio to solo separates them
+// (g_a is compute-bound, so a clean <=3-lane split shows ~no inflation). Totals (ms); the reporter
+// divides by patches / (2·patches for g_a's two calls) for per-call means.
 struct LanePerf {
     int lane = 0;
     long patches = 0;                 // patches this lane processed (dynamic, load-balanced)

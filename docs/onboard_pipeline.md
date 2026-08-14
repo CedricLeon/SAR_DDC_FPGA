@@ -388,8 +388,11 @@ patches (the compress path has no `g_s`, so the third core is only fillable *acr
 seq / p0 / fanout / fanout+prefetch+neon all one sha256). Excludes `--s1` (both fight for the same 3
 cores). VART exposes **no runner→core API** (checked the board headers — `vart::Runner`/`RunnerExt` have
 none; `xir::DpuController::get_core_id` is unreachable from the handle), so each lane self-times `g_a`
-and **`g_a` ms/call across lanes is the placement proxy**: uniform ⇒ clean core split, one lane ~2× ⇒ a
-collision. Sweep: `stream_fanout_sweep.py` (lanes × cold/warm, cooldown-gated); table: `fanout_table.py`
+and **`g_a` ms/call vs the 1-lane solo is the placement proxy**: ~1.0× ⇒ clean (own core), >~1.25× ⇒
+that lane's `g_a` is queued behind another on a shared core. A *uniform* inflation across lanes is **not**
+a DDR/weight-load roof — three `g_a` colliding on one core (`--lane-major`) gives the same flat
+signature; the absolute ratio to solo separates them (`g_a` is compute-bound, so a clean ≤3-lane split
+shows ~no inflation). Sweep: `stream_fanout_sweep.py` (lanes × cold/warm, cooldown-gated); table: `fanout_table.py`
 → `results/benchmark_stream/fanout_table.md`.
 
 **Result.** Full metrics — `g_a` ms/call, per-patch compute latency (normalize+DPU+entropy; the

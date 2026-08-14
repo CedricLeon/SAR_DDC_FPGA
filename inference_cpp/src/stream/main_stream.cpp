@@ -99,9 +99,10 @@ int main(int argc, char** argv) {
                             "entropy=%.1f write=%.1f\n",
                             r.t_read_ms, r.t_patchify_ms, r.t_normalize_ms, r.t_dpu_ms,
                             r.t_entropy_ms, r.t_write_ms);
-            // Per-lane placement diagnosis: g_a ms/call ~equal across lanes ⇒ clean core split;
-            // one lane ~2x ⇒ two lanes' g_a collided on a core; all lanes inflating with lane count
-            // ⇒ shared weight-load/DDR roof (docs/onboard_pipeline.md §11-N1).
+            // Per-lane placement diagnosis: g_a ms/call vs the 1-lane solo — ~1.0x = clean (own core),
+            // >~1.25x = that lane's g_a is queued behind another on a shared core. Uniform inflation is
+            // NOT a DDR roof: 3 g_a on one core (--lane-major) looks the same; the absolute ratio to
+            // solo tells them apart (docs/onboard_pipeline.md §11-N1).
             if (o.fanout)
                 for (const auto& L : r.lane_perf) {
                     const double n = L.patches > 0 ? static_cast<double>(L.patches) : 1.0;
