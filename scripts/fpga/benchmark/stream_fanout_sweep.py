@@ -17,10 +17,10 @@ immediately after, reusing the tile the cold run just paged in — so warm is th
     conda activate DDC_FPGA
     python scripts/fpga/benchmark/stream_fanout_sweep.py --archs ResSHyp,FP --lambdas 1000
 
-The ~7.5k-patch within-run average is stable, but the per-lane placement diagnosis needs run-to-run
-robustness, so the default is ``--iters 3 --warmup 1`` (median reported; drop to ``--iters 1 --warmup 0``
-for a quick look). ResSHyp lane-1 is ~13 min/iter, so the full ResSHyp matrix at the default is a few
-hours — run detached.
+Defaults to ``--iters 1 --warmup 0`` (the ~7.5k-patch within-run average is stable, so a single
+full-scene run is a usable measurement). For a robust final run use ``--iters 3 --warmup 1`` (median
+reported) — but note ResSHyp lane-1 is ~13 min/iter, so the full ResSHyp matrix then takes a few hours;
+run detached.
 """
 
 import argparse
@@ -93,9 +93,9 @@ def main():
         "--cooldown-c", type=float, default=58.0, help="cool die to <= this °C before each run"
     )
     ap.add_argument(
-        "--iters", type=int, default=3, help="timed iterations per config (median reported)"
+        "--iters", type=int, default=1, help="timed iterations per config (median reported)"
     )
-    ap.add_argument("--warmup", type=int, default=1, help="discarded warmup iterations per config")
+    ap.add_argument("--warmup", type=int, default=0, help="discarded warmup iterations per config")
     ap.add_argument("--warm", action="store_true", default=True, help="run a warm pass per lane")
     ap.add_argument("--no-warm", dest="warm", action="store_false")
     args = ap.parse_args()
