@@ -399,6 +399,14 @@ shows ~no inflation). Sweep: `stream_fanout_sweep.py` (lanes × cold/warm, coold
 prefetched SD read is excluded), throughput, avg power, J/patch — for all four archs × lanes 1–4, each
 cell **cold / warm**, pinned (deterministic) placement (regenerate with `fanout_full_table.py`; per-lane stage bars → `fanout_lane_timings.png`):
 
+> ⚠️ **Numbers pending regeneration.** The table below is the pre-audit sweep: **overlap 0** and a
+> **single iteration**. Re-run it at the current defaults — **overlap 2** (the streaming seam
+> convention, §8) and **median-of-3** — before the manuscript:
+> `python scripts/fpga/benchmark/stream_fanout_sweep.py --archs FP,SHyp,ResFP,ResSHyp --iters 3 --warmup 0`
+> (warmup is unnecessary — a full-scene run amortizes DPU cold-start over ~7.5k patches), then rebuild
+> the table (`fanout_full_table.py`) and the per-lane figure. Throughput shifts ~1% (overlap-2 patch
+> count) and the per-lane diagnosis becomes a median, not one sample.
+
 | arch (topology) | metric | 1 lane | 2 lanes | 3 lanes | 4 lanes |
 | --- | --- | --- | --- | --- | --- |
 | **FP** (factorized) | g_a [ms] | 5.2 / 5.2 | 5.4 / 5.4 | 5.7 / 5.7 | 6.3 / 6.4 |
