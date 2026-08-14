@@ -483,7 +483,8 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
     };
 
     // Compress one row-block: K workers pull patches (pr) off an atomic counter; the DPU bursts are
-    // serialized inside process_patch and records placed by index. Used by both windowed paths.
+    // serialized inside process_patch and records placed by index. Used by the non-prefetch windowed
+    // path only (the prefetch path drains a persistent pool that spans blocks — see below).
     auto process_block = [&](int pa, const float* block) {
         std::atomic<int> pr_next{0};
         auto blockworker = [&](int wid) {
@@ -500,28 +501,69 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
     };
 
     if (windowed && opt.prefetch) {
-        // Double buffer: a producer thread reads row-block N+1 while the K workers compress block N.
-        RowBlockQueue q(2);
+        // Persistent K-worker pool draining a patch-level queue: no per-row-block join barrier and no
+        // per-block thread churn (workers cross block boundaries freely, so a fast lane never idles
+        // waiting for the slowest lane at a block edge). A producer reads row-block N+1 (as a
+        // shared_ptr) while the workers compress patches from blocks already queued; each patch item
+        // holds a shared_ptr to its block, so the block buffer frees once its last patch is done. The
+        // queue is bounded to ~2 row-blocks of items = the same double-buffer memory ceiling as before.
+        // Output stays byte-identical: records are placed by absolute index, independent of schedule.
+        struct Item {
+            std::shared_ptr<std::vector<float>> block;
+            int pa = 0, pr = 0;
+        };
+        std::deque<Item> q;
+        std::mutex qm;
+        std::condition_variable q_not_full, q_not_empty;
+        bool q_closed = false;
+        const size_t q_cap = static_cast<size_t>(grid_r) * 2;  // ~2 row-blocks in flight (double buffer)
         double read_ms = 0.0;
         std::thread producer([&] {
             for (int pa = 0; pa < grid_a; ++pa) {
                 const auto tr = clk::now();
-                auto blk = reader->read_row_block(static_cast<size_t>(row_offs[pa]), P);
+                auto blk = std::make_shared<std::vector<float>>(
+                    reader->read_row_block(static_cast<size_t>(row_offs[pa]), P));
                 const auto tr_end = clk::now();
                 read_ms += ms(tr, tr_end);  // only the producer touches read_ms
                 if (tracing)
                     read_trace.push_back(TraceEvent{-1, pa, "read", ms(trace_t0, tr), ms(trace_t0, tr_end)});
-                q.push(pa, std::move(blk));
+                for (int pr = 0; pr < grid_r; ++pr) {
+                    std::unique_lock<std::mutex> lk(qm);
+                    q_not_full.wait(lk, [&] { return q.size() < q_cap; });
+                    q.push_back(Item{blk, pa, pr});
+                    q_not_empty.notify_one();
+                }
             }
-            q.close();
+            {
+                std::lock_guard<std::mutex> lk(qm);
+                q_closed = true;
+            }
+            q_not_empty.notify_all();
         });
-        int pa;
-        std::vector<float> blk;
-        while (q.pop(pa, blk)) process_block(pa, blk.data());
+        auto worker = [&](int wid) {
+            PatchState& s = states[static_cast<size_t>(wid)];
+            for (;;) {
+                Item it;
+                {
+                    std::unique_lock<std::mutex> lk(qm);
+                    q_not_empty.wait(lk, [&] { return !q.empty() || q_closed; });
+                    if (q.empty()) return;  // closed and drained
+                    it = std::move(q.front());
+                    q.pop_front();
+                    q_not_full.notify_one();
+                }
+                fill_patch(s, it.block->data(), 0, static_cast<size_t>(col_offs[it.pr]), P, W);
+                process_patch(wid, s, it.pa * grid_r + it.pr);
+            }
+        };
+        std::vector<std::thread> pool;
+        for (int k = 0; k < K; ++k) pool.emplace_back(worker, k);
+        for (auto& t : pool) t.join();
         producer.join();
         res.t_read_ms += read_ms;  // raw read cost, now overlapped with compute (hidden in t_total)
     } else if (windowed) {
-        // Outer loop over row-blocks (one in DDR at a time); K workers parallelize each block.
+        // No prefetch: read a row-block, then compress it (deliberately un-overlapped, to measure the
+        // bare SD read). One-block-in-DDR quick test; keeps the per-block pool (process_block).
         std::vector<float> rowblock;
         for (int pa = 0; pa < grid_a; ++pa) {
             const auto tread = clk::now();
