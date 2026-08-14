@@ -23,7 +23,7 @@ struct StreamOptions {
     std::filesystem::path decode_ddc;  // if set: decode this .ddc instead of compressing a tile
     std::string tile_id;             // empty -> derived from tile filename stem
     int max_rows = -1;               // -1 = all azimuth patch-rows (else cap, for quick tests)
-    int overlap = 0;                 // patch overlap px; stride = 256 - overlap. 0 = snap-covered non-overlap
+    int overlap = 2;                 // patch overlap px; stride = 256 - overlap. 2 = streaming default (U5 seam study); 0 = snap-covered non-overlap
     bool windowed = false;           // stream row-blocks (one patch-row in DDR) vs load whole tile
     bool s1 = false;                 // channel-parallel g_a(real)‖g_a(imag) on two DPU cores
     bool p0 = false;                 // pipeline overlap: K workers, DPU serialized, CPU overlapped

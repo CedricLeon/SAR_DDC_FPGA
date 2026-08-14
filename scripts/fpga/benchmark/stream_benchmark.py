@@ -36,6 +36,10 @@ from scripts.fpga.benchmark.board_thermal import cooldown, read_thermal  # noqa:
 
 BOARD = "ZCU102"
 BOARD_ROOT = "/home/root/SAR_DDC"
+# Streaming patch overlap default: 2 px removes the seam-band deficit at ~1% cost (U5 study,
+# docs/onboard_pipeline.md §8). Canonical, so it is NOT put in the result filename (only deviations
+# are), keeping the label stable across the overlap-0 → overlap-2 switch for the downstream tables.
+CANONICAL_OVERLAP = 2
 
 _SUMMARY = re.compile(
     r"(\d+) patches \((\d+) x (\d+)\) \| bpp=([\d.]+) \| ([\d.]+) patch/s \| total=([\d.]+) s"
@@ -166,8 +170,7 @@ def schedule_flags(args) -> list:
         flags.append("--neon")
     if args.power:
         flags.append("--power")
-    if args.overlap > 0:
-        flags += ["--overlap", str(args.overlap)]
+    flags += ["--overlap", str(args.overlap)]  # always forward: stream_pipeline now defaults to 2
     if args.max_rows >= 0:
         flags += ["--max-rows", str(args.max_rows)]
     return flags
@@ -197,7 +200,9 @@ def label(args, cold: bool) -> str:
         parts.append("pf")
     if args.neon:
         parts.append("neon")
-    if args.overlap > 0:
+    if (
+        args.overlap != CANONICAL_OVERLAP
+    ):  # canonical overlap stays unsuffixed; flag deviations only
         parts.append(f"ov{args.overlap}")
     parts.append("cold" if cold else "warm")
     if args.max_rows >= 0:
@@ -228,7 +233,10 @@ def parse_args():
     p.add_argument("--neon", action="store_true", help="NEON-vectorised normalize/denorm")
     p.add_argument("--power", action="store_true", help="sample board power (INA226/PMBus)")
     p.add_argument(
-        "--overlap", type=int, default=0, help="patch overlap px (stream_pipeline --overlap N)"
+        "--overlap",
+        type=int,
+        default=CANONICAL_OVERLAP,
+        help="patch overlap px (stream_pipeline --overlap N); default 2 = streaming seam default",
     )
     p.add_argument(
         "--tile", default="data/stream_tile_1k_i16.npy", help="board-relative tile path"
