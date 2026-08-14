@@ -20,8 +20,12 @@ REPO_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=Fal
 STREAM = REPO_ROOT / "results" / "benchmark_stream"
 
 # (arch, short topology tag). Order light→heavy DPU.
-ARCHS = [("FP", "factorized"), ("SHyp", "hyperprior"), ("ResFP", "factorized + residual"),
-         ("ResSHyp", "hyperprior + residual")]
+ARCHS = [
+    ("FP", "factorized"),
+    ("SHyp", "hyperprior"),
+    ("ResFP", "factorized + residual"),
+    ("ResSHyp", "hyperprior + residual"),
+]
 LANES = [1, 2, 3, 4]
 
 
@@ -35,19 +39,37 @@ def _metrics(j: dict) -> dict:
     """g_a (mean ms/call over lanes), latency (mean per-patch compute ms), tput, power, J/patch."""
     ls = [L for L in j["lanes"] if L["patches"] > 0]
     ga = sum(L["ga_ms_call"] for L in ls) / len(ls)
-    lat = sum(L["norm_ms_patch"] + L["ga_ms_patch"] + L["ha_ms_patch"] + L["hs_ms_patch"]
-              + L["entropy_ms_patch"] for L in ls) / len(ls)
-    return {"g_a [ms]": ga, "latency [ms]": lat, "throughput [patch/s]": j["median_patch_s"],
-            "avg power [W]": j["avg_power_w"], "J/patch": j["j_per_patch"]}
+    lat = sum(
+        L["norm_ms_patch"]
+        + L["ga_ms_patch"]
+        + L["ha_ms_patch"]
+        + L["hs_ms_patch"]
+        + L["entropy_ms_patch"]
+        for L in ls
+    ) / len(ls)
+    return {
+        "g_a [ms]": ga,
+        "latency [ms]": lat,
+        "throughput [patch/s]": j["median_patch_s"],
+        "avg power [W]": j["avg_power_w"],
+        "J/patch": j["j_per_patch"],
+    }
 
 
-ROWS = [("g_a [ms]", "{:.1f}"), ("latency [ms]", "{:.0f}"), ("throughput [patch/s]", "{:.1f}"),
-        ("avg power [W]", "{:.1f}"), ("J/patch", "{:.3f}")]
+ROWS = [
+    ("g_a [ms]", "{:.1f}"),
+    ("latency [ms]", "{:.0f}"),
+    ("throughput [patch/s]", "{:.1f}"),
+    ("avg power [W]", "{:.1f}"),
+    ("J/patch", "{:.3f}"),
+]
 
 
 def main():
     """Entry point."""
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--lam", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=str(STREAM / "fanout_full_table.md"))

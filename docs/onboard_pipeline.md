@@ -482,7 +482,8 @@ onboard-payload question: **embedded GPU vs FPGA SoC**. **→ main.tex §eval + 
 **N3 — Deadline/budget-driven rate allocation.** Vary λ *across the scene* under a bit-budget or
 wall-clock deadline: **user-cancelled: tricky to implement cleanly*.
 
-**N5 — CCSDS baseline (recognisable ratio).** CCSDS 122.0 is the de-facto onboard *image* codec
+**N5 — CCSDS baseline (recognisable ratio).** **→ main.tex §eval + abstract** (alt/additional
+recognizable baseline; disambiguates data- vs model-compression). CCSDS 122.0 is the de-facto onboard *image* codec
 (wavelet + bit-plane — the space-grade JPEG2000-lite, widely in rad-hard hardware): the recognisable
 baseline a DATE/space reviewer knows, and it disambiguates "compression" from model compression. However, it probably does not support SAR SLC data compression (effectively) out-of-the-box, need some deep checks.
 A literature comparison is cheap; running it on the Hamburg tile is more work (open implementations
@@ -494,12 +495,12 @@ RD behaviour from the literature, then decide paper-only vs reimplemented. Cost:
 ~0.7 % of pixels) is metric-invisible; it lives as a one-line **limitation** in `main.tex` §Discussion,
 not as a deepening study.
 
-**A4 — Optimization-ladder figure: warm per rung.** Today only the last rung has a warm run. Re-run the
+**A4 — Optimization-ladder figure: warm per rung.** **→ main.tex Fig. `optimization_ladder`.** Today only the last rung has a warm run. Re-run the
 sweep with **warm for every rung** and show cold+warm per rung (paired bars — warm behind with cold in the
 front and a pattern). Consider making **warm the primary series** (a fast/no-SD store is the expected onboard
 case) with cold as the testbed overlay. Needs a board re-run. *(figure: `optimization_ladder.py`.)*
 
-**A5 — Hardware platform details (HW-community venue).** Gather and report the accelerator's internal
+**A5 — Hardware platform details (HW-community venue).** **→ main.tex §Background/Setup (platform table).** Gather and report the accelerator's internal
 design: DPU `3× B4096 @ 300 MHz` (see if DSP run at double clock frequency), PS DDR4 ≈17 GB/s, ZU9EG (base facts in §2),
 **plus PL resource utilisation** (LUT/FF/BRAM/URAM/DSP) and clocks from the Vivado/DPU report — as a short
 platform table in `main.tex` (Background or Setup).

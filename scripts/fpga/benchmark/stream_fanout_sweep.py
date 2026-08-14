@@ -76,12 +76,20 @@ def main():
     ap.add_argument("--lambdas", default="1000")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tile", default="data/full_scene_i16.npy", help="board-relative full scene")
-    ap.add_argument("--lanes", default="1,2,3,4", help="DPU lane counts to sweep (1..3 real, 4 oversubscribes)")
-    ap.add_argument("--power", action="store_true", default=True, help="sample board power (J/patch)")
+    ap.add_argument(
+        "--lanes", default="1,2,3,4", help="DPU lane counts to sweep (1..3 real, 4 oversubscribes)"
+    )
+    ap.add_argument(
+        "--power", action="store_true", default=True, help="sample board power (J/patch)"
+    )
     ap.add_argument("--no-power", dest="power", action="store_false")
-    ap.add_argument("--cooldown", action="store_true", default=True, help="thermal cooldown-gate each run")
+    ap.add_argument(
+        "--cooldown", action="store_true", default=True, help="thermal cooldown-gate each run"
+    )
     ap.add_argument("--no-cooldown", dest="cooldown", action="store_false")
-    ap.add_argument("--cooldown-c", type=float, default=58.0, help="cool die to <= this °C before each run")
+    ap.add_argument(
+        "--cooldown-c", type=float, default=58.0, help="cool die to <= this °C before each run"
+    )
     ap.add_argument("--warm", action="store_true", default=True, help="run a warm pass per lane")
     ap.add_argument("--no-warm", dest="warm", action="store_false")
     args = ap.parse_args()
@@ -101,8 +109,15 @@ def main():
         model = f"{arch}-relu_s{args.seed}_L{lam}_pt"
         print(f"\n{'=' * 68}\n  {model}\n{'=' * 68}", flush=True)
         rc = run(
-            [sys.executable, DEPLOY, "--model-name", model,
-             "--skip-compile", "--skip-infer", "--skip-fetch"]
+            [
+                sys.executable,
+                DEPLOY,
+                "--model-name",
+                model,
+                "--skip-compile",
+                "--skip-infer",
+                "--skip-fetch",
+            ]
         )
         if rc != 0:
             print(f"[fanout-sweep] DEPLOY FAILED for {model} — skipping", flush=True)

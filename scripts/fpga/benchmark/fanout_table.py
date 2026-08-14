@@ -38,8 +38,11 @@ def load_fanout_runs(model_dir: Path) -> list:
 
 
 def p0s1_best(model_dir: Path):
-    """The best non-fan-out p0+s1 run (highest cold patch/s) in the dir, or None — the reference the
-    fan-out must beat. Identified by s1==True and fanout not set."""
+    """The best non-fan-out p0+s1 run (highest cold patch/s) in the dir, or None — the reference
+    the fan-out must beat.
+
+    Identified by s1==True and fanout not set.
+    """
     best = None
     for f in sorted(model_dir.glob("*.json")):
         try:
@@ -63,7 +66,7 @@ def nn_only_ceiling(model_name: str) -> dict:
 
 
 def ga_spread(run: dict) -> str:
-    """min…max g_a ms/call across the run's lanes (the placement-collision proxy)."""
+    """Min…max g_a ms/call across the run's lanes (the placement-collision proxy)."""
     calls = [L["ga_ms_call"] for L in run.get("lanes", []) if L.get("patches", 0) > 0]
     if not calls:
         return "—"
@@ -141,8 +144,12 @@ def build_model_table(model_dir: Path) -> str:
 
 def main():
     """Entry point."""
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--models", nargs="*", help="specific model dir names (default: all with fan-out runs)")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--models", nargs="*", help="specific model dir names (default: all with fan-out runs)"
+    )
     ap.add_argument("--out", default=str(STREAM_DIR / "fanout_table.md"))
     args = ap.parse_args()
 

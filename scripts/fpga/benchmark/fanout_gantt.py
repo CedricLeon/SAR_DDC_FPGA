@@ -44,8 +44,16 @@ DPU_STAGES = {"g_a", "h_a", "h_s"}  # these can wait on a shared core
 def load(path: Path) -> list:
     """Read a trace CSV into event dicts."""
     with open(path) as f:
-        return [{"lane": int(r["lane"]), "patch": int(r["patch"]), "stage": r["stage"],
-                 "t0": float(r["t0_ms"]), "t1": float(r["t1_ms"])} for r in csv.DictReader(f)]
+        return [
+            {
+                "lane": int(r["lane"]),
+                "patch": int(r["patch"]),
+                "stage": r["stage"],
+                "t0": float(r["t0_ms"]),
+                "t1": float(r["t1_ms"]),
+            }
+            for r in csv.DictReader(f)
+        ]
 
 
 def solo_durations(events: list) -> dict:
@@ -76,9 +84,13 @@ def pick_window(events: list, n_patches: int, skip: int):
 
 def main():
     """Entry point."""
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--csv", required=True)
-    ap.add_argument("--solo-csv", default=None, help="clean trace for uncontended baselines (default: self)")
+    ap.add_argument(
+        "--solo-csv", default=None, help="clean trace for uncontended baselines (default: self)"
+    )
     ap.add_argument("--title", default="")
     ap.add_argument("--patches", type=int, default=3)
     ap.add_argument("--skip", type=int, default=3, help="skip this many cold patches first")
@@ -107,15 +119,25 @@ def main():
         x0, dur = e["t0"] - t_start, e["t1"] - e["t0"]
         color = STAGES.get(e["stage"], ("#333", ""))[0]
         base = solo.get(e["stage"], dur)
-        if e["stage"] in DPU_STAGES and dur > base * 1.15:  # split: wait (hatch) then compute (solid)
+        if (
+            e["stage"] in DPU_STAGES and dur > base * 1.15
+        ):  # split: wait (hatch) then compute (solid)
             bar(x0, dur - base, y, facecolor="white", hatch="////", edgecolor="#8a8a8a")
             bar(x0 + (dur - base), base, y, facecolor=color, edgecolor="white")
         else:
             bar(x0, dur, y, facecolor=color, edgecolor="white")
 
     if not any(e["lane"] < 0 for e in win):  # reads are prefetched up-front, off the steady window
-        ax.text(0.01 * span, y_of[-1], "  reads prefetched up-front — none active in this steady window",
-                va="center", ha="left", fontsize=8, color="#777", style="italic")
+        ax.text(
+            0.01 * span,
+            y_of[-1],
+            "  reads prefetched up-front — none active in this steady window",
+            va="center",
+            ha="left",
+            fontsize=8,
+            color="#777",
+            style="italic",
+        )
 
     ax.set_xlim(0, span)
     ax.set_ylim(-0.6, len(lanes) - 0.4)
@@ -126,15 +148,32 @@ def main():
     ax.grid(axis="x", color="#ececec", lw=0.8, zorder=0)
     for s in ("top", "right", "left"):
         ax.spines[s].set_visible(False)
-    ax.set_title(f"DPU fan-out execution timeline — {args.title or Path(args.csv).stem}",
-                 fontsize=12, fontweight="bold")
+    ax.set_title(
+        f"DPU fan-out execution timeline — {args.title or Path(args.csv).stem}",
+        fontsize=12,
+        fontweight="bold",
+    )
 
     present = [s for s in STAGES if any(e["stage"] == s for e in win)]
-    handles = [Patch(facecolor=STAGES[s][0], edgecolor="white", label=STAGES[s][1]) for s in present]
-    handles.append(Patch(facecolor="white", hatch="////", edgecolor="#8a8a8a",
-                         label="wait (queued for a DPU core)"))
-    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.22),
-              ncol=min(4, len(handles)), fontsize=9, frameon=False)
+    handles = [
+        Patch(facecolor=STAGES[s][0], edgecolor="white", label=STAGES[s][1]) for s in present
+    ]
+    handles.append(
+        Patch(
+            facecolor="white",
+            hatch="////",
+            edgecolor="#8a8a8a",
+            label="wait (queued for a DPU core)",
+        )
+    )
+    ax.legend(
+        handles=handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.22),
+        ncol=min(4, len(handles)),
+        fontsize=9,
+        frameon=False,
+    )
 
     out = Path(args.out) if args.out else Path(args.csv).with_suffix(".png")
     fig.tight_layout()

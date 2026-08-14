@@ -128,7 +128,9 @@ def schedule_flags(args) -> list:
     if args.fanout:
         flags.append("--fanout")  # p0 modifier: --threads independent DPU lanes (excludes --s1)
     if args.lane_major:
-        flags.append("--lane-major")  # naive pipeline-major placement baseline (else pinned/deterministic)
+        flags.append(
+            "--lane-major"
+        )  # naive pipeline-major placement baseline (else pinned/deterministic)
     if args.s1:
         flags.append("--s1")
     if not args.whole:
