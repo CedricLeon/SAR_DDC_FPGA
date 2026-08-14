@@ -12,7 +12,8 @@ synchronous (Phase 0: it blocks for the whole job, ``wait()`` is a no-op), so a 
 is the *exact* job-completion instant. We split the bar into the **compute** part (solid, its
 uncontended duration ``e``) and the **wait** part (white, hatched): a call that ended at ``t1`` and
 takes ``e`` uncontended must have executed during ``[t1-e, t1]`` and queued during ``[t0, t1-e]``, so
-``wait = measured span − e`` and the hatch sits before the solid. The wait is therefore **inferred**
+``wait = measured span − e`` and the hatch sits before the solid (drawn only when the excess clears an
+absolute floor, so tiny-kernel jitter is not painted as queueing). The wait is therefore **inferred**
 (``measured − solo``), not a directly measured queue time. ``e`` (the *solo* exec) is the minimum span
 of that stage in ``--solo-csv`` (default: this file) — per-call granularity means even a contended
 trace usually contains a clean call, so the self-default is sound; pass a 1-lane trace to be safe.
@@ -33,6 +34,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Patch, Rectangle  # noqa: E402
+
+# A DPU event is drawn with a "wait" split only if its excess over solo exceeds BOTH 15% and this
+# absolute floor (ms). The floor stops the *tiny* kernels (h_a/h_s ~1 ms) from painting spurious waits
+# from ordinary timing jitter: their real queue-behind-g_a waits are tens of ms, far above the floor,
+# while uncontended jitter is a few ms. g_a (~36 ms) is gated by the 15% term as before.
+MIN_WAIT_MS = 5.0
 
 # stage -> (colour, label). DPU cool, CPU warm, read grey. Order = pipeline order (for the legend).
 STAGES = {
@@ -147,7 +154,7 @@ def main():
         x0, dur = e["t0"] - t_start, e["t1"] - e["t0"]
         color = STAGES.get(e["stage"], ("#333", ""))[0]
         base = solo.get(e["stage"], dur)
-        if e["kind"] == "dpu" and dur > base * 1.15:
+        if e["kind"] == "dpu" and dur - base > max(0.15 * base, MIN_WAIT_MS):
             # synchronous execute_async -> the job ended at t1, so it ran during [t1-base, t1] and
             # queued during [t0, t1-base]: draw the inferred wait (hatch) then the compute (solid).
             bar(x0, dur - base, y, facecolor="white", hatch="////", edgecolor="#8a8a8a")
