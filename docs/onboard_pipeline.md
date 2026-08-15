@@ -386,9 +386,10 @@ DPU lane per worker, mutex dropped** — so `g_a` runs on up to 3 cores concurre
 patches (the compress path has no `g_s`, so the third core is only fillable *across* patches; reuses the
 `run_nn_only` fan-out pattern inside the streaming loop). **Byte-identical to `seq`** (the §7 gate:
 seq / p0 / fanout / fanout+prefetch+neon all one sha256). Excludes `--s1` (both fight for the same 3
-cores). VART exposes **no runner→core API** (checked the board headers — `vart::Runner`/`RunnerExt` have
-none; `xir::DpuController::get_core_id` is unreachable from the handle), so each lane self-times `g_a`
-and **`g_a` ms/call vs the 1-lane solo is the placement proxy**: ~1.0× ⇒ clean (own core), >~1.25× ⇒
+cores). The public `vart::Runner`/`RunnerExt` handle exposes **no runner→core accessor**, but each
+runner's `device_core_id` is logged at creation under `DEBUG_DPU_RUNNER` — a one-time check that
+*directly confirms* the placement (see the placement sketch below). In the loop, each lane self-times
+`g_a` and **`g_a` ms/call vs the 1-lane solo is the placement proxy**: ~1.0× ⇒ clean (own core), >~1.25× ⇒
 that lane's `g_a` is queued behind another on a shared core. A *uniform* inflation across lanes is **not**
 a DDR/weight-load roof — three `g_a` colliding on one core (`--lane-major`) gives the same flat
 signature; the absolute ratio to solo separates them (`g_a` is compute-bound, so a clean ≤3-lane split
@@ -401,7 +402,8 @@ measured `[start, end]`: the two `g_a` DPU calls, `h_a`/`h_s`, the CPU stages (n
 GC) and the CPU glue. A DPU bar splits into measured compute (solid) and an *inferred* wait (hatched,
 `= span − the kernel's shortest clean call`), drawn only when the call outruns any clean call of that
 kernel (so a clean run is wait-free). Caveats: the wait is inferred, not a measured queue time; a track
-is a lane, not a proven core; and a DPU span includes the in-`run()` int8 quantize/dequantize.
+is a lane (its core is confirmed separately via `DEBUG_DPU_RUNNER`, below); and a DPU span includes the
+in-`run()` int8 quantize/dequantize.
 
 **Result.** Full metrics — `g_a` ms/call, per-patch compute latency (normalize+DPU+entropy; the
 prefetched SD read is excluded), throughput, avg power, J/patch — for all four archs × lanes 1–4, each
@@ -459,8 +461,9 @@ Plain reading (measured; deeper causal stories are deliberately left out):
 - For context, the patch-only DPU benchmark (`nn_only`) had ResSHyp fall back at 3 cores (1.81×) while
   the full streaming pipeline does not (2.85×). Why they differ is not established here.
 
-**Placement sketch.** Empirically, VART places runners by a deterministic round-robin over
-*runner-creation order* (1st→core 0, 2nd→1, 3rd→2, 4th→0, …), so the create order sets the mapping:
+**Placement sketch.** VART assigns each runner a `device_core_id` by a deterministic round-robin over
+*runner-creation order* (1st→core 0, 2nd→1, 3rd→2, 4th→0, …) — confirmed directly on hardware (below) —
+so the create order sets the mapping:
 
 ```text
                         create order → core (mod 3)
@@ -472,11 +475,16 @@ Plain reading (measured; deeper causal stories are deliberately left out):
      ⇒ lane k entirely on core k → no g_a collision, every run
 ```
 
-> **We never observe the physical core.** VART exposes no runner→core API (above), so the core numbers
-> in this sketch are the *inferred* round-robin mapping, not a hardware readout. What is actually
-> measured is the timing signature it predicts: subgraph-major keeps every lane's `g_a` uncontended
-> (uniform-low ms/call, clean 10/10 runs), lane-major serializes them. The core indices are a mental
-> model consistent with that timing — a Gantt track is a *lane*, not a proven core.
+> **The core mapping is directly observed** (not just inferred from timing). With
+> `GLOG_logtostderr=1 DEBUG_DPU_RUNNER=1`, VART logs each runner's `device_core_id` at creation,
+> non-interleaved, so it maps 1:1 to creation order — confirming the sketch on real hardware: **pinned**
+> → `L{0,1,2}.g_a` on core `{0,1,2}` (lane *k* entirely on core *k*); **lane-major** → `L{0,1,2}.g_a`
+> all on core 0 (h_a all on 1, h_s all on 2), and `g_a` ms/call duly inflates to ~2.6×. The
+> `device_core_id` only ever cycles 0/1/2, independently reconfirming **3 cores**. Three lines of
+> evidence agree: this readout, the `g_a` ms/call proxy, and measured g_a *concurrency*
+> (`fanout_validate.py` — pinned runs g_a on 3 cores in parallel, lane-major serializes to 1, none ever
+> exceeds 3). The public `vart::Runner` has no core accessor, so this is a one-time validation, not an
+> in-loop signal.
 
 **`--lane-major` ablation** (naive vs pinned, cold, 3 lanes). The fix only bites when a lane creates
 >1 DPU runner (hyperprior) — factorized archs create just `g_a`, so lane-major ≡ subgraph-major there:

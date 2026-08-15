@@ -99,7 +99,9 @@ heavier DPU); native C++ power sampler; modular, single-source-of-truth build.
 `nn_only` = N independent patch runners (the roofline); P0/P2 = concurrent pipeline DPU lanes.
 **No core pinning:** VART assigns cores round-robin at *runner-creation time* — `--dpu-cores N`
 *influences* placement (N replicas → up to 3 distinct cores), not guarantees it; overlap is verified
-empirically (concurrent wall-time ≈ serial/N). **S1 creation-order is critical** (see §11 / journal §6).
+empirically (concurrent wall-time ≈ serial/N), and the creation-time `device_core_id` assignment is now
+confirmed directly (via `DEBUG_DPU_RUNNER` — see `onboard_pipeline.md` §11-N1). **S1 creation-order is
+critical** (see §11 / journal §6).
 `--entropy-threads` = genuine OS threads on the A53s; each needs its own `BenchPipeline` (thread safety).
 
 ```bash
