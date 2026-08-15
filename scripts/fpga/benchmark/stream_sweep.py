@@ -45,8 +45,8 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--archs", default="FP,ResSHyp")
-    ap.add_argument("--lambdas", default="1000,20")
+    ap.add_argument("--archs", default="FP,SHyp,ResFP,ResSHyp")
+    ap.add_argument("--lambdas", default="20")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tile", default="data/full_scene_i16.npy", help="board-relative full scene")
     ap.add_argument("--threads", type=int, default=4)
@@ -59,6 +59,13 @@ def main():
     ap.add_argument(
         "--cooldown-c", type=float, default=58.0, help="cool die to <= this °C before each run"
     )
+    ap.add_argument(
+        "--warm-each",
+        action="store_true",
+        default=True,
+        help="A4: warm run after EVERY rung (not just the last)",
+    )
+    ap.add_argument("--no-warm-each", dest="warm_each", action="store_false")
     ap.add_argument("--warm-final", action="store_true", default=True)
     ap.add_argument("--no-warm-final", dest="warm_final", action="store_false")
     args = ap.parse_args()
@@ -90,9 +97,9 @@ def main():
             failures.append(f"deploy:{model}")
             continue
 
-        for label, flags in CONFIGS:
-            print(f"\n[sweep] {model}  {label}  (cold)", flush=True)
-            rc = run(
+        def bench(flags, warm):
+            extra = ["--keep-cache"] if warm else []
+            return run(
                 [
                     sys.executable,
                     BENCH,
@@ -107,33 +114,19 @@ def main():
                     "1",
                     "--warmup",
                     "0",
+                    *extra,
                 ]
             )
-            if rc != 0:
-                failures.append(f"{model}:{label}")
 
-        if args.warm_final:
-            print(f"\n[sweep] {model}  {CONFIGS[-1][0]}  (WARM ceiling)", flush=True)
-            rc = run(
-                [
-                    sys.executable,
-                    BENCH,
-                    *CONFIGS[-1][1],
-                    *power,
-                    *cool,
-                    "--tile",
-                    args.tile,
-                    "--threads",
-                    str(args.threads),
-                    "--iters",
-                    "1",
-                    "--warmup",
-                    "0",
-                    "--keep-cache",
-                ]
-            )
-            if rc != 0:
-                failures.append(f"{model}:+neon:warm")
+        for label, flags in CONFIGS:
+            print(f"\n[sweep] {model}  {label}  (cold)", flush=True)
+            if bench(flags, warm=False) != 0:
+                failures.append(f"{model}:{label}:cold")
+            # A4: warm every rung (default) so cold+warm are paired per rung; else warm the last only.
+            if args.warm_each or (args.warm_final and label == CONFIGS[-1][0]):
+                print(f"\n[sweep] {model}  {label}  (warm)", flush=True)
+                if bench(flags, warm=True) != 0:
+                    failures.append(f"{model}:{label}:warm")
 
     print(f"\n{'=' * 68}\n[sweep] done. failures: {failures or 'none'}")
     print(f"[sweep] build the table: python {BENCH.parent / 'stream_table.py'}")
