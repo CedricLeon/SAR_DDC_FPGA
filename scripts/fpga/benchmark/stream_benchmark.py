@@ -51,6 +51,8 @@ _LANE = re.compile(
     r"\[lane (\d+)\] patches=(\d+) \| g_a=([\d.]+) ms/patch \(([\d.]+)/call\) "
     r"h_a=([\d.]+) h_s=([\d.]+) norm=([\d.]+) entropy=([\d.]+)"
 )
+# Per-rail-group mean W (PL/PS/DPU_fabric/PS_compute/MGT/MPSoC) — the DPU(PL) vs CPU(PS) energy split.
+_POWER_GROUPS = re.compile(r"\[power-groups\]\s*(.+)")
 
 
 def ssh_capture(remote_cmd: str) -> str:
@@ -109,6 +111,16 @@ def parse_run(stdout: str) -> dict:
         }
         for m in _LANE.findall(stdout)
     ]
+    pg = _POWER_GROUPS.search(stdout)
+    power_groups = {}
+    if pg:
+        for tok in pg.group(1).split():
+            k, _, v = tok.partition("=")
+            if v:
+                try:
+                    power_groups[k] = float(v)
+                except ValueError:
+                    pass
     return {
         "n_patches": int(n),
         "grid_a": int(grid_a),
@@ -120,6 +132,7 @@ def parse_run(stdout: str) -> dict:
         "avg_power_w": float(pw.group(1)) if pw else None,
         "energy_j": float(pw.group(2)) if pw else None,
         "j_per_patch": float(pw.group(3)) if pw else None,
+        "power_groups": power_groups,
         "lanes": lanes,
     }
 
@@ -146,6 +159,19 @@ def median_lanes(runs: list) -> list:
     for lane_id in sorted(by_lane):
         group = by_lane[lane_id]
         out.append({k: statistics.median(lane[k] for lane in group) for k in group[0]})
+    return out
+
+
+def _median_groups(runs: list) -> dict:
+    """Per-group median W across the timed iterations (PL/PS/DPU_fabric/PS_compute/MGT/MPSoC)."""
+    keys = set()
+    for r in runs:
+        keys |= set(r.get("power_groups") or {})
+    out = {}
+    for k in sorted(keys):
+        vals = [r["power_groups"][k] for r in runs if k in (r.get("power_groups") or {})]
+        if vals:
+            out[k] = statistics.median(vals)
     return out
 
 
@@ -371,6 +397,7 @@ def main():
         "avg_power_w": _median_opt(r["avg_power_w"] for r in runs),
         "energy_j": _median_opt(r["energy_j"] for r in runs),
         "j_per_patch": _median_opt(r["j_per_patch"] for r in runs),
+        "power_groups": _median_groups(runs),
         "overlap": args.overlap,
     }
     if args.cooldown and therms:

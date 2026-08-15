@@ -113,9 +113,16 @@ int main(int argc, char** argv) {
                 }
             if (o.prefetch)
                 std::printf("  [prefetch] row-block N+1 read overlapped with compress of N\n");
-            if (r.power_ok)
+            if (r.power_ok) {
                 std::printf("  [power] %.2f W (MPSoC) | %.1f J | %.4f J/patch\n", r.avg_power_w,
                             r.energy_j, r.n_patches > 0 ? r.energy_j / r.n_patches : 0.0);
+                if (!r.power_groups.empty()) {  // per-rail-group mean W: PL/PS/DPU_fabric/PS_compute/MGT/MPSoC
+                    std::printf("  [power-groups]");
+                    for (const auto& [name, watts] : r.power_groups)
+                        std::printf(" %s=%.3f", name.c_str(), watts);
+                    std::printf("\n");
+                }
+            }
         }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "stream_pipeline error: %s\n", e.what());
