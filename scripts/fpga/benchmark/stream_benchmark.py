@@ -26,6 +26,7 @@ import json
 import re
 import statistics
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import rootutils
@@ -173,6 +174,25 @@ def _median_groups(runs: list) -> dict:
         if vals:
             out[k] = statistics.median(vals)
     return out
+
+
+def _git_provenance() -> dict:
+    """Record which host source produced this run (the board binary is rebuilt from it)."""
+
+    def _q(args):
+        try:
+            return subprocess.run(
+                ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True
+            ).stdout.strip()
+        except Exception:
+            return None
+
+    dirty = _q(["status", "--porcelain", "inference_cpp", "scripts/fpga/benchmark"])
+    return {
+        "git_sha": _q(["rev-parse", "--short", "HEAD"]) or None,
+        "git_dirty": bool(dirty),
+        "run_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
 
 
 def schedule_flags(args) -> list:
@@ -399,6 +419,7 @@ def main():
         "j_per_patch": _median_opt(r["j_per_patch"] for r in runs),
         "power_groups": _median_groups(runs),
         "overlap": args.overlap,
+        "provenance": _git_provenance(),
     }
     if args.cooldown and therms:
         throttled = any(t["a53_throttled"] for t in therms)
