@@ -395,6 +395,14 @@ signature; the absolute ratio to solo separates them (`g_a` is compute-bound, so
 shows ~no inflation). Sweep: `stream_fanout_sweep.py` (lanes × cold/warm, cooldown-gated); table: `fanout_table.py`
 → `results/benchmark_stream/fanout_table.md`.
 
+**Per-lane Gantt.** `fanout_gantt.py` draws a per-call execution timeline from a `--trace` CSV — one
+track per DPU lane plus the prefetch reader, over a short steady-state window. Each call is a bar at its
+measured `[start, end]`: the two `g_a` DPU calls, `h_a`/`h_s`, the CPU stages (normalize, EB enc/dec,
+GC) and the CPU glue. A DPU bar splits into measured compute (solid) and an *inferred* wait (hatched,
+`= span − the kernel's shortest clean call`), drawn only when the call outruns any clean call of that
+kernel (so a clean run is wait-free). Caveats: the wait is inferred, not a measured queue time; a track
+is a lane, not a proven core; and a DPU span includes the in-`run()` int8 quantize/dequantize.
+
 **Result.** Full metrics — `g_a` ms/call, per-patch compute latency (normalize+DPU+entropy; the
 prefetched SD read is excluded), throughput, avg power, J/patch — for all four archs × lanes 1–4, each
 cell **cold / warm**, pinned (deterministic) placement (regenerate with `fanout_full_table.py`; per-lane stage bars → `fanout_lane_timings.png`):
