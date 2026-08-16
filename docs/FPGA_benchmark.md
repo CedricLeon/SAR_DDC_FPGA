@@ -100,7 +100,7 @@ heavier DPU); native C++ power sampler; modular, single-source-of-truth build.
 **No core pinning:** VART assigns cores round-robin at *runner-creation time* — `--dpu-cores N`
 *influences* placement (N replicas → up to 3 distinct cores), not guarantees it; overlap is verified
 empirically (concurrent wall-time ≈ serial/N), and the creation-time `device_core_id` assignment is now
-confirmed directly (via `DEBUG_DPU_RUNNER` — see `onboard_pipeline.md` §11-N1). **S1 creation-order is
+confirmed directly (via `DEBUG_DPU_RUNNER` — see `onboard_pipeline.md` §6). **S1 creation-order is
 critical** (see §11 / journal §6).
 `--entropy-threads` = genuine OS threads on the A53s; each needs its own `BenchPipeline` (thread safety).
 
@@ -213,10 +213,10 @@ and far more on h_a/h_s (fixed overhead dominates their sub-ms compute).
   `z_hat` from `eb_decompress` → no clean single-patch DPU‖CPU split; overlap unit is patch-level.
   Each pipeline thread needs its **own `BenchPipeline`** (runners/entropy hold mutable state).
 - **M5 — P2 multi-entropy + sweeps:** K entropy consumers; run `--dpu-cores`/`--entropy-threads` sweeps.
-- **P3 (superseded by `onboard_pipeline.md` §11-N1):** the streaming DPU fan-out (`--fanout`, K
-  independent lanes) recovers the third core end-to-end — ResSHyp 2.85× at 3 lanes with clean per-lane
-  `g_a` — so the planned `DPUCoreAllocator` was unnecessary; VART round-robin places the 3 lanes cleanly
-  and the only trap is oversubscribing to 4 lanes.
+- **P3 (superseded by `onboard_pipeline.md` §5–§6):** the streaming DPU fan-out (`--fanout`, K
+  independent lanes) recovers the third core end-to-end (ResSHyp ~2.9× at 3 lanes; current numbers in
+  `onboard_pipeline.md` §5) — so the planned `DPUCoreAllocator` was unnecessary; deterministic
+  subgraph-major placement pins the 3 lanes cleanly and the only trap is oversubscribing to 4 lanes.
 
 **Other:**
 

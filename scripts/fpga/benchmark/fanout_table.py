@@ -4,9 +4,8 @@
 Reads the fan-out result JSONs written by stream_fanout_sweep.py (results/benchmark_stream/<model>/,
 label carries ``fo`` + ``tL``) and builds, per model, the lane-scaling table: throughput and its ratio
 vs 1 lane (cold + warm), energy/patch, and the per-lane g_a ms/call spread (the placement proxy — a
-wide min…max means lanes landed on contended cores, not 3 clean ones). It also pulls two references
-that already exist on disk: the non-fan-out p0+s1 best (same model dir) and the pure-DPU ``nn_only``
-ceiling (results/benchmark_hardware/<model>/nn_only_compress_dpu{1,2,3}.json).
+wide min…max means lanes landed on contended cores, not 3 clean ones). It also pulls the non-fan-out
+p0+s1 best (same model dir) as a reference.
 
     conda activate DDC_FPGA
     python scripts/fpga/benchmark/fanout_table.py                 # all fan-out models found
@@ -21,7 +20,6 @@ import rootutils
 
 REPO_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=False)
 STREAM_DIR = REPO_ROOT / "results" / "benchmark_stream"
-HW_DIR = REPO_ROOT / "results" / "benchmark_hardware"
 
 
 def load_fanout_runs(model_dir: Path) -> list:
@@ -58,16 +56,6 @@ def p0s1_best(model_dir: Path):
             if best is None or d["median_patch_s"] > best["median_patch_s"]:
                 best = d
     return best
-
-
-def nn_only_ceiling(model_name: str) -> dict:
-    """Pure-DPU nn_only fps at dpu1/2/3 for this model (compress), or {} if absent."""
-    out = {}
-    for n in (1, 2, 3):
-        f = HW_DIR / model_name / f"nn_only_compress_dpu{n}.json"
-        if f.exists():
-            out[n] = json.loads(f.read_text()).get("throughput_fps")
-    return out
 
 
 def solo_ga_call(cold1: dict):
@@ -159,10 +147,6 @@ def build_model_table(model_dir: Path) -> str:
     best = p0s1_best(model_dir)
     if best:
         ref.append(f"p0+s1 best (cold): **{best['median_patch_s']:.1f} patch/s**")
-    nn = nn_only_ceiling(model)
-    if nn:
-        ceil = " / ".join(f"dpu{k}={v:.1f}" for k, v in sorted(nn.items()))
-        ref.append(f"nn_only DPU ceiling (fps): {ceil}")
     if ref:
         lines += ["", "> " + "  ·  ".join(ref)]
     return "\n".join(lines) + "\n"
