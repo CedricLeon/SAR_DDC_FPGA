@@ -153,15 +153,16 @@ python scripts/fpga/benchmark/fanout_lane_plot.py    # -> results/benchmark_stre
 | 6 | 175.3 \| 0.088 | 125.5 \| 0.113 | **41.0 \| 0.487** | 36.1 \| 0.572 |
 | 7 | 180.0 \| 0.087 | 125.3 \| 0.113 | 40.9 \| 0.488 | 32.5 \| 0.602 |
 | 8 | 184.1 \| 0.086 | 128.2 \| 0.112 | 40.9 \| 0.488 | 35.2 \| 0.581 |
+| 9 | 185.7 \| 0.084 | 135.1 \| 0.107 | 40.9 \| 0.482 | 37.2 \| 0.562 |
 | 10 | 188.0 \| 0.085 | 131.2 \| 0.110 | 40.8 \| 0.488 | 35.9 \| 0.576 |
-| 12 | 190.3 \| 0.084 | 139.7 \| 0.106 | 40.7 \| 0.489 | **37.9 \| 0.565** |
+| 12 | 190.3 \| 0.084 | 139.7 \| 0.106 | 40.7 \| 0.489 | 37.9 \| 0.565 |
 | 14 | 192.2 \| 0.084 | 135.4 \| 0.109 | 40.7 \| 0.489 | 37.5 \| 0.566 |
 | 16 | 192.8 \| 0.083 | 136.7 \| 0.108 | 40.6 \| 0.488 | 37.7 \| 0.563 |
 | 20 | 194.2 \| 0.083 | 138.4 \| 0.107 | 40.6 \| 0.488 | 38.3 \| 0.559 |
-| 24 | 196.0 \| 0.083 | **144.7 \| 0.104** | 40.6 \| 0.488 | 38.5 \| 0.557 |
-| 32 | **197.9 \| 0.082** | 141.2 \| 0.106 | 40.6 \| 0.488 | 38.5 \| 0.557 |
-| 48 | 198.7 \| 0.081 | 145.5 \| 0.103 | 40.5 \| 0.484 | 38.3 \| 0.554 |
-| 64 | 199.6 \| 0.081 | 140.4 \| 0.105 | 40.4 \| 0.484 | 38.2 \| 0.552 |
+| 24 | 196.0 \| 0.083 | 144.7 \| 0.104 | 40.6 \| 0.488 | **38.5 \| 0.557** |
+| 32 | 197.9 \| 0.082 | 141.2 \| 0.106 | 40.6 \| 0.488 | 38.5 \| 0.557 |
+| 48 | 198.7 \| 0.081 | **145.5 \| 0.103** | 40.5 \| 0.484 | 38.3 \| 0.554 |
+| 64 | **199.6 \| 0.081** | 140.4 \| 0.105 | 40.4 \| 0.484 | 38.2 \| 0.552 |
 | 96 | 195.5 \| 0.082 | 142.6 \| 0.102 | 40.4 \| 0.484 | 38.0 \| 0.555 |
 | 128 | 195.1 \| 0.081 | — | 40.2 \| 0.484 | — |
 
@@ -174,23 +175,29 @@ single-`g_a` lanes never approach it). That XRT ceiling is the only hard wall �
 ResSHyp) roof **low and early** — ~40 patch/s, flat from ~6 lanes: the 3 DPU cores saturate and extra
 lanes only queue `g_a` (its ms/call inflates — a queue signal, not compute). The CPU-bound archs (FP,
 SHyp) roof **high and late** — independent lanes keep feeding their entropy/CPU path far past the cores
-(FP to ~198, SHyp peaks at 24). Fan-out beats the `--s1` ladder for all four (e.g. ResSHyp 37.9 vs 23.4
-patch/s, FP 198 vs 136). The earlier "hyperprior 4-lane cliff" was an artifact of stopping at 4 lanes:
-ResSHyp dips at 4L but recovers and climbs to ~38.5 by 12L.
+(FP to ~200, SHyp to ~145). Fan-out beats the `--s1` ladder for all four (e.g. ResSHyp 38.5 vs 23.4
+patch/s, FP 200 vs 136). The earlier "hyperprior 4-lane cliff" was an artifact of stopping at 4 lanes:
+ResSHyp dips at 4L but recovers and climbs to ~38.5 by 24L.
 
-> **@TOCHECK** the "binding resource" reading in this section is an *interpretation* of the throughput
-> curves, not yet a measurement. Substantiate or revise it with the per-core occupancy analysis (§6 @TODO) and the on-board profiling (§12 A6).
+The "binding resource" is **measured**, not inferred: per-core DPU occupancy (§6) pins the residual
+archs near 100 % of the 3 cores and leaves the light archs ~⅓ idle at their operating points — the
+occupancy panel of `fanout_lane_scaling_4arch.png`. (Cross-check: measured roof ÷ the 3-core ceiling
+`3000/(2·g_a+h_a+h_s)` from the 1-lane exec times = mean occupancy.) The CPU resource that actually
+binds the light-arch roof still needs on-board profiling (§12 A6).
 
-**Operating point per arch** (warm — §10 uses these; picked at the knee/roof, clear of the XRT wall):
+**Operating point per arch** (warm — §10 uses these; each arch's throughput **peak**, clear of the XRT wall):
 
 | arch | lanes | patch/s | SLC MB/s | J/patch |
 | --- | --- | --- | --- | --- |
-| FP | 32 | 197.9 | 50.7 | 0.082 |
-| SHyp | 24 | 144.7 | 37.1 | 0.104 |
+| FP | 64 | 199.6 | 51.1 | 0.081 |
+| SHyp | 48 | 145.5 | 37.2 | 0.103 |
 | ResFP | 6 | 41.0 | 10.5 | 0.487 |
-| ResSHyp | 12 | 37.9 | 9.7 | 0.565 |
+| ResSHyp | 24 | 38.5 | 9.9 | 0.557 |
 
-(FP at 64 lanes is marginally higher — 51.1 MB/s — but 32 is the clean pick.)
+(Operating point = each arch's warm throughput peak. A stricter **knee** — the smallest lane count
+within 1 % of that peak — is a defensible alternative, trading ≤1 % throughput for far less
+oversubscription (fewer threads, less memory, more margin below the XRT wall): 32 / 24 / 6 / 20 lanes
+for FP / SHyp / ResFP / ResSHyp. It also sidesteps SHyp's noisy iters-1 48L peak.)
 
 **Why iters=1 suffices.** Each point is a full-scene average over 7 540 patches, so the law of large
 numbers crushes run-to-run variance: the median-of-3 σ is **0.0–0.7 patch/s (<0.25%)**, often identical
@@ -253,9 +260,9 @@ ssh ZCU102 "cd /home/root/SAR_DDC && ./build_cpp/stream_pipeline --xmodel active
   --p0 --fanout --windowed --prefetch --neon --overlap 2 --max-rows 4 --trace /tmp/tr.csv"
 ```
 
-Each call is a bar at its measured `[start, end]`. A DPU bar splits into measured compute (solid) and an
-*inferred* wait (hatched, `= span − the kernel's shortest clean call`), drawn only when the call outruns
-any clean call of that kernel. Caveats to carry into the figure: the wait is inferred, not a measured
+Each call is a bar at its measured `[start, end]`. A DPU bar splits into compute (solid, `= min(span, e)`)
+and an *inferred* wait (hatched, `= max(0, span − e)`; `e` = the kernel's median 1-lane exec, below),
+drawn only when the call outruns `e`. Caveats to carry into the figure: the wait is inferred, not a measured
 queue time; a track is a lane (its core is confirmed separately, above); and a DPU span includes the
 in-`run()` int8 quantize/dequantize. Traces on disk (`results/benchmark_stream/traces/`): per-arch
 across the scaling curve (`{arch}_{X}lane_L20.csv`, X through each operating point + oversubscribed
@@ -264,20 +271,33 @@ across the scaling curve (`{arch}_{X}lane_L20.csv`, X through each operating poi
 `ResSHyp_3lane_lanemajor.csv` / `ResSHyp_4lane.csv` for the collision / oversubscription cases. Each
 oversubscribed trace has a companion `coreid/{arch}_{X}lane_L20.coreid.log`.
 
-**@TODO — validate the wait-inference baseline (before trusting any inferred wait).** The inferred wait
-uses each kernel's *shortest clean call* as the pure-exec proxy `e`. First characterize the **1-lane DPU
-exec-time distribution** per kernel (`g_a`, `h_a`, `h_s`): **@TOCHECK** which trace and how many calls
-define the baseline (warm vs cold, subsample size), pick **one** spread metric and *define it in the
-doc* (candidates: min/median/max, IQR, coefficient of variation — none chosen yet), and state how tight
-the distribution must be for `e = min` to be a sound proxy. Methodology check only — no conclusion here.
+**Trace window.** `--trace` (fanout-only) logs every stage of every patch — each lane writing its own
+lock-free timeline — across the compress phase, with `t = 0` set the instant the workers launch, so the
+first row-block read sits inside the window (`stream_pipeline.cpp`). The traced region is a
+**top-of-scene subsample**: `make_grid` capped to `--max-rows` row-blocks (58 patches each), which the
+sweep sets to `max(3, ⌈lanes/6⌉)` ≈ **10 patches/lane** — 174 patches (≤16 lanes) up to 1 276 (128
+lanes), a **1–32 s slice** vs the ~38 s full-scene FP sweep. That slice's effective patch/s tracks the
+full scene within ~5 % (the gap is pipeline fill), so it is steady-state-representative. Because
+`t = 0` precedes the fill, the **steady-state analysis window is chosen offline** — trim the leading
+fill (and trailing drain) row-block before scoring, no re-capture needed. Every span is wall-clock: a
+DPU span includes the synchronous `execute_async` queue-wait, a CPU span includes scheduler preemption
+— neither is pure exec (hence the `e = median` correction below).
 
-**@TODO — per-core DPU occupancy / idle (per-lane Gantt → per-core view).** Group lanes by the DPU core
-they run on and measure each core's busy/idle fraction over a steady-state window ("how much DPU time is
-wasted at each lane count"). Lane→core is **confirmed lane *k* → core *k* mod 3** (only cores 0/1/2),
-from the captured `device_core_id` logs, up to 96 lanes. Fix the definitions *first*: the measured
-span `[t0, t1]` includes queue-wait (synchronous `execute_async`), so "busy" likely needs the
-reconstructed exec interval `[t1 − e, t1]` (depends on the baseline `e` above), **not** the raw span —
-decide and document this, and how the window is chosen, before computing any number.
+**Pure-exec proxy `e`.** From the 1-lane trace (no contention), `e` = the **median** exec of each kernel;
+spread is the **coefficient of variation** (CoV = std/mean). The distributions are tight — plain `g_a`
+5.23 ms (CoV 2.5 %), residual `g_a` 36.6 ms (CoV 0.4 %), `h_a`/`h_s` ~1.2–1.5 ms — so the median is a
+sharp proxy and min/max give a narrow band. This same characterization *is* the measured per-arch kernel
+time the rest of the doc otherwise cites approximately (plain vs residual `g_a` = 7×). Code:
+`fanout_occupancy.py`.
+
+**Per-core DPU occupancy.** For each core (lane→core = subgraph-major creation-order round-robin —
+lane *k*'s `g_a` → core *k* mod 3, validated against the `device_core_id` logs), busy = the union of the
+reconstructed compute intervals `[t1 − e, t1]` on it over the **steady-state window** (last lane to
+start → first lane to finish, trimming fill + drain). Result (occupancy panel of the lane-scaling figure,
+all archs × lanes; `fanout_occupancy.py`): the residual archs saturate the 3 cores (~97–100 %), the light
+archs plateau ~⅓ idle (~63–66 %) — so their roof is not the DPU. Two mechanisms surface: **~2 lanes/core**
+are needed to hide the CPU-feed gap (ResFP 86 %→99.7 % from 3→6 lanes, its peak), and the **4-lane dip**
+is a load imbalance (the round-robin stacks two heavy `g_a` on one core when lanes ≠ 3·k).
 
 ---
 
@@ -421,15 +441,15 @@ of latents*, not bpp). Results in `results/benchmark_stream/<model>/*.json` + `a
 
 | arch | configuration | patch/s | SLC MB/s | J/patch |
 | --- | --- | --- | --- | --- |
-| FP | p0 + fan-out 32L + prefetch + neon | 197.9 | 50.7 | 0.082 |
-| SHyp | p0 + fan-out 24L + prefetch + neon | 144.7 | 37.1 | 0.104 |
+| FP | p0 + fan-out 64L + prefetch + neon | 199.6 | 51.1 | 0.081 |
+| SHyp | p0 + fan-out 48L + prefetch + neon | 145.5 | 37.2 | 0.103 |
 | ResFP | p0 + fan-out 6L + prefetch + neon | 41.0 | 10.5 | 0.487 |
-| ResSHyp | p0 + fan-out 12L + prefetch + neon | 37.9 | 9.7 | 0.565 |
+| ResSHyp | p0 + fan-out 24L + prefetch + neon | 38.5 | 9.9 | 0.557 |
 
-Fan-out is the best config for **every** arch, and each *roofs* at a different lane count (§5): the
-DPU-bound archs saturate the 3 cores early (ResFP ~6, ResSHyp ~12 lanes, ~10 MB/s), the CPU-bound ones
-keep gaining from independent lanes far past the cores (SHyp ~24, FP ~32 lanes). The operating points
-above are those warm roofs; on the real SD card the light archs are read-bound at ~22 MB/s (cold).
+Fan-out is the best config for **every** arch. The DPU-bound archs plateau early as the 3 cores
+saturate (ResFP by ~6, ResSHyp by ~12 lanes, ~10 MB/s), peaking at 6 / 24 lanes; the CPU-bound ones
+keep gaining from independent lanes far past the cores, peaking at 64 (FP) / 48 (SHyp). The operating
+points above are those warm peaks; on the real SD card the light archs are read-bound at ~22 MB/s (cold).
 
 **The full ladder** (warm = compute ceiling, tile from RAM; cold = SD-card testbed). Rows are cumulative
 (each = the row above + the named flag): `+p0` = 4-worker pool, `+prefetch` = double-buffered row-block
@@ -446,7 +466,7 @@ ResFP 6 / ResSHyp 12).
 | +p0 | 119.0 (52.8) | 85.2 (44.8) | 25.7 (20.2) | 22.1 (17.9) |
 | +prefetch | 125.5 (85.7) | 90.8 (86.5) | 26.3 | 23.0 |
 | +neon | 135.6 (86.5) | 95.3 (85.7) | 26.3 | 23.4 |
-| fan-out (roof) | **197.9 (85.9)** | **144.7 (85.3)** | **41.0** | **37.9** |
+| fan-out (roof) | **199.6 (85.9)** | **145.5 (85.3)** | **41.0** | **38.5** |
 
 *SLC MB/s = patch/s × 0.256 (the 1.93 GB tile over 7 540 patches). Cold shown only where it binds:
 FP/SHyp are read-bound (parens throughout), ResFP/ResSHyp compute-bound (cold ≈ warm from `+prefetch`
@@ -461,7 +481,7 @@ on).*
 | +p0 | 0.112 | 0.145 | 0.610 | 0.731 |
 | +prefetch | 0.108 | 0.140 | 0.604 | 0.714 |
 | +neon | 0.103 | 0.134 | 0.603 | 0.706 |
-| fan-out (roof) | **0.082** | **0.104** | **0.487** | **0.565** |
+| fan-out (roof) | **0.081** | **0.103** | **0.487** | **0.565** |
 
 *Energy = MPSoC (PS+PL) INA226, cooldown-gated to 58 °C; J/patch is the comparable metric (avg W drifts
 with thermal). The full per-rail-group breakdown is in each result JSON.*
@@ -471,13 +491,13 @@ with thermal). The full per-rail-group breakdown is in each result JSON.*
 - **Parallelism is arch-dependent, and fan-out is the universal best.** The DPU-bound archs
   (ResFP/ResSHyp) are unlocked by `--s1` then fan-out lanes; the CPU-bound archs (FP/SHyp) by `--p0` +
   `--prefetch`, and fan-out's independent pipelines lift them further still. Cumulative warm, seq→best
-  (fan-out roof): FP **37.2→197.9 patch/s (5.3×)**, ResSHyp **10.3→37.9 (3.7×)**.
+  (fan-out roof): FP **37.2→199.6 patch/s (5.4×)**, ResSHyp **10.3→38.5 (3.7×)**.
 - **Storage was hiding the CPU parallelism.** At `+p0` (no prefetch yet) FP jumps **52.8→119.0 patch/s**
   cold→warm — the 4-worker pool is present in both, but cold it stalls on the SD read; `+prefetch` then
   recovers most of it cold (85.7). The cold/warm gap at the best config is the storage-boundedness
   signal: large for FP/SHyp (read-bound), ~zero for ResFP/ResSHyp (compute-bound, read fully hidden).
-- **Parallelism costs power but saves energy.** FP seq→best **0.271→0.082 J/patch (3.3× better)**;
-  ResSHyp **1.163→0.565 (2.1×)**. The draw is PL(DPU)-dominated for every arch (operating point: FP
+- **Parallelism costs power but saves energy.** FP seq→best **0.271→0.081 J/patch (3.3× better)**;
+  ResSHyp **1.163→0.557 (2.1×)**. The draw is PL(DPU)-dominated for every arch (operating point: FP
   13.5 W PL / 2.9 W PS, ResSHyp 18.9 / 2.5) — the residual archs push far more of it; cross-arch ResSHyp
   costs **~7× the energy/patch** of FP.
 - **DDR is not a bottleneck.** vaitrace: the dominant DPU traffic (`g_a`/`g_s`) is ~651–660 MB/s, ~20×
@@ -490,8 +510,8 @@ with thermal). The full per-rail-group breakdown is in each result JSON.*
   (FP 21×, ResSHyp 26×). Peak DDR ~0.3 GB windowed vs ~3 GB free (§2).
 - **vs the mission objective** (full derivation → `docs/TerraSAR-X_objective.md`): TSX StripMap produces
   SLC at **211 MB/s** (working point) / 358 MB/s (worst case). One ZCU102 at its best config (FP
-  fan-out roof, **50.7 MB/s warm**) is **~7× short of full-duty real-time**, but **meets the
-  process-before-next-contact deadline** (FP, ~4.3× headroom) and the ~200× compressed product sits far
+  fan-out roof, **51.1 MB/s warm**) is **~7× short of full-duty real-time**, but **meets the
+  process-before-next-contact deadline** (FP, ~4.4× headroom) and the ~200× compressed product sits far
   inside the 270 Mb/s-net downlink.
 
 ---
@@ -501,6 +521,10 @@ with thermal). The full per-rail-group breakdown is in each result JSON.*
 Manuscript figures live in the LaTeX repo (`LaTeX/SAR_DDC_FPGA_DATE27/figures/scripts/`: system
 dataflow, stacked time-per-patch, overlap, optimization ladder). The fan-out figures are built here:
 
+- **`fanout_lane_plot.py`** → the lane-scaling figure `fanout_lane_scaling_4arch.png` (throughput / DPU
+  occupancy / energy vs lanes; ★ = operating point).
+- **`fanout_occupancy.py`** → per-core DPU occupancy from the `--trace` CSVs (§6 method + the
+  `[t1 − e, t1]` reconstruction); `__main__` prints the per-core table.
 - **`fanout_full_table.py`** (`--lam 20`) → the §5 cell table (`fanout_full_table.md`); reads
   `results/benchmark_stream/<model>/p0_t{1..4}_fo_*.json`.
 - **`fanout_gantt.py`** → per-lane execution Gantt from a `--trace` CSV (§6); reads
