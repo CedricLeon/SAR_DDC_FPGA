@@ -48,6 +48,26 @@ Read only what's relevant to the task at hand.
 
 ---
 
+## Model Architectures & Checkpoints
+
+Current focus is **inference**. Available checkpoints span **4 architectures × 10 λ
+`{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000}` × 6 seeds `{0, 1, 2, 3, 4, 5}`**.
+
+Each architecture is one combination of two independent binary choices:
+
+- **Prior** — **F**actorized **P**rior (`FP`) vs **S**cale-**Hyp**erprior (`SHyp`, a.k.a. `SH`); the
+  hyperprior adds the `h_a` / `h_s` subgraphs.
+- **Residual** — heavy residual blocks in the main encoder `g_a` / decoder `g_s` (the `Res` prefix),
+  carrying **~10× the OPs** of the plain variant (`net.no_residual_blocks: false` in `train_config.yaml`).
+
+This results in the FP, SHyp, ResFP, and ResSHyp architectures (where the first is the lightest and the last the most consequent).
+Because they differ so much computationally it is VERY important to always specify which architecture is mentioned/described when reporting numbers.
+
+> **Naming trap**: `FP` / `ResFP` and `SHyp` / `ResSHyp` both compile to the *same* xmodel class: the filename does **not** identify the architecture.
+> Read `model_name` in `manifest.json` (or `net.no_residual_blocks` in `train_config.yaml`).
+
+---
+
 ## Common Commands
 
 ### Training

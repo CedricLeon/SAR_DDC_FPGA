@@ -42,8 +42,10 @@ resource table (A5), and figure polish. Last updated 2026-08-16.
 - Queues between stages are a non-issue: **~50 MB at depth 16** vs ~3 GB free.
 - **SD sequential read ≈ 23.5–23.8 MB/s** (measured cold: 1.93 GB ÷ 81 s) — the **Step-1 read ceiling**.
   To emulate a *faster persistent store* we use a warm read.
-- **Page cache** (4 KB pages, confirmed): our 1.93 GB tile ≈ **472k pages**; whole-tile *warm* read is
-  fine, but whole-tile *f32 in-process load* (3.87 GB) OOMs → windowed streaming is mandatory.
+- **Page cache** (the Linux kernel's file cache, held in **DDR/RAM — not a CPU cache**; 4 KB page
+  *granularity*, confirmed): our 1.93 GB tile ≈ **472k pages** in the ~3 GB of free DDR4; whole-tile
+  *warm* read is fine, but whole-tile *f32 in-process load* (3.87 GB) OOMs → windowed streaming is
+  mandatory.
 - **PS DDR4 peak bandwidth = 17.06 GB/s** — 4 GB DDR4-2133 SODIMM (Kingston KVR21SE15S8/4), 64-bit
   (2133 MT/s × 8 B) [UG1182 + SODIMM part]. Sustained DDR traffic (SD read + DPU DMA + memcpy) sits
   ≈20× below this → DDR is **not** a bottleneck (vaitrace-measured; §10).
@@ -138,31 +140,35 @@ python scripts/fpga/benchmark/stream_fanout_sweep.py --archs FP,SHyp,ResFP,ResSH
 python scripts/fpga/benchmark/fanout_lane_plot.py    # -> results/benchmark_stream/fanout_lane_scaling_4arch.png
 ```
 
-**Result — lane scaling.** Warm throughput vs lane count, λ=20 (patch/s; lanes ≤4 iters=1, ≥5 iters=3).
-**Bold = each arch's operating point** (§10):
+**Result — lane scaling.** Warm throughput vs lane count, λ=20; each cell = **patch/s \| J/patch**
+(iters=1 at lanes 1/2/4/48/64/96/128, iters=3 elsewhere). **Bold = each arch's operating point** (§10):
 
 | lanes | FP | SHyp | ResFP | ResSHyp |
 | --- | --- | --- | --- | --- |
-| 1 | 46.7 | 35.0 | 11.9 | 11.0 |
-| 2 | 91.0 | 65.7 | 23.7 | 21.6 |
-| 3 | 129.3 | 96.7 | 35.2 | 32.4 |
-| 4 | 153.6 | 108.1 | 37.2 | 27.6 |
-| 5 | 164.8 | 114.9 | 39.2 | 31.9 |
-| 6 | 175.3 | 125.5 | **41.0** | 36.1 |
-| 7 | 180.0 | 125.3 | 40.9 | 32.5 |
-| 8 | 184.1 | 128.2 | 40.9 | 35.2 |
-| 10 | 188.0 | 131.2 | 40.8 | 35.9 |
-| 12 | 190.3 | 139.7 | 40.7 | **37.9** |
-| 14 | 192.2 | 135.4 | 40.7 | 37.5 |
-| 16 | 192.8 | 136.7 | 40.6 | 37.7 |
-| 20 | 194.2 | 138.4 | 40.6 | 38.3 |
-| 24 | 196.0 | **144.7** | 40.6 | 38.5 |
-| 32 | **197.9** | 141.2 | 40.6 | 38.5 |
+| 1 | 46.7 \| 0.224 | 35.0 \| 0.291 | 11.9 \| 1.000 | 11.0 \| 1.119 |
+| 2 | 91.0 \| 0.134 | 65.7 \| 0.175 | 23.7 \| 0.638 | 21.6 \| 0.732 |
+| 3 | 129.3 \| 0.105 | 96.7 \| 0.133 | 35.2 \| 0.519 | 32.4 \| 0.599 |
+| 4 | 153.6 \| 0.095 | 108.1 \| 0.124 | 37.2 \| 0.507 | 27.6 \| 0.645 |
+| 5 | 164.8 \| 0.091 | 114.9 \| 0.119 | 39.2 \| 0.496 | 31.9 \| 0.607 |
+| 6 | 175.3 \| 0.088 | 125.5 \| 0.113 | **41.0 \| 0.487** | 36.1 \| 0.572 |
+| 7 | 180.0 \| 0.087 | 125.3 \| 0.113 | 40.9 \| 0.488 | 32.5 \| 0.602 |
+| 8 | 184.1 \| 0.086 | 128.2 \| 0.112 | 40.9 \| 0.488 | 35.2 \| 0.581 |
+| 10 | 188.0 \| 0.085 | 131.2 \| 0.110 | 40.8 \| 0.488 | 35.9 \| 0.576 |
+| 12 | 190.3 \| 0.084 | 139.7 \| 0.106 | 40.7 \| 0.489 | **37.9 \| 0.565** |
+| 14 | 192.2 \| 0.084 | 135.4 \| 0.109 | 40.7 \| 0.489 | 37.5 \| 0.566 |
+| 16 | 192.8 \| 0.083 | 136.7 \| 0.108 | 40.6 \| 0.488 | 37.7 \| 0.563 |
+| 20 | 194.2 \| 0.083 | 138.4 \| 0.107 | 40.6 \| 0.488 | 38.3 \| 0.559 |
+| 24 | 196.0 \| 0.083 | **144.7 \| 0.104** | 40.6 \| 0.488 | 38.5 \| 0.557 |
+| 32 | **197.9 \| 0.082** | 141.2 \| 0.106 | 40.6 \| 0.488 | 38.5 \| 0.557 |
+| 48 | 198.7 \| 0.081 | 145.5 \| 0.103 | 40.5 \| 0.484 | 38.3 \| 0.554 |
+| 64 | 199.6 \| 0.081 | 140.4 \| 0.105 | 40.4 \| 0.484 | 38.2 \| 0.552 |
+| 96 | 195.5 \| 0.082 | 142.6 \| 0.102 | 40.4 \| 0.484 | 38.0 \| 0.555 |
+| 128 | 195.1 \| 0.081 | — | 40.2 \| 0.484 | — |
 
-(Per-lane J/patch, power, and `g_a` ms/call are in the JSONs and the figure.) Beyond 32: FP roofs (64L
-198.4 → 128L 195.1, turns down); SHyp holds ~140 until **128L hits the XRT runner limit**
-(`VART_XRT_NULL_PTR` at ~200 DPU runners — SHyp creates 3/lane, so 128 lanes = 384; FP's 128
-single-`g_a` runners survive). That XRT ceiling is the only hard wall — never RAM.
+(Per-lane power and `g_a` ms/call are in the JSONs and the figure.) The two hyperprior archs have no
+128L cell — that's the **XRT runner limit** (`VART_XRT_NULL_PTR`): the wall sits **between 288 and 384
+DPU runners** (96-lane hyperprior = 96×3 = 288 runs; 128-lane = 384 fails; the factorized FP/ResFP
+single-`g_a` lanes never approach it). That XRT ceiling is the only hard wall — never RAM.
 
 **Every arch roofs; the roof height is set by the binding resource.** The DPU-bound archs (ResFP,
 ResSHyp) roof **low and early** — ~40 patch/s, flat from ~6 lanes: the 3 DPU cores saturate and extra
@@ -171,6 +177,9 @@ SHyp) roof **high and late** — independent lanes keep feeding their entropy/CP
 (FP to ~198, SHyp peaks at 24). Fan-out beats the `--s1` ladder for all four (e.g. ResSHyp 37.9 vs 23.4
 patch/s, FP 198 vs 136). The earlier "hyperprior 4-lane cliff" was an artifact of stopping at 4 lanes:
 ResSHyp dips at 4L but recovers and climbs to ~38.5 by 12L.
+
+> **@TOCHECK** the "binding resource" reading in this section is an *interpretation* of the throughput
+> curves, not yet a measurement. Substantiate or revise it with the per-core occupancy analysis (§6 @TODO) and the on-board profiling (§12 A6).
 
 **Operating point per arch** (warm — §10 uses these; picked at the knee/roof, clear of the XRT wall):
 
@@ -181,7 +190,7 @@ ResSHyp dips at 4L but recovers and climbs to ~38.5 by 12L.
 | ResFP | 6 | 41.0 | 10.5 | 0.487 |
 | ResSHyp | 12 | 37.9 | 9.7 | 0.565 |
 
-(FP at 64 lanes is marginally higher — 50.9 MB/s — but 32 is the clean pick.)
+(FP at 64 lanes is marginally higher — 51.1 MB/s — but 32 is the clean pick.)
 
 **Why iters=1 suffices.** Each point is a full-scene average over 7 540 patches, so the law of large
 numbers crushes run-to-run variance: the median-of-3 σ is **0.0–0.7 patch/s (<0.25%)**, often identical
@@ -248,9 +257,27 @@ Each call is a bar at its measured `[start, end]`. A DPU bar splits into measure
 *inferred* wait (hatched, `= span − the kernel's shortest clean call`), drawn only when the call outruns
 any clean call of that kernel. Caveats to carry into the figure: the wait is inferred, not a measured
 queue time; a track is a lane (its core is confirmed separately, above); and a DPU span includes the
-in-`run()` int8 quantize/dequantize. Traces on disk:
-`results/benchmark_stream/traces/{arch}_3lane_pinned.csv`, plus `ResSHyp_3lane_lanemajor.csv` and
-`ResSHyp_4lane.csv` for the collision / oversubscription cases.
+in-`run()` int8 quantize/dequantize. Traces on disk (`results/benchmark_stream/traces/`): per-arch
+across the scaling curve (`{arch}_{X}lane_L20.csv`, X through each operating point + oversubscribed
+48/64/96 — out to **128** for the factorized archs (FP/ResFP) and **96** for the hyperprior ones
+(SHyp/ResSHyp; 128L = 384 runners crashes)), the 3-lane pinned set (`{arch}_3lane_pinned.csv`), and
+`ResSHyp_3lane_lanemajor.csv` / `ResSHyp_4lane.csv` for the collision / oversubscription cases. Each
+oversubscribed trace has a companion `coreid/{arch}_{X}lane_L20.coreid.log`.
+
+**@TODO — validate the wait-inference baseline (before trusting any inferred wait).** The inferred wait
+uses each kernel's *shortest clean call* as the pure-exec proxy `e`. First characterize the **1-lane DPU
+exec-time distribution** per kernel (`g_a`, `h_a`, `h_s`): **@TOCHECK** which trace and how many calls
+define the baseline (warm vs cold, subsample size), pick **one** spread metric and *define it in the
+doc* (candidates: min/median/max, IQR, coefficient of variation — none chosen yet), and state how tight
+the distribution must be for `e = min` to be a sound proxy. Methodology check only — no conclusion here.
+
+**@TODO — per-core DPU occupancy / idle (per-lane Gantt → per-core view).** Group lanes by the DPU core
+they run on and measure each core's busy/idle fraction over a steady-state window ("how much DPU time is
+wasted at each lane count"). Lane→core is **confirmed lane *k* → core *k* mod 3** (only cores 0/1/2),
+from the captured `device_core_id` logs, up to 96 lanes. Fix the definitions *first*: the measured
+span `[t0, t1]` includes queue-wait (synchronous `execute_async`), so "busy" likely needs the
+reconstructed exec interval `[t1 − e, t1]` (depends on the baseline `e` above), **not** the raw span —
+decide and document this, and how the window is chosen, before computing any number.
 
 ---
 
@@ -455,7 +482,8 @@ with thermal). The full per-rail-group breakdown is in each result JSON.*
   costs **~7× the energy/patch** of FP.
 - **DDR is not a bottleneck.** vaitrace: the dominant DPU traffic (`g_a`/`g_s`) is ~651–660 MB/s, ~20×
   under the 17.06 GB/s DDR4 ceiling (§2). CPU-side DDR is an estimate (~100–150 MB/s; `perf` isn't on
-  the board) — the ~20× margin holds either way.
+  the board) — the ~20× margin holds either way. **@TODO** (§12 A6) tighten the CPU-side number once
+  on-board profiling is available.
 - **Compression** (byte-identical across every config; **λ=20, the chosen operating point**): FP bpp
   0.156 → **~202× vs raw int16** (9.6 MB `.ddc`); ResSHyp bpp 0.133 → **~237×**. A deliberate rate
   point: λ=1000 buys ~+1.8 dB (FP) / +3.0 dB (ResSHyp) PSNR (§7) at roughly **10× less compression**
@@ -519,6 +547,23 @@ paper-only vs reimplemented. Cost: low (paper) to medium (run).
 table).** Report the accelerator's internal design: DPU `3× B4096 @ 300 MHz` (check whether the DSPs run
 at double clock), PS DDR4 ≈17 GB/s, ZU9EG (base facts in §2), **plus PL resource utilisation**
 (LUT/FF/BRAM/URAM/DSP) and clocks from the Vivado/DPU report — as a short platform table in `main.tex`.
+
+**A6 — On-board CPU/DPU profiling (the mechanism behind the fan-out roofs).** *Status: not started.*
+Turn §5's "binding resource" interpretation into a measurement — today we have throughput curves but not
+where the time goes. **→ substantiates §5 + §6; tightens the §10 CPU-DDR estimate.** Run each sub-check
+slowly and on its own; no cross-conclusions until each is individually clear and reproducible.
+
+- **CPU side:** per-worker executing-vs-blocked time split and thread→core affinity — what actually
+  binds each arch's roof (e.g. is FP's climb past the 3 DPU cores CPU/entropy-bound?). **@TOCHECK**
+  whether `perf` can be stood up on the board (likely `dnf` + a proxy for the package server), or
+  whether `/proc`, `getrusage`, or cgroup counters suffice. Define the metric before running.
+- **DPU side:** **@TOCHECK** what `vaitrace` / XRT expose beyond the DDR-BW we already use (per-core
+  utilization, queue depth, dispatch latency) to cross-check the trace-derived occupancy (§6 @TODO).
+  In particular the **DPU cycle counter** is reportedly accessible via `vaitrace`
+  ([UG1414 — Profiling the Model](https://docs.amd.com/r/3.0-English/ug1414-vitis-ai/Profiling-the-Model))
+  — a direct hardware busy-cycle measure that would validate the per-core occupancy without the
+  `[t1 − e, t1]` reconstruction. **@TOCHECK** whether it can be read per core and per subgraph.
+  Maybe also Contiguous Memory Allocation (CMA). Let's dig in and explain the difference between VmHWM (High Water Mark) and VmRSS (Resident Set Size).
 
 ### Deferred / optional
 
