@@ -15,10 +15,10 @@ takes ``e`` uncontended must have executed during ``[t1-e, t1]`` and queued duri
 ``wait = measured span − e`` and the hatch sits before the solid. A call is drawn as waiting only when
 it runs longer than **any clean call of that kernel** (the max span in ``--solo-csv``) — a data-derived
 threshold (no hardcoded floor), so a clean trace is wait-free by construction and the tiny h_a/h_s
-kernels don't paint jitter as waits. The wait is therefore **inferred** (``measured − solo min``), not a
-directly measured queue time. ``e`` (the *solo* exec) is the minimum span of that stage in ``--solo-csv``
-(default: this file); self is correct for a clean run, but for a contended trace pass a clean 1-lane /
-pinned trace (else the contended max hides the waits).
+kernels don't paint jitter as waits. The wait is therefore **inferred** (``measured − e``), not a
+directly measured queue time. ``e`` (the *solo* exec) is the **median** span of that stage in
+``--solo-csv`` (default: this file), reported ±std in a footnote; self is correct for a clean run, but
+for a contended trace pass a clean 1-lane / pinned trace (else the contended stats hide the waits).
 A DPU span also includes the in-``run()`` int8 quantize/dequantize (~0.2–0.7 ms), which cancels in the
 subtraction. CPU and read bars are drawn as their measured span.
 
@@ -30,6 +30,7 @@ import argparse
 import csv
 from collections import defaultdict
 from pathlib import Path
+from statistics import median, pstdev
 
 import matplotlib
 
@@ -68,20 +69,22 @@ def load(path: Path) -> list:
 
 
 def solo_durations(events: list) -> dict:
-    """Per DPU stage, the (min, max) uncontended span from the solo source.
+    """Per DPU stage, uncontended-exec stats from the solo source: ``{stage: {e, ceil, mn, std}}``.
 
-    min = pure exec, used as the wait magnitude (wait = measured span − min). max = the clean-
-    jitter ceiling, used as the wait *threshold*: a call is drawn as 'waiting' only if it runs
-    longer than any clean call of that kernel ever did. Data-derived (no hardcoded floor), and it
-    makes a clean trace wait-free by construction — the tiny h_a/h_s kernels no longer paint
-    spurious waits from ordinary jitter, while the real queue-behind-g_a waits (tens of ms) sit far
-    above the ceiling. Only DPU events are reconstructed; CPU/read stages are drawn as measured.
+    ``e`` = **median** clean span (the pure-exec proxy for the compute block). ``ceil`` = **max** clean
+    span, the wait *threshold*: a call is split only if it runs longer than any clean call of that
+    kernel ever did — data-derived (no hardcoded floor), so a clean trace is wait-free by construction
+    and the tiny h_a/h_s kernels don't paint jitter as waits. ``mn``/``std`` feed the consistency check
+    and the footnote. Only DPU events are reconstructed; CPU/read stages are drawn as measured.
     """
     d = defaultdict(list)
     for e in events:
         if e["kind"] == "dpu":
             d[e["stage"]].append(e["t1"] - e["t0"])
-    return {s: (min(v), max(v)) for s, v in d.items()}
+    return {
+        s: {"e": median(v), "ceil": max(v), "mn": min(v), "std": pstdev(v) if len(v) > 1 else 0.0}
+        for s, v in d.items()
+    }
 
 
 def pick_window(events: list, n_patches: int, skip: int):
@@ -109,11 +112,10 @@ def consistency_check(events: list, solo: dict):
     bad = 0
     for e in events:
         if e["kind"] == "dpu" and e["stage"] in solo:
-            lo, _hi = solo[e["stage"]]
-            if (e["t1"] - e["t0"]) < lo * 0.98:
+            if (e["t1"] - e["t0"]) < solo[e["stage"]]["mn"] * 0.98:
                 bad += 1
     if bad:
-        print(f"  ⚠ {bad} DPU events shorter than their solo exec — solo may be over-estimated")
+        print(f"  ⚠ {bad} DPU events shorter than their solo min — solo may be over-estimated")
 
 
 def main():
@@ -139,7 +141,14 @@ def main():
     pad = 0.02 * span
     win = [e for e in events if e["t1"] > t_start - pad and e["t0"] < t_end + pad]
 
-    lanes = [-1] + sorted({e["lane"] for e in win if e["lane"] >= 0})  # reader always present
+    worker = sorted({e["lane"] for e in win if e["lane"] >= 0})  # reorder lanes by their DPU core
+    by_core = {c: [ln for ln in worker if ln % 3 == c] for c in (0, 1, 2)}
+    lanes = [-1]  # reader on top
+    core_rows = {}  # core -> [row indices], for the separators + far-left "DPU core N" tags
+    for c in (0, 1, 2):
+        if by_core[c]:
+            core_rows[c] = list(range(len(lanes), len(lanes) + len(by_core[c])))
+            lanes += by_core[c]
     y_of = {ln: i for i, ln in enumerate(lanes)}
     fig, ax = plt.subplots(figsize=(11, 0.85 * len(lanes) + 1.7))
 
@@ -153,13 +162,15 @@ def main():
         y = y_of[e["lane"]]
         x0, dur = e["t0"] - t_start, e["t1"] - e["t0"]
         color = STAGES.get(e["stage"], ("#333", ""))[0]
-        lo, hi = solo.get(e["stage"], (dur, dur))
-        if e["kind"] == "dpu" and dur > hi:
+        s = solo.get(e["stage"])
+        if e["kind"] == "dpu" and s and dur > s["ceil"]:
             # ran longer than any clean call of this kernel => it queued. Synchronous execute_async: it
-            # ended at t1, so it ran during [t1-lo, t1] (lo = pure exec) and queued during [t0, t1-lo]:
-            # draw the inferred wait (hatch) then the compute (solid).
-            bar(x0, dur - lo, y, facecolor="white", hatch="////", edgecolor="#8a8a8a")
-            bar(x0 + (dur - lo), lo, y, facecolor=color, edgecolor="white")
+            # ended at t1, so it ran during [t1-e, t1] (e = median pure exec) and queued during
+            # [t0, t1-e]: draw the inferred wait (hatch) then the compute (solid). Clamped — compute =
+            # min(dur, e), wait = max(0, dur-e) — so no negative wait (here dur > ceil >= e anyway).
+            comp = min(dur, s["e"])
+            bar(x0, dur - comp, y, facecolor="white", hatch="////", edgecolor="#8a8a8a")
+            bar(x0 + (dur - comp), comp, y, facecolor=color, edgecolor="white")
         else:
             bar(x0, dur, y, facecolor=color, edgecolor="white")
 
@@ -180,9 +191,21 @@ def main():
     ax.set_yticks(list(y_of.values()))
     ax.set_yticklabels(["reader" if ln < 0 else f"lane {ln}" for ln in lanes])
     ax.invert_yaxis()
-    ax.set_xlabel(
-        "time (ms) — each timeline starts at 0; DPU wait is inferred (measured − solo exec)"
-    )
+    # group rows by DPU core: separators prolonged left to the tags + a rotated "DPU core N" tag
+    def hline(y, **kw):
+        ax.plot([-0.11, 1.0], [y, y], transform=ax.get_yaxis_transform(), clip_on=False,
+                zorder=5, **kw)
+
+    hline(0.5, color="#bbb", lw=0.8, ls=":")  # reader | cores
+    for c in (0, 1, 2):
+        rows = core_rows.get(c)
+        if not rows:
+            continue
+        if c and any(core_rows.get(cc) for cc in range(c)):
+            hline(rows[0] - 0.5, color="#444", lw=1.1)
+        ax.text(-0.085, sum(rows) / len(rows), f"DPU core {c}", transform=ax.get_yaxis_transform(),
+                rotation=90, ha="center", va="center", fontsize=9.5, fontweight="bold", color="#333")
+    ax.set_xlabel("time [ms]")
     ax.grid(axis="x", color="#ececec", lw=0.8, zorder=0)
     for s in ("top", "right", "left"):
         ax.spines[s].set_visible(False)
@@ -192,26 +215,21 @@ def main():
         fontweight="bold",
     )
 
+    # stage legend in pipeline order, read left-to-right across two rows (flip → matplotlib fills
+    # column-major, so this displays row-major); the inferred-wait key (with the e definition folded
+    # in) on its own line just below.
     present = [s for s in STAGES if any(e["stage"] == s for e in win)]
-    handles = [
-        Patch(facecolor=STAGES[s][0], edgecolor="white", label=STAGES[s][1]) for s in present
-    ]
-    handles.append(
-        Patch(
-            facecolor="white",
-            hatch="////",
-            edgecolor="#8a8a8a",
-            label="inferred wait (queued for a DPU core)",
-        )
-    )
-    ax.legend(
-        handles=handles,
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.22),
-        ncol=min(4, len(handles)),
-        fontsize=9,
-        frameon=False,
-    )
+    stage_h = [Patch(facecolor=STAGES[s][0], edgecolor="white", label=STAGES[s][1]) for s in present]
+    ncol = max(1, (len(stage_h) + 1) // 2)
+    flipped = [stage_h[i] for j in range(ncol) for i in range(j, len(stage_h), ncol)]
+    leg1 = ax.legend(handles=flipped, loc="upper center", bbox_to_anchor=(0.5, -0.09),
+                     ncol=ncol, fontsize=9, frameon=False)
+    ax.add_artist(leg1)
+    e_note = ", ".join(f"{st} {solo[st]['e']:.1f}" for st in ("g_a", "h_a", "h_s") if st in solo)
+    wait_h = Patch(facecolor="white", hatch="////", edgecolor="#8a8a8a",
+                   label=f"inferred wait = measured − e   (e = median 1-lane exec: {e_note} ms)")
+    ax.legend(handles=[wait_h], loc="upper center", bbox_to_anchor=(0.5, -0.17),
+              ncol=1, fontsize=9, frameon=False)
 
     out = Path(args.out) if args.out else Path(args.csv).with_suffix(".png")
     fig.tight_layout()
