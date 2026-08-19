@@ -290,6 +290,27 @@ sharp proxy and min/max give a narrow band. This same characterization *is* the 
 time the rest of the doc otherwise cites approximately (plain vs residual `g_a` = 7×). Code:
 `fanout_occupancy.py`.
 
+**Per-subgraph DPU time & efficiency** (vaitrace hardware counter, per DPU core; our canonical DPU-time
+reference — data `results/benchmark_stream/vaitrace/vt_*.txt`, tool details `docs/AMD_Vitis_AI.md`):
+
+| subgraph | WL (GOP) | HW_RT (ms) | SW_RT (ms) | Effic |
+| --- | --- | --- | --- | --- |
+| plain `g_a` (FP, SHyp) | 4.512 | 4.10 | 4.48 | 89.5 % |
+| residual `g_a` (ResFP, ResSHyp) | 39.755 | 33.51 | 35.84 | 96.6 % |
+| `h_a` (hyperprior) | 0.275 | 0.83 | 0.97 | 27.1 % |
+| `h_s` (hyperprior) | 0.176 | 0.52 | 0.62 | 27.8 % |
+
+**HW_RT** = pure DPU compute (hardware counter); **SW_RT** = the `run()` span (dispatch + int8 requant
+around it); **Effic** = achieved GOP/s ÷ 1229 — the big convs fill the DPU, the tiny `h_a`/`h_s` cannot.
+HW_RT is **lane-stable**: flat to 64 lanes for residual `g_a`, a bounded +8 % step for plain `g_a`; our
+trace `e` matches SW_RT to ~2 %.
+
+**Why the occupancy stays runner-span.** It uses `e` = the `run()` span (≈ SW_RT), not HW_RT. Charging
+`e` = HW_RT would count the per-call CPU glue (SW_RT−HW_RT = **8.4 %** plain `g_a`, **6.5 %** residual
+`g_a`, 14–17 % for the tiny `h_a`/`h_s`) as *idle/wait* — but that glue is necessary dispatch + requant,
+not idle. So pure-DPU-compute busy is only ~6.5 % (residual archs) / ~8.4 % (plain-`g_a` archs) below the
+reported runner-span occupancy.
+
 **Per-core DPU occupancy.** For each core (lane→core = subgraph-major creation-order round-robin —
 lane *k*'s `g_a` → core *k* mod 3, validated against the `device_core_id` logs), busy = the union of the
 reconstructed compute intervals `[t1 − e, t1]` on it over the **steady-state window** (last lane to
@@ -557,6 +578,14 @@ baseline` DATE expects and frames an honest onboard-payload question: **embedded
 - Keep the existing desktop-GPU (A4000) + Xeon CPU numbers from `results/benchmark_unified/` alongside
   as context — they cost nothing and are informative.
 
+*Colleague notes about the Jetson environments*:
+All Jetson should have the same version/package (jetpack? a small distro built on top of Ubuntu with CUDA):
+
+- AGX Orin (`192.168.55.1`) and AGX Thor (`10.0.0.5`) plugged in
+- The Jetson Nano is not plugged in
+- We might need an account to SSH/access the Jetson. One is already created (username is `sche_ao` password `riesenrad`)  then I can create a new user and set SSH keys or so.
+- Most efficient way to get familiar with the Jetson for embedded programming: Let Claude find some doc and drive me through the basics.
+
 **N5 — CCSDS baseline (recognisable ratio).** **→ main.tex §eval + abstract** (alt/additional
 recognizable baseline; disambiguates data- vs model-compression). CCSDS 122.0 is the de-facto onboard
 *image* codec (wavelet + bit-plane — the space-grade JPEG2000-lite, widely in rad-hard hardware): the
@@ -566,6 +595,8 @@ on the Hamburg tile is more work (open implementations exist). **Metric caveat:*
 despeckle, so DDC wins on rate partly *because* it removes high-entropy speckle — a fair comparison needs
 a common reference. First step: characterise CCSDS-122 RD behaviour from the literature, then decide
 paper-only vs reimplemented. Cost: low (paper) to medium (run).
+
+**N6 (recently user-added) - Optimize the Entropy coding?** Discuss and explore how we could optimize the entropy coding. One idea out of the blue could be to do vectorized table lookup. Read the code in detail and maybe time where most of the time is spent in EB or GC to find potential optimization axes.
 
 **A5 — Hardware platform details (HW-community venue).** **→ main.tex §Background/Setup (platform
 table).** Report the accelerator's internal design: DPU `3× B4096 @ 300 MHz` (check whether the DSPs run

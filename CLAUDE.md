@@ -45,6 +45,7 @@ Read only what's relevant to the task at hand.
 | GPU/CPU host benchmark + cross-platform (CPU/GPU/FPGA) comparison & unified runner | `docs/GPU_benchmark.md` |
 | Onboard streaming pipeline (SLC→`.ddc`): design + measurements — fan-out core-scaling, symmetrization/overlap studies, full-scene throughput/energy/deadline results | `docs/onboard_pipeline.md` ← **systems paper** |
 | Analysis notebooks: purpose, data flow, shared modules (`_plotkit`, `_benchmark_loader`) | `docs/Notebooks.md` |
+| Vitis AI tools (xdputil static info, vaitrace DPU profiling, Vitis Analyzer) — capabilities + jargon-free glossary | `docs/AMD_Vitis_AI.md` |
 
 ---
 
