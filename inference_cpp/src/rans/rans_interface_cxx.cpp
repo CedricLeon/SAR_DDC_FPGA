@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "rans64.h"
+#include "rans_profile.hpp"
 
 namespace ddc {
 
@@ -74,6 +75,8 @@ void BufferedRansEncoderCxx::encode_with_indexes(
 {
     assert(cdfs.size() == cdfs_sizes.size());
 
+    DDC_RPROF_CUR(::ddc::rprof::ST_LOOKUP);  // forward CDF-lookup pass (builds _syms)
+
     for (size_t i = 0; i < symbols.size(); ++i) {
         const int32_t cdf_idx = indexes[i];
         assert(cdf_idx >= 0 && cdf_idx < static_cast<int32_t>(cdfs.size()));
@@ -124,6 +127,8 @@ void BufferedRansEncoderCxx::encode_with_indexes(
 // BufferedRansEncoderCxx::flush  — changed: returns std::vector<uint8_t>
 // ---------------------------------------------------------------------------
 std::vector<uint8_t> BufferedRansEncoderCxx::flush() {
+    DDC_RPROF_CUR(::ddc::rprof::ST_FLUSH);  // reverse rANS renorm loop + byte copy
+
     Rans64State rans;
     Rans64EncInit(&rans);
 
