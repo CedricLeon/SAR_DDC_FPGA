@@ -101,8 +101,11 @@ The streaming executor lives in its own module (`inference_cpp/src/stream/` — 
 **Optimizations.** Each layers on the sequential `seq` baseline; measured effects → §10.
 
 - `seq` — single thread; correctness + latency baseline (reads the tile, writes the `.ddc`).
-- **`--s1` — DPU channel-parallel.** Runs `g_a(re)` and `g_a(im)` on two DPU cores at once. The main
-  lever for the DPU-bound residual archs; ~free for the factorized ones.
+- **`--s1` — two cores per patch (scaffold).** Runs a patch's two halves, `g_a(re)` and `g_a(im)`, on
+  two DPU cores at once. This was our first way to spread work across cores, but fan-out (§5) beats it for
+  every arch and supersedes it, so it is kept only as a scaffold. Two reasons it loses: it can use at most
+  two cores while the board has three, and it splits one patch across cores instead of running whole
+  patches side by side, so a core waits on the slower half.
 - **`--p0 --threads K` — worker pool.** K workers each run normalize → DPU (serialized by a mutex) →
   entropy → write, records placed by patch index. The main lever for the CPU-bound FP (scales to 4
   workers); the DPU-bound archs plateau earlier (DPU-serialized) — the fan-out lift is **§5**.
@@ -301,6 +304,13 @@ per-patch compute **inflates ~30 %** under 64-thread load (12.1 → 15.8 ms, cac
 side fully saturates, so extra threads cannot fill the idle and cost more than they add (128L < 64L).
 Waterfall: ideal 331 → after inflation 253 → actual 199 patch/s. Figure: `fp_cpu_binding.png` (§11);
 per-arch CPU %usr via `fanout_occupancy.cpu_occupancy_series`.
+
+**Thread affinity — a considered, unmeasured lever.** That inflation is cache/DDR contention under heavy
+oversubscription (far more workers than cores), where the scheduler may migrate a worker between cores and
+lose its warm cache each time. Pinning each worker to a fixed core would keep caches warm and could
+reclaim part of it — but it is unpursued here and unverified: it would likely help only *paired with* the
+knee (few, pinned workers), since at the peak the extra lanes are partly hiding latency, and it does
+nothing for the balanced-pipeline idle. Confirming it would need its own affinity × lane-count sweep.
 
 **Process memory footprint** (measured `/proc/<pid>/status` + `/proc/meminfo`, at 4 → 64 fan-out lanes):
 
@@ -505,7 +515,7 @@ on).*
 | +p0 | 0.112 | 0.145 | 0.610 | 0.731 |
 | +prefetch | 0.108 | 0.140 | 0.604 | 0.714 |
 | +neon | 0.103 | 0.134 | 0.603 | 0.706 |
-| fan-out (roof) | **0.081** | **0.103** | **0.487** | **0.565** |
+| fan-out (roof) | **0.081** | **0.103** | **0.487** | **0.557** |
 
 *Energy = MPSoC (PS+PL) INA226, cooldown-gated to 58 °C; J/patch is the comparable metric (avg W drifts
 with thermal). The full per-rail-group breakdown is in each result JSON.*
@@ -513,7 +523,8 @@ with thermal). The full per-rail-group breakdown is in each result JSON.*
 **Findings.**
 
 - **Parallelism is arch-dependent, and fan-out is the universal best.** The DPU-bound archs
-  (ResFP/ResSHyp) are unlocked by `--s1` then fan-out lanes; the CPU-bound archs (FP/SHyp) by `--p0` +
+  (ResFP/ResSHyp) are unlocked by fan-out lanes (`--s1`, §4, is an early scaffold fan-out supersedes); the
+  CPU-bound archs (FP/SHyp) by `--p0` +
   `--prefetch`, and fan-out's independent pipelines lift them further still. Cumulative warm, seq→best
   (fan-out roof): FP **37.2→199.6 patch/s (5.4×)**, ResSHyp **10.3→38.5 (3.7×)**.
 - **Storage was hiding the CPU parallelism.** At `+p0` (no prefetch yet) FP jumps **52.8→119.0 patch/s**
