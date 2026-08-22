@@ -60,6 +60,10 @@ def bench_cmd(args, lane: int, warm: bool) -> list:
         "--warmup",
         str(args.warmup),
     ]
+    if args.lane_major:
+        cmd.append("--lane-major")
+    if args.tag:
+        cmd += ["--tag", args.tag]
     if args.power:
         cmd.append("--power")
     if args.cooldown:
@@ -80,6 +84,19 @@ def main():
     ap.add_argument("--tile", default="data/full_scene_i16.npy", help="board-relative full scene")
     ap.add_argument(
         "--lanes", default="1,2,3,4", help="DPU lane counts to sweep (1..3 real, 4 oversubscribes)"
+    )
+    ap.add_argument(
+        "--lane-major",
+        dest="lane_major",
+        action="store_true",
+        help="naive pipeline-major placement (vs the default subgraph-major pinning); for the "
+        "placement ablation. Output labels carry 'lanemaj' (not 'fo'), so pinned JSONs are untouched.",
+    )
+    ap.add_argument(
+        "--tag",
+        default="",
+        help="optional label suffix (e.g. 'ent') so a re-run lands in distinct JSONs, not overwriting "
+        "an existing set (e.g. the entropy-off fan-out results).",
     )
     ap.add_argument(
         "--power", action="store_true", default=True, help="sample board power (J/patch)"

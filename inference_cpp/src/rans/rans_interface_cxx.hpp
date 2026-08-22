@@ -25,11 +25,24 @@
 
 namespace ddc {
 
+// One buffered symbol. For a normal (non-bypass) symbol, `code` is an index into
+// a precomputed Rans64EncSymbol table (reciprocal-based encoder — see
+// build_enc_symbols); for a bypass symbol, `code` is the raw bypass value.
 struct RansSymbol {
-    uint16_t start;
-    uint16_t range;
-    bool bypass;
+    uint32_t code;
+    bool     bypass;
 };
+
+// Precompute the reciprocal encoder symbols for a *static* CDF table (done once
+// at model-load, not per patch). enc_syms_out[row_offsets_out[r] + value] is the
+// Rans64EncSymbol for symbol `value` (0 .. cdfs_sizes[r]-2) of row r, i.e.
+// start = cdf[value], freq = cdf[value+1]-cdf[value]. This lets the flush loop use
+// the divide-free Rans64EncPutSymbol; the emitted bytes are identical to the
+// divide-based Rans64EncPut path.
+void build_enc_symbols(const std::vector<std::vector<int32_t>>& cdfs,
+                       const std::vector<int32_t>& cdfs_sizes,
+                       std::vector<Rans64EncSymbol>& enc_syms_out,
+                       std::vector<int32_t>& row_offsets_out);
 
 // ---------------------------------------------------------------------------
 // BufferedRansEncoderCxx
@@ -43,6 +56,17 @@ public:
     BufferedRansEncoderCxx& operator=(const BufferedRansEncoderCxx&) = delete;
     BufferedRansEncoderCxx& operator=(BufferedRansEncoderCxx&&)      = delete;
 
+    // Fast path: caller supplies a precomputed reciprocal-symbol table (flat,
+    // indexed by row_offsets[cdf_idx] + value) that outlives this call + flush().
+    void encode_with_indexes(const std::vector<int32_t>& symbols,
+                             const std::vector<int32_t>& indexes,
+                             const Rans64EncSymbol* enc_syms,
+                             const std::vector<int32_t>& enc_row_offsets,
+                             const std::vector<int32_t>& cdfs_sizes,
+                             const std::vector<int32_t>& offsets);
+
+    // Convenience path (tests / one-off callers): builds the reciprocal-symbol
+    // table from a vector-of-vectors CDF, then delegates to the fast path.
     void encode_with_indexes(const std::vector<int32_t>& symbols,
                              const std::vector<int32_t>& indexes,
                              const std::vector<std::vector<int32_t>>& cdfs,
@@ -52,7 +76,10 @@ public:
     std::vector<uint8_t> flush();
 
 private:
-    std::vector<RansSymbol> _syms;
+    std::vector<RansSymbol>      _syms;
+    const Rans64EncSymbol*       _enc_syms = nullptr;  // borrowed; valid through flush()
+    std::vector<Rans64EncSymbol> _enc_syms_owned;      // storage for the convenience path
+    std::vector<int32_t>         _row_offsets_owned;   // storage for the convenience path
 };
 
 // ---------------------------------------------------------------------------
@@ -67,6 +94,16 @@ public:
     RansEncoderCxx& operator=(const RansEncoderCxx&) = delete;
     RansEncoderCxx& operator=(RansEncoderCxx&&)      = delete;
 
+    // Fast path — precomputed reciprocal-symbol table (see build_enc_symbols).
+    std::vector<uint8_t> encode_with_indexes(
+        const std::vector<int32_t>& symbols,
+        const std::vector<int32_t>& indexes,
+        const Rans64EncSymbol* enc_syms,
+        const std::vector<int32_t>& enc_row_offsets,
+        const std::vector<int32_t>& cdfs_sizes,
+        const std::vector<int32_t>& offsets);
+
+    // Convenience path — vector-of-vectors CDF (tests / one-off callers).
     std::vector<uint8_t> encode_with_indexes(
         const std::vector<int32_t>& symbols,
         const std::vector<int32_t>& indexes,

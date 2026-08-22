@@ -250,6 +250,8 @@ def label(args, cold: bool) -> str:
         args.overlap != CANONICAL_OVERLAP
     ):  # canonical overlap stays unsuffixed; flag deviations only
         parts.append(f"ov{args.overlap}")
+    if getattr(args, "tag", ""):
+        parts.append(args.tag)
     parts.append("cold" if cold else "warm")
     if args.max_rows >= 0:
         parts.append(f"r{args.max_rows}")
@@ -291,6 +293,11 @@ def parse_args():
         "--whole", action="store_true", help="load whole tile (default: windowed stream)"
     )
     p.add_argument("--max-rows", type=int, default=-1, help="cap azimuth patch-rows (-1 = full)")
+    p.add_argument(
+        "--tag",
+        default="",
+        help="optional label suffix (e.g. 'ent') to keep a run distinct from an existing result set",
+    )
     p.add_argument("--keep-cache", action="store_true", help="WARM: skip the cache drop")
     p.add_argument(
         "--cooldown", action="store_true", help="thermal cooldown-gate + telemetry per run"

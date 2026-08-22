@@ -81,6 +81,9 @@ namespace ddc
         if (static_cast<int>(offsets_.size()) != channels_)
             throw std::runtime_error("EntropyBottleneck: offset size != channels");
 
+        // Precompute reciprocal encoder symbols once (static CDF → divide-free flush).
+        build_enc_symbols(quantized_cdf_, cdf_lengths_, enc_syms_, enc_row_offsets_);
+
         loaded_ = true;
     }
 
@@ -120,10 +123,10 @@ namespace ddc
             }
         }
 
-        // Build cdf_lengths as a plain vector (rANS API expects vector<int32_t>)
         RansEncoderCxx enc;
         return enc.encode_with_indexes(symbols, indexes,
-                                       quantized_cdf_, cdf_lengths_, offsets_);
+                                       enc_syms_.data(), enc_row_offsets_,
+                                       cdf_lengths_, offsets_);
     }
 
     // ---------------------------------------------------------------------------
@@ -176,6 +179,9 @@ namespace ddc
         if (quantized_cdf_.size() != scale_table_.size())
             throw std::runtime_error("GaussianConditional: CDF row count != scale_table size");
 
+        // Precompute reciprocal encoder symbols once (static CDF → divide-free flush).
+        build_enc_symbols(quantized_cdf_, cdf_lengths_, enc_syms_, enc_row_offsets_);
+
         loaded_ = true;
     }
 
@@ -226,7 +232,8 @@ namespace ddc
 
         RansEncoderCxx enc;
         return enc.encode_with_indexes(symbols, indexes,
-                                       quantized_cdf_, cdf_lengths_, offsets_);
+                                       enc_syms_.data(), enc_row_offsets_,
+                                       cdf_lengths_, offsets_);
     }
 
     // ---------------------------------------------------------------------------

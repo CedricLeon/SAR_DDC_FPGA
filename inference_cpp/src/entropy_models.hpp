@@ -64,6 +64,10 @@ private:
     std::vector<int32_t>              cdf_lengths_;   // [C]
     std::vector<int32_t>              offsets_;       // [C]
     std::vector<float>                medians_;       // [C]
+
+    // Precomputed reciprocal encoder symbols (built once from quantized_cdf_).
+    std::vector<Rans64EncSymbol>      enc_syms_;
+    std::vector<int32_t>              enc_row_offsets_;
 };
 
 // ---------------------------------------------------------------------------
@@ -100,6 +104,10 @@ private:
     std::vector<std::vector<int32_t>> quantized_cdf_;  // [n_scales][cdf_len]
     std::vector<int32_t>              cdf_lengths_;    // [n_scales]
     std::vector<int32_t>              offsets_;        // [n_scales]
+
+    // Precomputed reciprocal encoder symbols (built once from quantized_cdf_).
+    std::vector<Rans64EncSymbol>      enc_syms_;
+    std::vector<int32_t>              enc_row_offsets_;
 };
 
 } // namespace ddc
