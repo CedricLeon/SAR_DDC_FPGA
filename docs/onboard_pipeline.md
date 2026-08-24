@@ -139,7 +139,7 @@ would fight for the same 3 cores), and is byte-identical to `seq` (§4 gate). Pl
 
 ```bash
 python scripts/fpga/benchmark/stream_fanout_sweep.py --archs FP,SHyp,ResFP,ResSHyp --lambdas 20 \
-    --lanes 1,2,3,4,5,6,7,8,10,12,14,16,20,24,32     # full lane sweep (iters=1 suffices — see below)
+    --lanes 1,2,3,4,5,6,7,8,9,10,12,14,16,20,24,32,48,68,96,128     # full lane sweep (iters=1 suffices — see below)
 python scripts/fpga/benchmark/fanout_lane_plot.py    # -> results/benchmark_stream/fanout_lane_scaling_4arch.png
 ```
 
@@ -170,7 +170,7 @@ across iters (total time logged to 0.1 s). Future lane sweeps need no repeats.
 
 ---
 
-## 6. DOU fan-out Placement & occupancy — under the hood
+## 6. DPU fan-out Placement & occupancy — under the hood
 
 How the lanes land on cores, the per-subgraph DPU timing and per-core occupancy behind the DPU-bound
 roofs, and the CPU occupancy + memory footprint behind the rest.
@@ -216,6 +216,12 @@ creates >1 DPU runner (hyperprior) **and** the arch is DPU-bound — so it is a 
 SHyp *does* collide (`g_a` 5.9→7.0 ms) but is CPU/read-bound, so its throughput is unmoved; the
 factorized archs create only `g_a`, so lane-major ≡ subgraph-major there. The win is real only for the
 DPU-bound hyperprior (ResSHyp).
+
+**Full-curve confirmation** (ResSHyp, warm, λ=20, lanes 1–32; `p0_t{N}_lanemaj_pf_neon_warm.json`). Naive
+placement is **flat at ~13.8–13.9 patch/s from 2 lanes on** (≈ its 1-lane value): the round-robin collides
+every lane's `g_a` onto one core, so extra lanes add nothing. Pinned climbs to 38.5, so the deficit **widens
+with lanes — 2.3× at 3 lanes to ~2.8× at the operating point** (24L). The pinned curve also carries the
+4-lane load-imbalance dip (32.4→27.6→36.1 at 3/4/6 lanes); lane-major, already serialized, shows none.
 
 ### DPU timing & occupancy
 
