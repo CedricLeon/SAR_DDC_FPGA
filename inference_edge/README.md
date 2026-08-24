@@ -66,6 +66,16 @@ routine): rsync `.project-root`, `src/`, `context/`, `inference_edge/`,
 `~/ddc_edge/repo/`), matching this repo's relative layout so `rootutils`/hydra's config resolution
 still works. Then `pip install -e inference_edge/` inside the venv.
 
+## Known quirks
+
+- **First patch pays a one-time ~132ms JIT-compile spike.** Not a gradual warmup — patch 0 measured
+  132.4ms, patch 1 onward flat at ~4.55ms (a clean 29× one-shot cost, confirmed by per-patch logging).
+  Root cause: Orin's compute capability (8.7) isn't in this torch build's precompiled kernel list
+  (`torch.cuda` prints this warning every run — *"No published PyTorch CUDA builds for release
+  2.13.0+cu132 support this GPU"*), so CUDA kernels PTX-JIT-compile on first use. Negligible over a
+  full-scene run (~130ms in ~280s), but matters for short/`--max-rows` runs and for comparing against
+  any other short smoke test.
+
 ## Usage
 
 ```bash
@@ -97,15 +107,54 @@ re-run `verify` on the same machine that ran `compress`. FP32 desync-prone entro
 to cross-GPU decode either — it's the same class of problem as the FPGA's own INT8 board-vs-host
 decode story, just triggered by a different precision boundary.
 
+## Thor — blocked, deferred (2026-08-24)
+
+The "should carry to Thor largely unchanged" claim earlier in this doc does not hold today. Three
+independent problems, found by the audit, in the order you'd hit them:
+
+1. **No internet access** on Thor's network segment (`sche_ao@10.0.0.5`) — confirmed at the TCP level
+   (raw connect to `8.8.8.8:53` / `1.1.1.1:443` both fail, not just DNS), despite a configured default
+   route and a real resolver. The `pip install ... --index-url ...` recipe above cannot run as written;
+   needs an offline wheelhouse built elsewhere and rsynced over.
+2. **`python3 -m venv` fails outright** — `ensurepip`/`python3.12-venv` isn't installed and there's no
+   `apt` access to add it (see #1). Workaround: `venv --without-pip` + manually bootstrap a pip wheel
+   (itself needing to come from somewhere with internet, because of #1 again).
+3. **The real blocker: Orin's exact torch build does not import on Thor.** `torch==2.13.0+cu132`'s
+   pinned `nvidia-nccl-cu13==2.29.7` has no published aarch64 wheel (PyPI only has `0.0.0a0` and
+   `2.27.7` for aarch64). Substituting `2.27.7` resolves the dependency but then `import torch` fails at
+   the ELF loader level — `undefined symbol: ncclCommResume`, a real ABI gap (that symbol only exists in
+   NCCL ≥2.28), not a version-pinning mistake. `torch==2.9.1+cu130` looks compatible by wheel metadata
+   (its NCCL pin does have an aarch64 wheel) but **was not empirically confirmed** — worth trying first
+   when this is picked back up, but don't assume it works without testing.
+
+**Consequence for later:** any Orin-vs-Thor comparison needs a torch version that actually works on
+*both* boards, or it carries a silent version confound alongside the hardware difference. Decide the
+pin before re-attempting, don't default back to Orin's.
+
+Smaller, already-handled: Thor's `tegrastats` output format differs from Orin's (2-value `cur/avg`
+fields, not 3; different rail names, including a `VIN` rail that genuinely is a superset of the others,
+unlike any of Orin's rails) — `power.py`'s parser and rail policy now handle this generically (see
+`_RAIL_POLICY` in that file), but Thor's specific policy entry is informed by only one live capture and
+is **not independently verified** the way Orin's is — don't trust it blindly when Thor work resumes.
+
 ## Status (Orin, `SHyp-relu_s0_L20_pt`)
 
-Production run (`MODE_30W`, overlap=2, full scene) lands within ~1% of the FPGA's own `seq`-mode
-throughput, power, and energy/patch — see `docs/onboard_pipeline.md` §12 for the table. Quality verified
-against MERLIN GT (overlap=0, full 7,482-patch coverage, decoded on-device per the note above): **PSNR
-28.05 ± 5.24 dB, SSIM 0.8144 ± 0.1055** — consistent with the neighboring FP/ResSHyp λ=20 reference
-numbers. Visual crop comparison (`scripts/evaluation/jetson_vs_fpga_crop.py`) confirms the same
-qualitatively — see `results/benchmark_jetson/orin/jetson_vs_fpga_vs_merlin_crop.png`.
+Production run (`MODE_30W`, overlap=2, full scene) — see `docs/onboard_pipeline.md` §12 for the table
+**and the audit correction**: the raw `avg W` comparison there is not apples-to-apples (Jetson's number
+sums a board-I/O rail the FPGA's own number excludes — scope-matched it's 60% of the FPGA's, not
+"~1%"), and `patch/s` is likely understated since the run wasn't at confirmed `MAXN`. Don't quote the
+old "~1%" figure. Quality verified against MERLIN GT (overlap=0, full 7,482-patch coverage, decoded
+on-device per the note above): **PSNR 28.05 ± 5.24 dB, SSIM 0.8144 ± 0.1055** — consistent with the
+neighboring FP/ResSHyp λ=20 reference numbers. Visual crop comparison
+(`scripts/evaluation/jetson_vs_fpga_crop.py`) confirms the same qualitatively — see
+`results/benchmark_jetson/orin/jetson_vs_fpga_vs_merlin_crop.png`.
 
-**Not yet done**: re-run at `MAXN` (current numbers are `MODE_30W`, not peak); Thor; a 4-arch ×
-power-mode sweep; an independent audit of what exactly is timed and whether the power sampling is
-methodologically sound (proposed, not yet run — see `docs/onboard_pipeline.md` §12).
+**Not yet done**: re-run at confirmed `MAXN` (now logged, see below); decide how to present the power
+comparison (scope-matched `VDD_GPU_SOC+VDD_CPU_CV` = 5.93 W is now what `avg_power_w` reports by
+default on Orin, per-rail breakdown always included); Thor (see above, deferred); then a 4-arch ×
+power-mode sweep. **Done**: `power.py` now applies a per-board rail policy instead of blindly summing
+everything tegrastats reports (`_RAIL_POLICY`, keyed by SoC compatible string) — Orin's policy is
+verified, Thor's is a documented best-guess pending real Thor work. The independent audit that produced
+the corrections above is done (see `docs/onboard_pipeline.md` §12) — `StageTimer`'s methodology itself
+is validated (cross-checked against independent `torch.cuda.Event` timers, timer overhead and observer
+effects both confirmed negligible).

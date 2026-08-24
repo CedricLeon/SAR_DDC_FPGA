@@ -66,6 +66,14 @@ def _device_info(device: torch.device) -> dict[str, Any]:
             info["l4t_release"] = rel.read_text().splitlines()[0].strip()
     except Exception:
         pass
+    try:
+        # nvpmodel state (power mode) — not recorded before the 2026-08-24 audit, which left the
+        # production run's actual mode unverifiable after the fact. Read-only query, no sudo needed.
+        out = subprocess.run(["nvpmodel", "-q"], capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            info["nvpmodel"] = out.stdout.strip()
+    except Exception:
+        pass
     return info
 
 

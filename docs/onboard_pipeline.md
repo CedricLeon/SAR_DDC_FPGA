@@ -595,34 +595,69 @@ named baseline` DATE expects. **→ main.tex §eval + abstract.**
 
 Code, environment setup, deployment recipe, and verification methodology (including a cross-GPU decode
 gotcha worth knowing before touching this again) → `inference_edge/README.md`. Package =
-`inference_edge/` (`ddc-edge` CLI). The measurement methodology itself — what's actually timed, whether
-the power numbers are sound — has **not** been independently audited yet; treat the table below as
-directionally right, not final, until that happens.
+`inference_edge/` (`ddc-edge` CLI). **Independently audited** — see the audit summary below the table;
+two of its findings materially change how the row below should be read, so **the table's `avg W` /
+`J/patch` columns are not directly comparable as printed** (kept for provenance, corrected reading
+alongside them). `patch/s` is also likely understated (see below) — a re-run is queued, not done yet.
 
 **Results — production run** (Orin, `SHyp-relu_s0_L20_pt`, `MODE_30W` not `MAXN`, overlap=2, full scene,
 7,540 patches — grid count matches §3 exactly):
 
 | | FPGA SHyp `seq` (INT8, ZCU102) | Jetson Orin (FP32, MODE_30W) |
 | --- | --- | --- |
-| patch/s | 29.5 | 29.21 |
-| avg W | 9.93 | 9.91 |
-| J/patch | 0.336 | 0.339 |
+| patch/s | 29.5 | 29.21 (likely understated — see below) |
+| avg W | 9.93 (chip only: PL+PS) | 9.91 total board (**5.93 scope-matched** — see below) |
+| J/patch | 0.336 | 0.339 (inherits the avg-W scope issue) |
 | bpp | 0.1474 | 0.1416 |
 | compression ratio (32-bit raw ÷ bpp) | 217× | 226× |
 
 Source: `results/benchmark_stream/SHyp-relu_s0_L20_pt/seq_warm.json` vs
-`results/benchmark_jetson/orin/production_overlap2.json`. Lands within ~1 % of the FPGA's own `seq`
-throughput/power/energy — a real, reproducible observation, **not** a validated conclusion (different
-precision, different power-measurement scope, neither side its chip's optimized mode — FPGA fan-out
-already beats this row by ~5×, §10). Quality (PSNR 28.05±5.24 dB, SSIM 0.8144±0.1055 vs MERLIN GT) and a
-visual crop comparison (`results/benchmark_jetson/orin/jetson_vs_fpga_vs_merlin_crop.png`) both check
-out — the README has the full story.
+`results/benchmark_jetson/orin/production_overlap2.json`. bpp/compression-ratio are unaffected by
+either audit finding below (pure encode-size facts, no timing or power involved).
+
+**Audit findings (full report: [[project_jetson_edge_pipeline]] memory / ask to see it) — two that
+change the table:**
+
+- **Power scope mismatch.** The Jetson `avg W` sums three rails including `VIN_SYS_5V0`, which NVIDIA's
+  own [Jetson Linux Developer Guide](https://docs.nvidia.com/jetson/archives/r39.2/DeveloperGuide/SD/PlatformPowerAndPerformance/JetsonOrinNanoSeriesJetsonOrinNxSeriesAndJetsonAgxOrinSeries.html)
+  (r39.2, this exact board) confirms is a **board I/O + DRAM rail** (HDMI/USB/UFS/eMMC/DDR) — the
+  Jetson analogue of what the FPGA's number *explicitly excludes* (its own `peripherals`/`MGT` groups
+  are left out of `MPSoC`). Scope-matched to `VDD_GPU_SOC + VDD_CPU_CV` only: **5.93 W, i.e. 60% of the
+  FPGA's 9.93 W — not "within ~1%."** The previous "~1%" reading in this doc and the README was a real
+  error, not a rounding nuance — corrected here.
+- **Throughput likely understated.** A controlled re-measurement at confirmed-locked `MAXN` ran NN
+  inference 1.6–1.8× faster than the `29.21 patch/s` row above. Leading explanation: the production run
+  really was at `MODE_30W` (consistent with this doc's own contemporaneous notes), and clock state
+  simply wasn't recorded in the output JSON, so it couldn't be verified after the fact — not a bug in
+  the pipeline itself. Fix identified and applied: `ddc-edge` now records `nvpmodel -q` output per run
+  (§12.5), so this ambiguity can't recur.
+- Timing methodology otherwise validated: `StageTimer` cross-checked against independent
+  `torch.cuda.Event` timers (5.2% agreement), timer overhead confirmed negligible (~1–2% of the
+  smallest stage), `--power` sampling confirmed not to perturb throughput (0.34%). The warmup effect
+  from last night is real but is a single ~132ms spike on patch 0 (PTQ/JIT compilation — Orin's compute
+  capability isn't in this torch build's precompiled kernel list), not a gradual ramp — though it
+  doesn't fully arithmetically reconcile with the original 51-patch smoke test's 27ms/patch figure,
+  flagged as unresolved rather than forced to fit.
+- **Thor portability claim doesn't hold today.** No internet access on Thor's network segment (confirmed
+  at the TCP level, not just DNS), `python3 -m venv` needs a workaround (`ensurepip` isn't installed),
+  and — the real blocker — **Orin's exact torch build doesn't import on Thor**: a pinned
+  `nvidia-nccl-cu13` dependency has no matching aarch64 wheel, an ELF-level ABI gap (`undefined symbol:
+  ncclCommResume`), not a config mistake. A downgraded torch pin (`2.9.1+cu130`) looks compatible by
+  wheel metadata but wasn't empirically confirmed (audit ran out of local disk space mid-check). Also
+  found: Thor's `tegrastats` rail format differs from Orin's (2-value fields, not 3; a `VIN` rail that
+  — unlike Orin's three siblings — genuinely *is* a parent/superset of the others) — `power.py`'s
+  current parser would silently collect zero samples there, not double-count, but it's not the
+  "generic" behavior the code claims either.
 
 **Remaining:**
 
-- Independent audit of the timing/power measurement methodology (proposed, not yet run).
-- Re-run at `MAXN` — current numbers are real but not peak.
-- Thor, then a 4-arch × 2-power-mode sweep, mirroring the FPGA's own per-arch coverage.
+- Re-run production at confirmed `MAXN` (now logged) — the numbers to actually cite once done.
+- Decide how to present the power comparison going forward (scope-matched number vs. a permanent
+  dual-scope caveat) — open, not yet decided.
+- `power.py`'s rail-summing needs a per-board decision, not a blind sum, before it's trustworthy off Orin.
+- Thor's torch/NCCL gap needs a real decision (pin an older torch across all Jetson targets, wait for
+  upstream aarch64 parity, or vendor NCCL) before portability work continues.
+- Then: 4-arch × power-mode sweep, mirroring the FPGA's own per-arch coverage.
 - TensorRT/FP16 — explicitly out of scope for this baseline, a separate future conversation if wanted.
 
 ---
