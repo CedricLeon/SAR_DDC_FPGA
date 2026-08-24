@@ -168,3 +168,19 @@ if(NLOHMANN_JSON_INCLUDE_DIR)
 else()
     message(STATUS "Skipping stream_pipeline target (nlohmann/json not found)")
 endif()
+
+# ---------------------------------------------------------------------------
+# dump_latents — one-off debug tool: pre-entropy-coding y/z latents for named patches, for the
+# INT8-vs-FP32 bpp-gap investigation (docs/tmp_jetson_orin_overnight.md). Not part of any pipeline;
+# reuses BenchPipeline like stream_pipeline does, same build guard.
+# ---------------------------------------------------------------------------
+if(NLOHMANN_JSON_INCLUDE_DIR)
+    add_executable(dump_latents
+        src/tools/dump_latents.cpp
+        src/benchmark/bench_pipeline.cpp)
+    target_include_directories(dump_latents PRIVATE
+        src src/benchmark include ${NLOHMANN_JSON_INCLUDE_DIR})
+    target_link_libraries(dump_latents PRIVATE inference_lib)
+else()
+    message(STATUS "Skipping dump_latents target (nlohmann/json not found)")
+endif()
