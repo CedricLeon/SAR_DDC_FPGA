@@ -11,8 +11,9 @@
 Status: **implemented + measured.** The streaming compressor, the parallel/I/O optimizations (§4), the
 DPU fan-out core-scaling (§5–§6), the symmetrization (§7) and overlap (§8) studies, and the full-scene
 throughput/latency/energy sweep (§10) are done and board-verified at the coherent setup (λ=20, overlap
-2, snap grid, four architectures). Remaining (§12): the Jetson (N2) and CCSDS (N5) baselines, the PL
-resource table (A5), and figure polish. Last updated 2026-08-16.
+2, snap grid, four architectures). The Jetson embedded-GPU baseline (N2, §12) has first Orin numbers +
+verified quality; `MAXN` re-run, Thor, and the 4-arch sweep remain (§12.5). Remaining (§13): the CCSDS
+(N5) baseline, the PL resource table (A5), and figure polish. Last updated 2026-08-24.
 
 ---
 
@@ -585,34 +586,53 @@ first-pass feel-only plots, superseded by the manuscript figures.
 
 ---
 
-## 12. TODO
+## 12. Jetson embedded-GPU baseline (N2)
+
+**Status: implemented, first Orin numbers, quality spot-checked — a naive, unoptimized baseline by
+design** (mirrors the FPGA's `seq` mode: no threading, no fan-out, no DPU-style placement — not a
+re-run of the systems-engineering ladder on different silicon). Supplies the recognisable `N× vs a
+named baseline` DATE expects. **→ main.tex §eval + abstract.**
+
+Code, environment setup, deployment recipe, and verification methodology (including a cross-GPU decode
+gotcha worth knowing before touching this again) → `inference_edge/README.md`. Package =
+`inference_edge/` (`ddc-edge` CLI). The measurement methodology itself — what's actually timed, whether
+the power numbers are sound — has **not** been independently audited yet; treat the table below as
+directionally right, not final, until that happens.
+
+**Results — production run** (Orin, `SHyp-relu_s0_L20_pt`, `MODE_30W` not `MAXN`, overlap=2, full scene,
+7,540 patches — grid count matches §3 exactly):
+
+| | FPGA SHyp `seq` (INT8, ZCU102) | Jetson Orin (FP32, MODE_30W) |
+| --- | --- | --- |
+| patch/s | 29.5 | 29.21 |
+| avg W | 9.93 | 9.91 |
+| J/patch | 0.336 | 0.339 |
+| bpp | 0.1474 | 0.1416 |
+| compression ratio (32-bit raw ÷ bpp) | 217× | 226× |
+
+Source: `results/benchmark_stream/SHyp-relu_s0_L20_pt/seq_warm.json` vs
+`results/benchmark_jetson/orin/production_overlap2.json`. Lands within ~1 % of the FPGA's own `seq`
+throughput/power/energy — a real, reproducible observation, **not** a validated conclusion (different
+precision, different power-measurement scope, neither side its chip's optimized mode — FPGA fan-out
+already beats this row by ~5×, §10). Quality (PSNR 28.05±5.24 dB, SSIM 0.8144±0.1055 vs MERLIN GT) and a
+visual crop comparison (`results/benchmark_jetson/orin/jetson_vs_fpga_vs_merlin_crop.png`) both check
+out — the README has the full story.
+
+**Remaining:**
+
+- Independent audit of the timing/power measurement methodology (proposed, not yet run).
+- Re-run at `MAXN` — current numbers are real but not peak.
+- Thor, then a 4-arch × 2-power-mode sweep, mirroring the FPGA's own per-arch coverage.
+- TensorRT/FP16 — explicitly out of scope for this baseline, a separate future conversation if wanted.
+
+---
+
+## 13. TODO
 
 **Guiding principle:** run what is most informative, let the results (not the outline) drive the
 narrative, and be ready for any experiment to resolve *against* the story. Each entry notes the
 manuscript slot it *would* unblock (**→ main.tex …**) purely as navigation, never as a hole that must be
 filled.
-
-**N2 — Embedded-GPU baseline (NVIDIA Jetson).** *Status: not started; hardware reportedly attached to
-this host — access route to be confirmed with a colleague.* Supplies the recognisable `N× vs a named
-baseline` DATE expects and frames an honest onboard-payload question: **embedded GPU vs FPGA SoC**.
-**→ main.tex §eval + abstract.**
-
-- **Scope:** the *same end-to-end streaming pipeline* (read → normalize → NN → rANS → `.ddc`), not
-  per-patch — a per-patch comparison would only reproduce the TGRS cross-platform table.
-- **Precision:** probably **float32 throughout** on the Jetson (no INT8/TensorRT work — check what the
-  Jetson can run first).
-- **Port cost:** the rANS coder is portable C++ and should move across directly; float32 checkpoints
-  (before any Vitis AI adaptation) are on the host, resolvable via `manifest.json`.
-- Keep the existing desktop-GPU (A4000) + Xeon CPU numbers from `results/benchmark_unified/` alongside
-  as context — they cost nothing and are informative.
-
-*Colleague notes about the Jetson environments*:
-All Jetson should have the same version/package (jetpack? a small distro built on top of Ubuntu with CUDA):
-
-- AGX Orin (`192.168.55.1`) and AGX Thor (`10.0.0.5`) plugged in
-- The Jetson Nano is not plugged in
-- We might need an account to SSH/access the Jetson. One is already created (username is `sche_ao` password `riesenrad`)  then I can create a new user and set SSH keys or so.
-- Most efficient way to get familiar with the Jetson for embedded programming: Let Claude find some doc and drive me through the basics.
 
 **N5 — CCSDS baseline (recognisable ratio).** **→ main.tex §eval + abstract** (alt/additional
 recognizable baseline; disambiguates data- vs model-compression). CCSDS 122.0 is the de-facto onboard
