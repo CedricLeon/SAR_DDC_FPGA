@@ -9,13 +9,10 @@ from typing import Dict, Tuple, Union
 
 import torch
 import torch.nn as nn
+from compressai.entropy_models import EntropyBottleneck, GaussianConditional
 from compressai.models import CompressionModel
 from torch import Size, Tensor
 
-from context.compressai_original import (  # from compressai.entropy_models
-    EntropyBottleneck,
-    GaussianConditional,
-)
 from src.models.components.compressai_dpu import (
     EntropyBottleneckPatched,
     GaussianConditionalPatched,

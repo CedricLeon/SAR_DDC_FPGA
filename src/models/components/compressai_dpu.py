@@ -1,8 +1,8 @@
 """DPU-friendly variants of CompressAI operators.
 
-This module re-implements the key operators from `context/compressai_original.py` without using
-custom `torch.autograd.Function`. The goal is to keep behavior close to the original while
-avoiding constructs that are problematic for Vitis-AI DPU export.
+This module re-implements the key operators from `compressai.entropy_models` (`EntropyBottleneck`,
+`GaussianConditional`) without using custom `torch.autograd.Function`. The goal is to keep behavior
+close to the original while avoiding constructs that are problematic for Vitis-AI DPU export.
 
 Provided classes:
   - LowerBoundPatched
