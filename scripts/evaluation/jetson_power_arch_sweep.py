@@ -8,6 +8,13 @@ switches mode + `jetson_clocks`, settles, then runs `ddc-edge compress` on the f
 results/fpga/<arch>-relu_s0_L20_pt/ on Orin), fetching each mode's JSONs back before moving to the next
 (a crash partway through the sweep does not lose earlier modes).
 
+**Some mode switches reboot the board.** MODE_30W/MODE_15W change the online-CPU-core count vs.
+MAXN/MODE_50W (`/etc/nvpmodel.conf`), and this nvpmodel build (1.1.4) requires a reboot to apply that —
+confirmed empirically 2026-08-24. `set_power_mode` always switches with `--force` (auto-reboots, no
+interactive prompt) and polls for ssh to come back (~49s observed); this is a no-op wait for same-core-
+count transitions, so the sweep doesn't need a table of which pairs need it. Expect ~1-2 extra minutes
+around each MODE_30W/MODE_15W entry or exit.
+
 Compress-only (no quality/verify pass): this sweep is about timing/throughput/power, not PSNR/SSIM —
 quality is already validated once per arch's checkpoint elsewhere (docs/onboard_pipeline.md §12).
 
@@ -58,6 +65,8 @@ SETTLE_S = 20  # after mode switch + jetson_clocks, before the first compress ru
 PER_RUN_TIMEOUT_S = (
     1800  # 30 min ceiling per (arch, mode) -- generous vs. the ~4-11 min observed range
 )
+SSH_RECONNECT_TIMEOUT_S = 300  # ceiling to wait for Orin to come back after a mode-switch reboot
+SSH_RECONNECT_POLL_S = 5  # observed reboot-to-ssh-ready: ~49s (2026-08-24 live test)
 
 
 def ssh(cmd: str, timeout: float | None = None) -> subprocess.CompletedProcess:
@@ -79,12 +88,75 @@ def sudo_ssh(cmd: str, password: str, timeout: float | None = 30) -> subprocess.
     )
 
 
+def ssh_alive(timeout: float = 3) -> bool:
+    """True if Orin answers ssh right now — used to detect when a reboot has completed."""
+    try:
+        r = subprocess.run(
+            [
+                "ssh",
+                "-o",
+                f"ConnectTimeout={int(timeout)}",
+                "-o",
+                "BatchMode=yes",
+                SSH_HOST,
+                "echo alive",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout + 5,
+        )
+        return r.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def wait_for_reboot() -> None:
+    """Poll until Orin's ssh is back up.
+
+    A no-op (returns almost instantly) if no reboot was actually
+    triggered -- so callers don't need to know in advance whether a given mode switch needed one.
+    """
+    print("[sweep]   waiting for Orin (reboot, if one was triggered)...", flush=True)
+    t0 = time.time()
+    while time.time() - t0 < SSH_RECONNECT_TIMEOUT_S:
+        if ssh_alive():
+            print(f"[sweep]   ssh back after {time.time() - t0:.0f}s", flush=True)
+            return
+        time.sleep(SSH_RECONNECT_POLL_S)
+    raise RuntimeError(f"Orin ssh did not come back within {SSH_RECONNECT_TIMEOUT_S}s")
+
+
 def set_power_mode(mode_name: str, mode_id: int, password: str) -> None:
-    """Switch nvpmodel to the given mode, lock clocks with jetson_clocks, verify, and settle."""
+    """Switch nvpmodel to the given mode, lock clocks with jetson_clocks, verify, and settle.
+
+    Some transitions change the online-CPU-core count (`/etc/nvpmodel.conf`: MAXN/MODE_50W=10 cores,
+    MODE_30W=8, MODE_15W=4), which this nvpmodel build (1.1.4) requires a REBOOT to apply -- confirmed
+    empirically 2026-08-24 (MAXN->MODE_30W hung on an interactive Y/N reboot prompt with no stdin left
+    to answer it; `nvpmodel -m 2 --force` instead auto-rebooted cleanly, board back in ~49s). Always
+    uses --force and polls for ssh to return: for a same-core-count transition (e.g. MAXN<->MODE_50W)
+    no reboot happens and the poll succeeds on its first attempt, so this code path doesn't need to
+    know in advance which transitions need a reboot.
+    """
     print(f"[sweep] switching to {mode_name} (id={mode_id})...", flush=True)
-    r = sudo_ssh(f"nvpmodel -m {mode_id}", password, timeout=30)
-    if r.returncode != 0:
-        raise RuntimeError(f"nvpmodel -m {mode_id} failed (exit {r.returncode}): {r.stderr}")
+    q0 = ssh("nvpmodel -q", timeout=10)
+    if mode_name in q0.stdout:
+        print(f"[sweep]   already at {mode_name}", flush=True)
+    else:
+        r = None
+        try:
+            r = sudo_ssh(f"nvpmodel -m {mode_id} --force", password, timeout=20)
+        except subprocess.TimeoutExpired:
+            print(
+                "[sweep]   nvpmodel --force: local ssh timeout (likely mid-reboot disconnect)",
+                flush=True,
+            )
+        if r is not None:
+            print(
+                f"[sweep]   nvpmodel --force: exit={r.returncode} stdout={r.stdout.strip()!r}",
+                flush=True,
+            )
+        wait_for_reboot()
+
     r = sudo_ssh("jetson_clocks", password, timeout=60)
     if r.returncode != 0:
         raise RuntimeError(f"jetson_clocks failed (exit {r.returncode}): {r.stderr}")

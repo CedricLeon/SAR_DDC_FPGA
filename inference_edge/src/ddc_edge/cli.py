@@ -214,8 +214,10 @@ def cmd_compress(args: argparse.Namespace) -> None:
         f"nn={nn_ms / max(n_patches, 1):.3f} entropy={entropy_ms / max(n_patches, 1):.3f}"
     )
     if power_result:
+        compute_w = power_result.get("avg_power_w_compute_only")
+        compute_str = f" ({compute_w:.2f} W compute-only)" if compute_w is not None else ""
         print(
-            f"  [power:{power_result['source']}] {power_result['avg_power_w']:.2f} W | "
+            f"  [power:{power_result['source']}] {power_result['avg_power_w']:.2f} W total{compute_str} | "
             f"{power_result['energy_j']:.1f} J | "
             f"{power_result['energy_j'] / n_patches * 1000:.3f} mJ/patch"
         )

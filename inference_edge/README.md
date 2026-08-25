@@ -59,6 +59,13 @@ defaulted to `MODE_30W`, not `MAXN`, after a fresh flash). Set with `sudo nvpmod
 usually mode 0 — confirm via `/etc/nvpmodel.conf`), then `sudo jetson_clocks` to lock clocks at that
 mode's ceiling (Jetson boards can still clock down within a mode when idle otherwise).
 
+Switching to/from a mode that changes the online-CPU-core count (`MODE_30W`/`MODE_15W` vs. `MAXN`/
+`MODE_50W` — see `/etc/nvpmodel.conf`) triggers a **reboot** on this L4T's nvpmodel build (1.1.4):
+plain `nvpmodel -m <id>` will prompt `DO YOU WANT TO REBOOT NOW?` interactively (fine in a live shell —
+just answer `yes`); over SSH non-interactively it hangs/errors instead. Use `nvpmodel -m <id> --force`
+to auto-reboot without the prompt (board back in ~50s) — see
+`scripts/evaluation/jetson_power_arch_sweep.py` for a script that already handles this.
+
 **Deploying to a new board** (no script yet — this is the manual recipe, worth scripting if it becomes
 routine): rsync `.project-root`, `src/`, `context/`, `inference_edge/`,
 `results/fpga/<chosen_model>/manifest.json`, the target checkpoint's `.hydra/config.yaml` +
@@ -137,24 +144,9 @@ unlike any of Orin's rails) — `power.py`'s parser and rail policy now handle t
 `_RAIL_POLICY` in that file), but Thor's specific policy entry is informed by only one live capture and
 is **not independently verified** the way Orin's is — don't trust it blindly when Thor work resumes.
 
-## Status (Orin, `SHyp-relu_s0_L20_pt`)
+## Status
 
-Production run (`MODE_30W`, overlap=2, full scene) — see `docs/onboard_pipeline.md` §12 for the table
-**and the audit correction**: the raw `avg W` comparison there is not apples-to-apples (Jetson's number
-sums a board-I/O rail the FPGA's own number excludes — scope-matched it's 60% of the FPGA's, not
-"~1%"), and `patch/s` is likely understated since the run wasn't at confirmed `MAXN`. Don't quote the
-old "~1%" figure. Quality verified against MERLIN GT (overlap=0, full 7,482-patch coverage, decoded
-on-device per the note above): **PSNR 28.05 ± 5.24 dB, SSIM 0.8144 ± 0.1055** — consistent with the
-neighboring FP/ResSHyp λ=20 reference numbers. Visual crop comparison
-(`scripts/evaluation/jetson_vs_fpga_crop.py`) confirms the same qualitatively — see
-`results/benchmark_jetson/orin/jetson_vs_fpga_vs_merlin_crop.png`.
-
-**Not yet done**: re-run at confirmed `MAXN` (now logged, see below); decide how to present the power
-comparison (scope-matched `VDD_GPU_SOC+VDD_CPU_CV` = 5.93 W is now what `avg_power_w` reports by
-default on Orin, per-rail breakdown always included); Thor (see above, deferred); then a 4-arch ×
-power-mode sweep. **Done**: `power.py` now applies a per-board rail policy instead of blindly summing
-everything tegrastats reports (`_RAIL_POLICY`, keyed by SoC compatible string) — Orin's policy is
-verified, Thor's is a documented best-guess pending real Thor work. The independent audit that produced
-the corrections above is done (see `docs/onboard_pipeline.md` §12) — `StageTimer`'s methodology itself
-is validated (cross-checked against independent `torch.cuda.Event` timers, timer overhead and observer
-effects both confirmed negligible).
+Full 4-arch × 4-power-mode sweep done and board-verified (all 4 λ=20/relu archs × `MAXN`/`MODE_50W`/
+`MODE_30W`/`MODE_15W`, full scene, `overlap=2`) — results table, patterns, and remaining TODOs (Thor,
+per-arch quality sweep) → `docs/onboard_pipeline.md` §12. Quality (PSNR/SSIM vs MERLIN GT) verified for
+`SHyp-relu_s0_L20_pt` only so far — same section.

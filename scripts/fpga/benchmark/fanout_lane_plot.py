@@ -40,7 +40,12 @@ COLORS = {"FP": "#1f77b4", "SHyp": "#d62728", "ResFP": "#2ca02c", "ResSHyp": "#9
 MARKERS = {
     a: "o" for a in ("FP", "SHyp", "ResFP", "ResSHyp")
 }  # color-only per arch (uniform marker)
-OP = {"FP": 64, "SHyp": 48, "ResFP": 6, "ResSHyp": 24}  # operating point = throughput peak (§10)
+OP = {
+    "FP": 32,
+    "SHyp": 24,
+    "ResFP": 6,
+    "ResSHyp": 20,
+}  # operating point = KNEE (smallest lane within 1% of the warm peak; DATE'27 basis, §5)
 
 
 def series(arch: str, seed: int = 0, lam: int = 20):
@@ -142,7 +147,7 @@ def main():
             markeredgewidth=0.6,
         )
     )
-    labels.append("peak throughput")
+    labels.append("operating point (knee)")
     fig.tight_layout(rect=(0, 0.05, 1, 1))
     fig.legend(
         handles,
@@ -155,7 +160,8 @@ def main():
     )
     out = STREAM / "fanout_lane_scaling_4arch.png"
     fig.savefig(out, dpi=140)
-    print(f"-> {out.relative_to(REPO_ROOT)}")
+    fig.savefig(out.with_suffix(".pdf"))
+    print(f"-> {out.relative_to(REPO_ROOT)} (+ .pdf)")
 
 
 if __name__ == "__main__":

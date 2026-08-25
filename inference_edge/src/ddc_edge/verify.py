@@ -1,6 +1,6 @@
 """Verification: decode a `.ddc` this pipeline produced and score it against a reference.
 
-Deliberately narrow scope for tonight: verification `.ddc` runs use `overlap=0` (the plain snap grid,
+Deliberately narrow scope: verification `.ddc` runs use `overlap=0` (the plain snap grid,
 `src/utils/tiling.make_offsets` with `stride=patch`) so patch index `k` lines up 1:1, row-major, with
 the pre-computed MERLIN full-scene ground-truth patch stacks already cached for the E1 symmetrization
 study (`data/cache/symstudy/*_merlin_gt.npy`, `[n, 256, 256]`) — no need to regenerate MERLIN GT or

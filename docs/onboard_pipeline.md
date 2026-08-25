@@ -588,76 +588,67 @@ first-pass feel-only plots, superseded by the manuscript figures.
 
 ## 12. Jetson embedded-GPU baseline (N2)
 
-**Status: implemented, first Orin numbers, quality spot-checked — a naive, unoptimized baseline by
-design** (mirrors the FPGA's `seq` mode: no threading, no fan-out, no DPU-style placement — not a
-re-run of the systems-engineering ladder on different silicon). Supplies the recognisable `N× vs a
-named baseline` DATE expects. **→ main.tex §eval + abstract.**
+**Status: implemented, board-verified across the full 4-arch × 4-power-mode matrix, quality spot-
+checked.** A naive, unoptimized baseline by design (mirrors the FPGA's `seq` mode: no threading, no
+fan-out, no DPU-style placement — not a re-run of the systems-engineering ladder on different silicon).
+Supplies the recognisable `N× vs a named baseline` DATE expects. **→ main.tex §eval + abstract.**
 
-Code, environment setup, deployment recipe, and verification methodology (including a cross-GPU decode
-gotcha worth knowing before touching this again) → `inference_edge/README.md`. Package =
-`inference_edge/` (`ddc-edge` CLI). **Independently audited** — see the audit summary below the table;
-two of its findings materially change how the row below should be read, so **the table's `avg W` /
-`J/patch` columns are not directly comparable as printed** (kept for provenance, corrected reading
-alongside them). `patch/s` is also likely understated (see below) — a re-run is queued, not done yet.
+Code, environment setup, deployment recipe, and known quirks (incl. a cross-GPU decode gotcha) →
+`inference_edge/README.md`. Package = `inference_edge/` (`ddc-edge` CLI). Sweep orchestration →
+`scripts/evaluation/jetson_power_arch_sweep.py` (handles the nvpmodel mode-switch reboot —
+`MODE_30W`/`MODE_15W` disable CPU cores relative to `MAXN`/`MODE_50W`, which this L4T's nvpmodel build
+requires a reboot to apply); table built by `scripts/evaluation/jetson_power_arch_table.py`.
 
-**Results — production run** (Orin, `SHyp-relu_s0_L20_pt`, `MODE_30W` not `MAXN`, overlap=2, full scene,
-7,540 patches — grid count matches §3 exactly):
+**Results — full sweep** (Orin, all 4 λ=20/relu archs, overlap=2, full scene, 7,540 patches — grid count
+matches §3 exactly). `g_a ms/patch` covers both real+imag calls per patch (single timer scope). `latency
+ms` = 1000/patch_s, the full per-patch figure since the pipeline is strictly sequential (no overlap
+between patches). `W (total)` is the whole-board figure (every tegrastats rail — the headline figure for
+now, project decision 2026-08-24); `W (compute)` excludes the board-I/O/DRAM rail (`VIN_SYS_5V0`),
+comparable to the FPGA's own peripherals-excluded convention — this is the figure main.tex's cross-
+platform table uses. `mJ/patch` is computed from the total.
 
-| | FPGA SHyp `seq` (INT8, ZCU102) | Jetson Orin (FP32, MODE_30W) |
-| --- | --- | --- |
-| patch/s | 29.5 | 29.21 (likely understated — see below) |
-| avg W | 9.93 (chip only: PL+PS) | 9.91 total board (**5.93 scope-matched** — see below) |
-| J/patch | 0.336 | 0.339 (inherits the avg-W scope issue) |
-| bpp | 0.1474 | 0.1416 |
-| compression ratio (32-bit raw ÷ bpp) | 217× | 226× |
+| Mode | Arch | g_a ms/patch | patch/s | latency ms | W (total) | W (compute) | mJ/patch |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| MAXN | FP | 2.94 | 109.23 | 9.15 | 19.52 | 14.85 | 177.7 |
+| MAXN | ResFP | 11.08 | 57.18 | 17.49 | 32.02 | 26.52 | 558.5 |
+| MAXN | SHyp | 2.93 | 39.84 | 25.10 | 16.30 | 11.87 | 408.4 |
+| MAXN | ResSHyp | 11.13 | 29.97 | 33.36 | 24.00 | 19.10 | 799.9 |
+| MODE_50W | FP | 4.13 | 76.14 | 13.13 | 12.80 | 8.37 | 167.5 |
+| MODE_50W | ResFP | 16.45 | 39.19 | 25.52 | 18.12 | 13.16 | 461.9 |
+| MODE_50W | SHyp | 4.19 | 27.89 | 35.86 | 10.86 | 6.78 | 388.8 |
+| MODE_50W | ResSHyp | 16.49 | 20.76 | 48.17 | 14.15 | 9.71 | 680.9 |
+| MODE_30W | FP | 5.37 | 74.44 | 13.43 | 11.89 | 7.48 | 159.1 |
+| MODE_30W | ResFP | 21.45 | 33.84 | 29.55 | 15.60 | 10.77 | 460.2 |
+| MODE_30W | SHyp | 5.36 | 29.28 | 34.15 | 10.53 | 6.38 | 359.0 |
+| MODE_30W | ResSHyp | 21.49 | 19.94 | 50.15 | 13.04 | 8.58 | 653.5 |
+| MODE_15W | FP | 7.96 | 49.37 | 20.25 | 8.66 | 4.77 | 175.2 |
+| MODE_15W | ResFP | 31.86 | 22.63 | 44.19 | 10.85 | 6.66 | 479.0 |
+| MODE_15W | SHyp | 7.94 | 19.38 | 51.61 | 7.65 | 3.99 | 394.2 |
+| MODE_15W | ResSHyp | 31.96 | 13.16 | 76.00 | 9.09 | 5.19 | 690.5 |
 
-Source: `results/benchmark_stream/SHyp-relu_s0_L20_pt/seq_warm.json` vs
-`results/benchmark_jetson/orin/production_overlap2.json`. bpp/compression-ratio are unaffected by
-either audit finding below (pure encode-size facts, no timing or power involved).
+Source: `results/benchmark_jetson/orin/power_sweep/<arch>_<mode>.json` (`summary.csv` alongside).
+Compress-only sweep — no per-mode quality/verify pass (quality below is SHyp only).
 
-**Audit findings (full report: [[project_jetson_edge_pipeline]] memory / ask to see it) — two that
-change the table:**
+Two patterns worth flagging, not fully explained: **(1)** SHyp is consistently slower than ResFP despite
+ResFP's `g_a` costing ~3.8× more — the hyperprior's extra `h_a`/`h_s` plus a second entropy-coding pass
+(EB for `z`, GC for `y`, vs. FP/ResFP's single EB pass) apparently outweighs one heavy `g_a`. **(2)**
+`mJ/patch` is U-shaped for most archs, bottoming around `MODE_30W` rather than falling monotonically
+with the power cap — at `MODE_15W` throughput drops faster than power draw, so the most power-
+constrained mode is *not* the most energy-efficient one.
 
-- **Power scope mismatch.** The Jetson `avg W` sums three rails including `VIN_SYS_5V0`, which NVIDIA's
-  own [Jetson Linux Developer Guide](https://docs.nvidia.com/jetson/archives/r39.2/DeveloperGuide/SD/PlatformPowerAndPerformance/JetsonOrinNanoSeriesJetsonOrinNxSeriesAndJetsonAgxOrinSeries.html)
-  (r39.2, this exact board) confirms is a **board I/O + DRAM rail** (HDMI/USB/UFS/eMMC/DDR) — the
-  Jetson analogue of what the FPGA's number *explicitly excludes* (its own `peripherals`/`MGT` groups
-  are left out of `MPSoC`). Scope-matched to `VDD_GPU_SOC + VDD_CPU_CV` only: **5.93 W, i.e. 60% of the
-  FPGA's 9.93 W — not "within ~1%."** The previous "~1%" reading in this doc and the README was a real
-  error, not a rounding nuance — corrected here.
-- **Throughput likely understated.** A controlled re-measurement at confirmed-locked `MAXN` ran NN
-  inference 1.6–1.8× faster than the `29.21 patch/s` row above. Leading explanation: the production run
-  really was at `MODE_30W` (consistent with this doc's own contemporaneous notes), and clock state
-  simply wasn't recorded in the output JSON, so it couldn't be verified after the fact — not a bug in
-  the pipeline itself. Fix identified and applied: `ddc-edge` now records `nvpmodel -q` output per run
-  (§12.5), so this ambiguity can't recur.
-- Timing methodology otherwise validated: `StageTimer` cross-checked against independent
-  `torch.cuda.Event` timers (5.2% agreement), timer overhead confirmed negligible (~1–2% of the
-  smallest stage), `--power` sampling confirmed not to perturb throughput (0.34%). The warmup effect
-  from last night is real but is a single ~132ms spike on patch 0 (PTQ/JIT compilation — Orin's compute
-  capability isn't in this torch build's precompiled kernel list), not a gradual ramp — though it
-  doesn't fully arithmetically reconcile with the original 51-patch smoke test's 27ms/patch figure,
-  flagged as unresolved rather than forced to fit.
-- **Thor portability claim doesn't hold today.** No internet access on Thor's network segment (confirmed
-  at the TCP level, not just DNS), `python3 -m venv` needs a workaround (`ensurepip` isn't installed),
-  and — the real blocker — **Orin's exact torch build doesn't import on Thor**: a pinned
-  `nvidia-nccl-cu13` dependency has no matching aarch64 wheel, an ELF-level ABI gap (`undefined symbol:
-  ncclCommResume`), not a config mistake. A downgraded torch pin (`2.9.1+cu130`) looks compatible by
-  wheel metadata but wasn't empirically confirmed (audit ran out of local disk space mid-check). Also
-  found: Thor's `tegrastats` rail format differs from Orin's (2-value fields, not 3; a `VIN` rail that
-  — unlike Orin's three siblings — genuinely *is* a parent/superset of the others) — `power.py`'s
-  current parser would silently collect zero samples there, not double-count, but it's not the
-  "generic" behavior the code claims either.
+**Quality** (SHyp only — no per-arch quality sweep yet): verified against MERLIN GT (overlap=0, full
+7,482-patch coverage, decoded on-device — see the cross-GPU decode note in the README): **PSNR 28.05 ±
+5.24 dB, SSIM 0.8144 ± 0.1055**, consistent with the neighboring FP/ResSHyp λ=20 reference numbers.
+Visual crop comparison → `results/benchmark_jetson/orin/jetson_vs_fpga_vs_merlin_crop.png`.
+
+Timing/power methodology independently audited (`StageTimer` cross-checked against `torch.cuda.Event`,
+timer overhead and `--power`'s own perturbation both confirmed negligible) — full report:
+[[project_jetson_edge_pipeline]] memory.
 
 **Remaining:**
 
-- Re-run production at confirmed `MAXN` (now logged) — the numbers to actually cite once done.
-- Decide how to present the power comparison going forward (scope-matched number vs. a permanent
-  dual-scope caveat) — open, not yet decided.
-- `power.py`'s rail-summing needs a per-board decision, not a blind sum, before it's trustworthy off Orin.
-- Thor's torch/NCCL gap needs a real decision (pin an older torch across all Jetson targets, wait for
-  upstream aarch64 parity, or vendor NCCL) before portability work continues.
-- Then: 4-arch × power-mode sweep, mirroring the FPGA's own per-arch coverage.
+- Per-arch quality (PSNR/SSIM) sweep — currently SHyp only.
+- Thor: blocked on a torch/NCCL aarch64 ABI gap, deferred — see `inference_edge/README.md`.
 - TensorRT/FP16 — explicitly out of scope for this baseline, a separate future conversation if wanted.
 
 ---
