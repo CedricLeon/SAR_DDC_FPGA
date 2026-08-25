@@ -269,17 +269,38 @@ time the rest of the doc otherwise cites approximately (plain vs residual `g_a` 
 **Per-subgraph DPU time & efficiency** (vaitrace hardware counter, per DPU core; our canonical DPU-time
 reference — data `results/benchmark_stream/vaitrace/vt_*.txt`, tool details `docs/AMD_Vitis_AI.md`):
 
-| subgraph | WL (GOP) | HW_RT (ms) | SW_RT (ms) | Effic |
-| --- | --- | --- | --- | --- |
-| plain `g_a` (FP, SHyp) | 4.512 | 4.10 | 4.48 | 89.5 % |
-| residual `g_a` (ResFP, ResSHyp) | 39.755 | 33.51 | 35.84 | 96.6 % |
-| `h_a` (hyperprior) | 0.275 | 0.83 | 0.97 | 27.1 % |
-| `h_s` (hyperprior) | 0.176 | 0.52 | 0.62 | 27.8 % |
+| subgraph | WL (GOP) | HW_RT (ms) | SW_RT (ms) | Effic | LdWB (MB) | AvgBw |
+| --- | --- | --- | --- | --- | --- | --- |
+| plain `g_a` (FP, SHyp) | 4.512 | 4.10 | 4.48 | 89.5 % | 1.175 | 1.61 GB/s |
+| residual `g_a` (ResFP, ResSHyp) | 39.755 | 33.51 | 35.84 | 96.6 % | 3.520 | 0.65 GB/s |
+| `h_a` (hyperprior) | 0.275 | 0.83 | 0.97 | 27.1 % | 4.688 | 5.74 GB/s |
+| `h_s` (hyperprior) | 0.176 | 0.52 | 0.62 | 27.8 % | 3.001 | 6.01 GB/s |
 
 **HW_RT** = pure DPU compute (hardware counter); **SW_RT** = the `run()` span (dispatch + int8 requant
 around it); **Effic** = achieved GOP/s ÷ 1229 — the big convs fill the DPU, the tiny `h_a`/`h_s` cannot.
 HW_RT is **lane-stable**: flat to 64 lanes for residual `g_a`, a bounded +8 % step for plain `g_a`; our
 trace `e` matches SW_RT to ~2 %.
+
+**`h_a`/`h_s` are weight-load-bound, not DDR-bound.** **LdWB** (external-memory weight+bias read, MB)
+is 97–99 % of their total DDR traffic (vs 16 % for residual `g_a`, which is feature-map-dominated —
+`LdFM`+`StFM` ≫ `LdWB` there); the two runs above (SHyp, ResSHyp) measure the same `h_a`/`h_s` weights
+and agree to <0.2 %.
+
+The roofline figure (`LaTeX/SAR_DDC_FPGA_DATE27/figures/scripts/roofline_subgraph.py`) plots this as a
+third ceiling, **measured DPU weight-load bandwidth = 6.11 GB/s** — `achieved GOP/s ÷ AI` for `h_a`/`h_s`,
+i.e. the same static xmodel byte-basis the figure's x-axis already uses (not vaitrace's raw `AvgBw` of
+5.7–6.0 GB/s above, which uses a different, dynamic byte count and would put the points slightly above
+the line). That's only ~34–36 % of the 17.06 GB/s DDR peak, and below even the tighter **9.6 GB/s
+per-core AXI interface peak** (2× 128-bit `M_AXI_DATA` ports per DPUCZDX8G core at the 300 MHz DPU
+clock, PG338 — the true single-core bound, since one core can't exceed its own interface width
+regardless of DDR headroom). The figure shows both the DDR and AXI ceilings, pending a decision on
+which to report.
+
+This number is **single-core, uncontended (L1)** — under multi-lane fan-out it degrades and varies by
+core: at 6 lanes, `h_a`'s bandwidth ranges 2.2–6.0 GB/s across the 3 cores (vs. 5.7 GB/s at L1), with
+efficiency as low as 10.6 % (`results/benchmark_stream/vaitrace/vt_ResSHyp_L{1,3,6}.txt`). Not a fixed
+hardware constant — the best-case rate for this access pattern (many small, poorly-reused weight
+tensors) in isolation.
 
 **Why the occupancy stays runner-span.** It uses `e` = the `run()` span (≈ SW_RT), not HW_RT. Charging
 `e` = HW_RT would count the per-call CPU glue (SW_RT−HW_RT = **8.4 %** plain `g_a`, **6.5 %** residual
