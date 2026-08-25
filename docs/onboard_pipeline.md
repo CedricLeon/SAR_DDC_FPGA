@@ -11,9 +11,12 @@
 Status: **implemented + measured.** The streaming compressor, the parallel/I/O optimizations (§4), the
 DPU fan-out core-scaling (§5–§6), the symmetrization (§7) and overlap (§8) studies, and the full-scene
 throughput/latency/energy sweep (§10) are done and board-verified at the coherent setup (λ=20, overlap
-2, snap grid, four architectures). The Jetson embedded-GPU baseline (N2, §12) has first Orin numbers +
-verified quality; `MAXN` re-run, Thor, and the 4-arch sweep remain (§12.5). Remaining (§13): the CCSDS
-(N5) baseline, the PL resource table (A5), and figure polish. Last updated 2026-08-24.
+2, snap grid, four architectures). The Orin Jetson embedded-GPU baseline (N2, §12) is done and board-verified
+across the full 4-arch × 4-power-mode matrix; a per-arch quality sweep and Thor both remain (§12). The
+classical SAR baseline (N5, §10) is resolved paper-only — no CCSDS standard targets SAR, so the paper
+cites the closest literature instead of reimplementing.
+Remaining (§13): an entropy-coding optimization pass (N6 — partially done, see
+§13), the PL resource table (A5), and figure polish. Last updated 2026-08-25.
 
 ---
 
@@ -574,6 +577,16 @@ with thermal). The full per-rail-group breakdown is in each result JSON.*
   0.156 → **~202× vs raw int16** (9.6 MB `.ddc`); ResSHyp bpp 0.133 → **~237×**. A deliberate rate
   point: λ=1000 buys ~+1.8 dB (FP) / +3.0 dB (ResSHyp) PSNR (§7) at roughly **10× less compression**
   (FP 21×, ResSHyp 26×). Peak DDR ~0.3 GB windowed vs ~3 GB free (§2).
+- **Classical SAR baseline (N5) — paper-only, no reimplementation** (`main.tex` §Background +
+  §Evaluation "SAR Image Compression Baseline"). No CCSDS standard targets SAR, raw or focused: the one
+  study to try applied CCSDS 123.0-B to raw, pre-focusing SIR-C/X-SAR echoes (split into independent
+  real/imag channels), landing in a similar low-single-digit-× regime to BAQ — TerraSAR-X's own onboard
+  codec, 1.3–4× from its 8-bit ADC [Pitz & Miller 2010] — per [Prette, Magli & Bianchi 2019]. Neither
+  transfers cleanly here: that regime is set by raw-echo fidelity requirements the already-focused SLC
+  doesn't have, and neither codec despeckles. The closer reference is Amao-Oliva et al. (2024/2025) —
+  same MERLIN despeckling base — whose MERLIN+JPEG2000 cascade needs ~0.3 bpp on their own TerraSAR-X
+  scene; the operating point above sits at roughly half that bitrate (order-of-magnitude only — different
+  scene, not a controlled comparison).
 - **vs the mission objective** (full derivation → `docs/TerraSAR-X_objective.md`): TSX StripMap produces
   SLC at **211 MB/s** (working point) / 358 MB/s (worst case). One ZCU102 at its best config (FP
   fan-out roof, **51.1 MB/s warm**) is **~7× short of full-duty real-time**, but **meets the
@@ -681,22 +694,20 @@ narrative, and be ready for any experiment to resolve *against* the story. Each 
 manuscript slot it *would* unblock (**→ main.tex …**) purely as navigation, never as a hole that must be
 filled.
 
-**N5 — CCSDS baseline (recognisable ratio).** **→ main.tex §eval + abstract** (alt/additional
-recognizable baseline; disambiguates data- vs model-compression). CCSDS 122.0 is the de-facto onboard
-*image* codec (wavelet + bit-plane — the space-grade JPEG2000-lite, widely in rad-hard hardware): the
-recognisable baseline a DATE/space reviewer knows. However, it probably does not support SAR SLC data
-compression effectively out-of-the-box — needs deep checks. A literature comparison is cheap; running it
-on the Hamburg tile is more work (open implementations exist). **Metric caveat:** CCSDS-122 does not
-despeckle, so DDC wins on rate partly *because* it removes high-entropy speckle — a fair comparison needs
-a common reference. First step: characterise CCSDS-122 RD behaviour from the literature, then decide
-paper-only vs reimplemented. Cost: low (paper) to medium (run).
-
-**N6 (recently user-added) - Optimize the Entropy coding?** Discuss and explore how we could optimize the entropy coding. One idea out of the blue could be to do vectorized table lookup. Read the code in detail and maybe time where most of the time is spent in EB or GC to find potential optimization axes.
+**N6 — Optimize the entropy coding (partially done).** Profiling is done and one optimization from it is
+already implemented + committed (`4ddbcc8`: flattened CDF table + a precomputed reciprocal per table
+entry, replacing a division). Temporary notes still exist: **`docs/tmp_entropy-coding_opt_opportunities.md`**.
 
 **A5 — Hardware platform details (HW-community venue).** **→ main.tex §Background/Setup (platform
 table).** Report the accelerator's internal design: DPU `3× B4096 @ 300 MHz` (check whether the DSPs run
 at double clock), PS DDR4 ≈17 GB/s, ZU9EG (base facts in §2), **plus PL resource utilisation**
 (LUT/FF/BRAM/URAM/DSP) and clocks from the Vivado/DPU report — as a short platform table in `main.tex`.
+
+**N7 — Full result re-verification pass (pre-submission).** Every number that goes in the paper gets
+recomputed from a clean, current-`HEAD` sweep before submission — development happened too
+unsequentially (interleaved commits, stashes, branch swaps) to trust that today's `results/` trees are
+all mutually consistent with each other or with the current codebase. Not urgent: the current push is
+the draft/skeleton with figures and tables; this is the last pass, right before submission.
 
 ### Deferred / optional
 
