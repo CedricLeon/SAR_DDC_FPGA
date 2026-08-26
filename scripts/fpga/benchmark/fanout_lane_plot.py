@@ -36,7 +36,10 @@ from matplotlib.lines import Line2D
 STREAM = REPO_ROOT / "results" / "benchmark_stream"
 LANES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 20, 24, 32, 48, 64, 96, 128]
 TICKS = [1, 2, 3, 4, 6, 9, 12, 16, 24, 32, 48, 64, 96, 128]
-COLORS = {"FP": "#1f77b4", "SHyp": "#d62728", "ResFP": "#2ca02c", "ResSHyp": "#9467bd"}
+# Same 4 colors as the optimization-ladder/stacked-time DATE'27 figures (light =
+# factorized, intense = hyperprior; blue = CPU-bound pair, orange = DPU-bound pair).
+COLORS = {"FP": "#82B8DC", "SHyp": "#2E86C1", "ResFP": "#F2B479", "ResSHyp": "#E67E22"}
+DISPLAY = {"FP": "FP", "SHyp": "SH", "ResFP": "ResFP", "ResSHyp": "ResSH"}
 MARKERS = {
     a: "o" for a in ("FP", "SHyp", "ResFP", "ResSHyp")
 }  # color-only per arch (uniform marker)
@@ -73,14 +76,15 @@ def _peak(ax, arch, xs, ys, fmt, dy):
     if not len(hit):
         return
     x, y = OP[arch], ys[hit[0]]
-    ax.plot(x, y, marker="*", markersize=12, color=COLORS[arch], mec="black", mew=0.6, zorder=6)
+    ax.plot(x, y, marker="*", markersize=9, color=COLORS[arch], mec="black", mew=0.6, zorder=6)
     ax.annotate(
         fmt.format(y),
         (x, y),
         textcoords="offset points",
         xytext=(0, dy),
         ha="center",
-        fontsize=7,
+        va="bottom" if dy >= 0 else "top",
+        fontsize=9,
         color="black",
         zorder=7,
     )
@@ -91,24 +95,35 @@ def main():
     fig, (ax_t, ax_o, ax_e) = plt.subplots(
         3, 1, sharex=True, figsize=(9.2, 9.6), gridspec_kw={"height_ratios": [2.6, 2.0, 1.5]}
     )
+    # Per-arch label offset overrides where the default collides with a neighbor;
+    # every arch not listed keeps the default dy passed to _peak below. Distances
+    # pulled in close to the star (roughly half the original 11/12pt) now that the
+    # annotation font is bigger; FP's DPU-occupancy offset is left exactly as-is.
+    ENERGY_DY = {"ResFP": -7}  # below instead of above
+    DPU_OCC_DY = {"SHyp": -7, "FP": 2.75}  # SH below; FP even closer (half of 5.5)
+    # FP's own DPU-busy/CPU-usr occupancy values sit only 10pts apart (68/78%), so
+    # tightening its CPU-usr label the same as the others would collide with the
+    # (untouched) DPU-busy one right below -- kept wider for this arch only.
+    CPU_OCC_DY = {"ResFP": -7, "FP": 10}
+
     for arch, color in COLORS.items():
         mk = MARKERS[arch]
         xs, mean, std, jp = series(arch)
         if len(xs):
-            ax_t.plot(xs, mean, "-", marker=mk, color=color, label=arch, markersize=4)
+            ax_t.plot(xs, mean, "-", marker=mk, color=color, label=DISPLAY[arch], markersize=4)
             ax_t.fill_between(xs, mean - std, mean + std, color=color, alpha=0.18, lw=0)
             ax_e.plot(xs, jp, "-", marker=mk, color=color, markersize=4)
-            _peak(ax_t, arch, xs, mean, "{:.0f}", 12)
-            _peak(ax_e, arch, xs, jp, "{:.2f}", 11)
+            _peak(ax_t, arch, xs, mean, "{:.0f}", 7)
+            _peak(ax_e, arch, xs, jp, "{:.2f}", ENERGY_DY.get(arch, 7))
         ox, om, olo, ohi = occupancy_series(arch)
         if len(ox):
             ax_o.plot(ox, om, "-", marker=mk, color=color, markersize=4)
             ax_o.fill_between(ox, olo, ohi, color=color, alpha=0.18, lw=0)
-            _peak(ax_o, arch, ox, om, "{:.0f}%", 11)
+            _peak(ax_o, arch, ox, om, "{:.0f}%", DPU_OCC_DY.get(arch, 7))
         cx, cu = cpu_occupancy_series(arch)  # CPU %usr (of 4 A53), dashed
         if len(cx):
             ax_o.plot(cx, cu, "--", color=color, lw=1.5, alpha=0.85)
-            _peak(ax_o, arch, cx, cu, "{:.0f}%", 11)
+            _peak(ax_o, arch, cx, cu, "{:.0f}%", CPU_OCC_DY.get(arch, 7))
 
     for ax in (ax_t, ax_o, ax_e):
         ax.grid(alpha=0.3, which="both")
@@ -117,9 +132,9 @@ def main():
     ax_t.set_xscale("log", base=2)
     ax_e.set_xticks(TICKS)
     ax_e.set_xticklabels(TICKS, fontsize=8)
-    ax_e.set_xlabel("CPU worker threads, log2 scale")
-    ax_t.set_ylabel("throughput [patch/s]")
-    ax_o.set_ylabel("occupancy [%]")
+    ax_e.set_xlabel("CPU worker threads (log2 scale)", fontsize=11)
+    ax_t.set_ylabel("throughput [patch/s]", fontsize=11)
+    ax_o.set_ylabel("occupancy [%]", fontsize=11)
     ax_o.set_ylim(0, 116)
     ax_o.legend(
         handles=[
@@ -127,11 +142,13 @@ def main():
             Line2D([0], [0], color="#555", ls="--", lw=1.8, label="CPU %usr"),
         ],
         loc="upper left",
-        fontsize=8,
+        bbox_to_anchor=(0.01, 0.83),  # top of box just under the 100% line, no overlap
+        borderaxespad=0,
+        fontsize=10,
         framealpha=0.9,
         handlelength=2.2,
     )
-    ax_e.set_ylabel("energy [J/patch]")
+    ax_e.set_ylabel("energy [J/patch]", fontsize=11)
     ax_t.set_ylim(top=ax_t.get_ylim()[1] * 1.08)  # headroom so the peak label clears the top
 
     handles, labels = ax_t.get_legend_handles_labels()
@@ -141,22 +158,22 @@ def main():
             [0],
             linestyle="none",
             marker="*",
-            markersize=13,
+            markersize=10,
             markerfacecolor="#555",
             markeredgecolor="black",
             markeredgewidth=0.6,
         )
     )
-    labels.append("operating point (knee)")
+    labels.append("knee")
     fig.tight_layout(rect=(0, 0.05, 1, 1))
     fig.legend(
         handles,
         labels,
         loc="lower center",
         ncol=len(labels),
-        fontsize=9,
+        fontsize=11,
         frameon=True,
-        bbox_to_anchor=(0.5, 0.005),
+        bbox_to_anchor=(0.5, 0.02),
     )
     out = STREAM / "fanout_lane_scaling_4arch.png"
     fig.savefig(out, dpi=140)
