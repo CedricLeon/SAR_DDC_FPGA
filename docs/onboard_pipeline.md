@@ -697,6 +697,12 @@ filled.
 **N6 — Optimize the entropy coding (partially done).** Profiling is done and one optimization from it is
 already implemented + committed (`4ddbcc8`: flattened CDF table + a precomputed reciprocal per table
 entry, replacing a division). Temporary notes still exist: **`docs/tmp_entropy-coding_opt_opportunities.md`**.
+**Before submission — fix the toggle, not the algorithm**: entropy-on/off is currently a *commit*-level
+switch (off = build the pre-`4ddbcc8` state, e.g. `324744f`), not a runtime one like every other pipeline
+optimization (`--fanout`/`--prefetch`/`--neon`). Wrap the reciprocal-symbol path behind a real flag (e.g.
+`--entropy`) so both states are reachable from one build — cost real time during the DATE27 ladder-figure
+data collection (surgical revert of `entropy_models.{cpp,hpp}` + `rans/rans_interface_cxx.{cpp,hpp}`,
+rebuild, run, restore, rebuild again, per entropy-off batch), exactly what a flag would make trivial.
 
 **A5 — Hardware platform details (HW-community venue).** **→ main.tex §Background/Setup (platform
 table).** Report the accelerator's internal design: DPU `3× B4096 @ 300 MHz` (check whether the DSPs run
