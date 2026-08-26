@@ -11,7 +11,9 @@ first lane to finish]`` (trims pipeline fill + drain). ``busy_core = union / win
 
 The min/median/max of the 1-lane distribution give a robust ``[lo, hi]`` band on the occupancy (the
 distributions are tight, so the band is narrow). ``occupancy_series`` feeds the fan-out lane-scaling
-figure (``fanout_lane_plot.py``); ``__main__`` prints the per-core table.
+figure (``LaTeX/SAR_DDC_FPGA_DATE27/figures/scripts/fanout_lane_plot.py``, imported via an explicit
+sys.path insert since that script now lives in the manuscript repo) and, in this repo,
+``fanout_cpu_fp.py``; ``__main__`` prints the per-core table.
 
     conda activate DDC_FPGA
     python scripts/fpga/benchmark/fanout_occupancy.py

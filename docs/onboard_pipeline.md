@@ -144,11 +144,11 @@ would fight for the same 3 cores), and is byte-identical to `seq` (§4 gate). Pl
 ```bash
 python scripts/fpga/benchmark/stream_fanout_sweep.py --archs FP,SHyp,ResFP,ResSHyp --lambdas 20 \
     --lanes 1,2,3,4,5,6,7,8,9,10,12,14,16,20,24,32,48,68,96,128     # full lane sweep (iters=1 suffices — see below)
-python scripts/fpga/benchmark/fanout_lane_plot.py    # -> results/benchmark_stream/fanout_lane_scaling_4arch.png
+python LaTeX/SAR_DDC_FPGA_DATE27/figures/scripts/fanout_lane_plot.py    # -> LaTeX/SAR_DDC_FPGA_DATE27/figures/images/lane_scaling.png
 ```
 
 **Lane scaling.** Warm throughput / DPU + CPU occupancy / energy vs lane count (λ=20) are the three
-panels of `fanout_lane_scaling_4arch.png`; the per-lane cells (patch/s, J/patch, power, `g_a` ms/call)
+panels of `lane_scaling.png`; the per-lane cells (patch/s, J/patch, power, `g_a` ms/call)
 live in the result JSONs (`results/benchmark_stream/<arch>-relu_s0_L20_pt/p0_t{N}_fo_pf_neon_warm.json`)
 and the tabulated `fanout_full_table.md`.
 **Every arch roofs, and the roof height is set by the binding resource** (§6): the DPU-bound archs
@@ -598,13 +598,15 @@ with thermal). The full per-rail-group breakdown is in each result JSON.*
 ## 11. Figures
 
 Manuscript figures live in the LaTeX repo (`LaTeX/SAR_DDC_FPGA_DATE27/figures/scripts/`: system
-dataflow, stacked time-per-patch, overlap, optimization ladder). The fan-out figures are built here:
+dataflow, stacked time-per-patch, overlap, optimization ladder, fan-out lane scaling, FP CPU-time stack).
+`fanout_lane_plot.py` (lane-scaling figure `lane_scaling.png`: throughput / occupancy / energy vs lanes;
+occupancy panel: **solid = DPU busy, dashed = CPU %usr** ★ = operating point) lives there too, but still
+depends on this repo's `fanout_occupancy.py` (below) for its DPU/CPU occupancy series — reached via an
+explicit `sys.path` insert rather than a package install, since the two repos aren't otherwise linked.
 
-- **`fanout_lane_plot.py`** → the lane-scaling figure `fanout_lane_scaling_4arch.png` (throughput /
-  occupancy / energy vs lanes; occupancy panel: **solid = DPU busy, dashed = CPU %usr** ★ = operating point).
-  CPU curves via `fanout_occupancy.cpu_occupancy_series` (mpstat, `results/benchmark_stream/cpu_probe/`).
 - **`fanout_occupancy.py`** → per-core DPU occupancy from the `--trace` CSVs (§6 method + the
-  `[t1 − e, t1]` reconstruction); `__main__` prints the per-core table.
+  `[t1 − e, t1]` reconstruction); `__main__` prints the per-core table. Also used directly (same repo)
+  by `fanout_cpu_fp.py`.
 - **`fanout_cpu_fp.py`** → the FP CPU-binding figure `fp_cpu_binding.png` (throughput / CPU-vs-DPU
   occupancy / user-CPU-per-patch vs lanes); reads `results/benchmark_stream/cpu_probe/{mpL,spL}_*.log`
   (`mpstat`/`pidstat`, §6 + §10).
