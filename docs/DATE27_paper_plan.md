@@ -188,25 +188,27 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
 
 ### 4.1 Phase 0 — measurement campaign & story-risk retirement (board; all 🔄)
 
-- [ ] **P0.0 `--entropy` runtime flag** (N6's remainder; blocks P0.2) — wrap the `4ddbcc8` rANS
+- [x] **P0.0 `--entropy` runtime flag** (N6's remainder; blocks P0.2) — wrap the `4ddbcc8` rANS
   optimization behind a runtime flag like the other optimizations (surgical area:
   `entropy_models.{cpp,hpp}` + `rans/rans_interface_cxx.{cpp,hpp}`; host edit, board rebuild).
   Verify byte-identity both ways on a small patch subset: flag-on ≡ current `HEAD` output, flag-off
   ≡ the pre-`4ddbcc8` build (e.g. `324744f`).
-- [ ] **P0.1 Pre-flight** 🔄 — board reachable, active λ=20/seed-0 models for all 4 archs
-  deployable, C++ builds from current `HEAD` (with P0.0's flag). Check `stream_pipeline` flags: can we
-  select *naive round-robin* vs *pinned* placement at runtime (needed for r2 vs r3)? If pinned is
-  hardwired, expose the naive path with a minimal flag. Also trace where `stacked_time.pdf` data
-  comes from (`benchmark_hardware` s0 vs stream trace) so P0.2 refreshes that too.
-- [ ] **P0.2 The sweep** 🔄 — this *is* N7 for every streaming number. Per arch (FP, SH, ResFP,
-  ResSH), full scene, λ=20, overlap 2, snap grid, warm read, with power sampling: one run per ladder
-  rung r0–r7 (cumulative configs above). Plus the lane grid for the lane-study figure (existing
-  grid minus 128 L). Outputs → `results/benchmark_stream/` (new timestamped tree; don't overwrite).
-  Also re-collect `benchmark_hardware` s0 per-stage + xdputil peaks if P0.1 shows the stacked-time /
-  Tab. 2 numbers come from there.
+- [ ] **P0.C Results cleanup** — archive + delete the superseded result trees and create
+  `results/date27/` + `MANIFEST.md`, exactly per §4.1a. Runs *before* the sweep so only traceable
+  results exist afterwards.
+- [ ] **P0.1 Pre-flight** 🔄 — board reachable; all 4 archs (λ=20, seed 0) deployable; `make clean`
+  full rebuild of current `HEAD` on the board (incremental builds mis-trigger — board clock unset,
+  see `onboard_pipeline.md` §4); verify `--entropy` works and the naive-placement path is reachable
+  (`lane_major` option in `stream_pipeline.hpp` — confirm its CLI spelling via `--help`; pinned is
+  the default); one smoke run per binary. *(Resolved earlier: `stacked_time.py` reads stages from
+  `benchmark_hardware/<arch>…L1000…/s0_compress.json` — a λ mix E3 fixes at λ=20.)*
+- [ ] **P0.2 The sweep** 🔄 — this *is* N7 for every streaming number. Run E1–E6 from the §4.1a
+  table, arch by arch (deploy → all runs for that arch → next arch), full scene, λ=20, overlap 2,
+  snap grid, warm read, power sampling on. Outputs → `results/date27/` only, one `MANIFEST.md` line
+  per run.
 - [ ] **P0.3 Occupancy checkpoints** 🔄 — CPU-busy% / DPU-busy% at r0, r4, r7 per arch
   (`fanout_occupancy.py` tracing; check it runs on non-fanout configs — if not, stacked-time shares
-  for r0 + traces for r4/r6). Decide: occupancy panel under the ladder vs numbers in text.
+  for r0 + traces for r4/r7). Decide: occupancy panel under the ladder vs numbers in text.
 - [ ] **P0.4 3-core roofline data** 🔄 — vaitrace at each arch's knee operating point (per-core
   counters → aggregate achieved GOP/s per subgraph) + keep the 1-lane uncontended reference.
   Verify the h_a/h_s DDR-collision reading and *where the 2.8× placement number actually comes
@@ -216,6 +218,46 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   0.54 dB, ~1 %, deadline margins) ⇒ **stop, update §4.0 + affected tasks, then continue**.
 - [ ] **P0.6** Fold results into `onboard_pipeline.md` (N7 progress note; any new insight into its
   section).
+
+### 4.1a Cleanup + sweep specification (validated 2026-08-31 — execute exactly, don't improvise)
+
+**Cleanup.** Archive destination: `/mnt/vitisAI/DDC_results_archive/2026-08-31/` (outside the repo;
+NOT `/tmp` — volatile). For each "archive+delete" tree: `tar czf` into the archive, verify the
+tarball lists, then delete the tree from the repo.
+
+| Tree | Treatment |
+| --- | --- |
+| `results/benchmark_stream/` (25 M) | archive + delete (superseded by E1/E2/E4/E5) |
+| `results/benchmark_hardware/` (716 K) | archive + delete (superseded by E3; λ=1000/λ=20 mix) |
+| `results/plots/`, `results/fpga_metrics_backup_pre_ssim/`, `results/wandb_summary_backup_pre_ssim_sweep_2026-08-04.csv`, `results/deleted_orphan_runs_2026-08-04.txt` | archive + delete (old outputs/backups) |
+| `results/benchmark_stream_overlap/` (55 G) | keep metrics/JSONs in place; archive the raw bulk (`.ddc`, decoded tiles) + delete it from the tree |
+| `results/benchmark_jetson/`, `results/symmetrization_study/`, `results/ssim_convention/`, `results/benchmark_unified/` | keep untouched (frozen canonical) |
+| `results/fpga/` (17 G) | untouched (deploy infra; later prune, not this task) |
+| Board: `/home/root/SAR_DDC/bench_results/`, stray stream outputs (`*.ddc`, `*.json` in the project root), board `/tmp` leftovers | delete before the campaign |
+
+**New canonical tree** `results/date27/`: subdirs `ladder/<arch>/`, `lanes/<arch>/`, `s0/<arch>/`,
+`vaitrace/<arch>/`, `occupancy/<arch>/`, `checks/<arch>/`, plus `MANIFEST.md` at the root.
+**Filenames encode the exact flag set** (e.g. `fo_t16_pf_neon_ent_warm.json`) so later variant
+sweeps (e.g. a no-CPU-opt lane grid) coexist without conflict. Each `MANIFEST.md` line: output file
+· full CLI flags · host+board git SHA · model (arch/λ/seed) · date · `make clean` confirmed.
+Figure scripts will read from this tree only.
+
+**Sweep table.** Global setup for every run: λ=20, seed 0, overlap 2, snap grid, full scene, warm
+read, power sampling on, batch 1; `make clean` rebuild once at campaign start; knee lanes = FP 32 /
+SH 24 / ResFP 6 / ResSH 20.
+
+| ID | Experiment | Configs | Per arch | Feeds |
+| --- | --- | --- | --- | --- |
+| E1 | Ladder r0–r7 (cumulative) | r0 `seq` · r1 `--p0 --threads 4` · r2 fan-out 3 L *naive* placement · r3 fan-out 3 L pinned (default) · r4 fan-out knee-L pinned · r5 `+--neon` · r6 `+--prefetch` · r7 `+--entropy` | 8 warm runs + 1 cold `seq` (SD-read number) | F2 ladder, F5 energy, headline numbers |
+| E2 | Lane grid, all CPU opts on | `--p0 --fanout --prefetch --neon --entropy --threads N`, N ∈ {1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64} + subsampled occupancy trace per N (existing `--max-rows` methodology) | 15 runs + traces | F4 lane fig, F6 fp_cpu_stack, knee verification |
+| E3 | Per-stage s0, **entropy OFF** (true sequential baseline) + xdputil peaks | `benchmark_hardware` s0/compress @ λ=20; `collect_roofline.py` | 1 + 1 | F1 stacked_time, Tab. 2 |
+| E4 | vaitrace per-core counters | 1-lane (uncontended) + knee-lane operating point | 2 | F3 3-core roofline dots |
+| E5 | Occupancy checkpoints | full traces at r0, r4, r7 (configs exactly as E1) | 3 | F7 / occupancy text |
+| E6 | Cheap verifications | `.ddc` sha256 r0 ≡ r7 (byte-identity gate); peak RSS + CMA/lane at 64 L; optional SD cold-read timing | ~2 | A9 sentence, XRT/CMA footnote |
+
+Frozen — **not** re-run: symmetrization (A2), overlap (A3), Jetson (N2), desktop CPU/GPU (A10);
+TerraSAR-X inputs are a doc-check (R5). Estimated board time (rough): E1 ≈ 1.5–2 h, E2 ≈ 2.5–3 h,
+E3–E6 ≈ 1 h → ~5–6 h + 4 model redeploys, one serialized session.
 
 ### 4.2 Phase 0b — research (agents; parallel with 4.1)
 
@@ -284,9 +326,10 @@ the section's bullets into prose under the new skeleton, keeping the §4.0 ledge
   rule (knee; multiples of #cores for DPU-bound, ≥2/core to hide CPU work; many more for CPU-bound).
   XRT footnote here. This is the section Dirk called the most important — spend the words here.
 - [ ] **W4** III.*CPU optimizations* — `neon` (2.42× isolated), `dbuf`, `ent` (the rANS
-  flattened-CDF + reciprocal optimization, now a measured rung; isolated numbers from the profiling
-  notes if useful); per-kernel numbers instead of a CPU roofline (+ R3 salvage sentence if
-  defensible).
+  flattened-CDF + reciprocal optimization, now a measured rung; isolated numbers + the
+  lookup-bound diagnosis from `docs/tmp_entropy-coding_opt_opportunities.md` — **delete that tmp
+  doc once this task has extracted what it needs**); per-kernel numbers instead of a CPU roofline
+  (+ R3 salvage sentence if defensible).
 - [ ] **W5** III.*Combined & rules of thumb* — ladder reading (F2), occupancy deltas (P0.3), then
   the transferable rules stated *as the conclusion*: optimizations fork by binding resource;
   topology predicts the binding resource before any run; placement + lane rules.

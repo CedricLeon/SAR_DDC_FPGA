@@ -15,9 +15,8 @@ throughput/latency/energy sweep (§10) are done and board-verified at the cohere
 across the full 4-arch × 4-power-mode matrix; a per-arch quality sweep and Thor both remain (§12). The
 classical SAR baseline (N5, §10) is resolved paper-only — no CCSDS standard targets SAR, so the paper
 cites the closest literature instead of reimplementing.
-Remaining (§13): the `--entropy` runtime flag (N6) and the pre-submission re-verification sweep (N7),
-both folded into the DATE'27 plan's Phase 0 (`DATE27_paper_plan.md` §4.1, which also carries the
-figure/writing work). Last updated 2026-08-31.
+Remaining (§13): the pre-submission re-verification sweep (N7), folded into the DATE'27 plan's Phase 0
+(`DATE27_paper_plan.md` §4.1, which also carries the figure/writing work). Last updated 2026-08-31.
 
 ---
 
@@ -103,6 +102,10 @@ one-time `.ddc` round-trip PSNR check. So the knobs are purely about *speed and 
 The streaming executor lives in its own module (`inference_cpp/src/stream/` — `main_stream.cpp` CLI +
 `stream_pipeline.{cpp,hpp}`, binary `stream_pipeline`), reusing the leaf stages.
 
+**Board builds: always `make clean` first.** The ZCU102 clock is unset, so `make` clock-skew
+mis-triggers incremental builds — any A/B comparison or measurement campaign must full-rebuild
+(`make clean && make -j4`), verified the hard way during the N6 Stage-1 A/B.
+
 **Optimizations.** Each layers on the sequential `seq` baseline; measured effects → §10.
 
 - `seq` — single thread; correctness + latency baseline (reads the tile, writes the `.ddc`).
@@ -121,6 +124,10 @@ The streaming executor lives in its own module (`inference_cpp/src/stream/` — 
 - **`--neon` — vectorized normalize/denorm.** NEON log/exp (Cephes/Pommier, `neon_mathfun.h`) behind a
   runtime flag, scalar path kept for A/B. Kernel error vs libm = 7e-8 → **byte-transparent encode** (≪
   the INT8 `g_a` step, so no quantisation flips). 2.42× faster normalize in isolation.
+- **`--entropy` — rANS reciprocal-table coder.** Flattened CDF table + a precomputed reciprocal per entry,
+  replacing a per-symbol division in the flush loop. Activable with a runtime flag: the pre-optimization
+  CDF-lookup + divide path is kept alongside it for A/B (both live in `entropy_models.{cpp,hpp}` /
+  `rans/rans_interface_cxx.{cpp,hpp}`, selected once per `compress()` call).
 - **`--power` — energy instrumentation.** `PowerSampler` (INA226 sysfs + PMBus) wraps the compress
   phase → total J, **J/patch**, and the per-rail-group breakdown (PL / PS / DPU_fabric / PS_compute /
   MGT / MPSoC mean W) — the DPU-vs-CPU energy split.
@@ -696,17 +703,6 @@ timer overhead and `--power`'s own perturbation both confirmed negligible) — f
 narrative, and be ready for any experiment to resolve *against* the story. Each entry notes the
 manuscript slot it *would* unblock (**→ main.tex …**) purely as navigation, never as a hole that must be
 filled.
-
-**N6 — Entropy coding: algorithm closed, runtime flag pending (2026-08-31).** Profiling is done and
-the one worthwhile optimization is implemented + committed (`4ddbcc8`: flattened CDF table + a
-precomputed reciprocal per table entry, replacing a division); no further algorithm passes (notes:
-`docs/tmp_entropy-coding_opt_opportunities.md`). **Remaining — fix the toggle, not the algorithm**:
-entropy-on/off is currently a *commit*-level switch (off = build the pre-`4ddbcc8` state, e.g.
-`324744f`), not a runtime one like every other pipeline optimization (`--fanout`/`--prefetch`/
-`--neon`). Wrap the optimized path behind a real flag (e.g. `--entropy`) so both states are reachable
-from one build; surgical area: `entropy_models.{cpp,hpp}` + `rans/rans_interface_cxx.{cpp,hpp}`.
-Scheduled **early** in the DATE'27 plan (task P0.0, `DATE27_paper_plan.md` §4.1) — the ladder sweep
-depends on it.
 
 **N7 — Full result re-verification pass (pre-submission).** Every number that goes in the paper gets
 recomputed from a clean, current-`HEAD` sweep before submission — development happened too
