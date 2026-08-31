@@ -211,7 +211,11 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   snap grid, warm read, power sampling on. Outputs → `results/date27/` only, one `MANIFEST.md` line
   per run. *(Done 2026-09-01: all 4 archs × E1–E6, 740/740 independent validation checks passed —
   zero anomalies, byte-identity gate holds on every arch, E1 ladder non-decreasing r0→r7 on every
-  arch, E2 knee within ~1% of peak everywhere. Delta vs the old committed numbers: seq baselines
+  arch, E2 knee within ~1% of peak everywhere. One methodology bug caught in manual review after
+  the automated pass: E6's peak-RSS/CMA sampler matched the wrong PID (`pgrep -f` self-matched the
+  polling shell's own command line, not `stream_pipeline`) — VmHWM read ~2.5 MiB instead of the real
+  ~570–755 MiB; fixed via `/proc/*/exe` symlink match and re-measured for all 4 archs (CMA figures
+  were unaffected, being system-wide not PID-scoped). Delta vs the old committed numbers: seq baselines
   reproduce within ~2.7%; roof/peak throughput +0.2–3.5% (CPU-bound FP/SHyp gained from N6's entropy
   optimization, DPU-bound ResFP/ResSHyp ~unchanged, as expected).)*
 - [ ] **P0.3 Occupancy checkpoints** 🔄 — CPU-busy% / DPU-busy% at r0, r4, r7 per arch
