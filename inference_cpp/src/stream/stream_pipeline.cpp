@@ -253,6 +253,7 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
     BenchPipeline pipe(opt.xmodel, opt.params);  // loads xmodel + entropy tables
     const bool hyper = pipe.uses_hyper();
     pipe.set_neon(opt.neon);
+    pipe.set_entropy_opt(opt.entropy);
     if (opt.s1) pipe.init_s1();  // channel-parallel g_a(real)‖g_a(imag)
 
     StreamResult res;
@@ -393,7 +394,7 @@ StreamResult stream_compress_tile_p0(const StreamOptions& opt) {
         pipes.push_back(std::make_unique<BenchPipeline>(opt.xmodel, opt.params));
         if (opt.s1) pipes[0]->init_s1();
     }
-    for (auto& p : pipes) p->set_neon(opt.neon);
+    for (auto& p : pipes) { p->set_neon(opt.neon); p->set_entropy_opt(opt.entropy); }
     const bool hyper = pipes[0]->uses_hyper();
 
     StreamResult res;

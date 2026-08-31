@@ -32,6 +32,7 @@ struct StreamOptions {
     int threads = 3;                 // worker count for --p0 (= DPU lanes when --fanout)
     bool prefetch = false;           // double-buffer: read row-block N+1 while compressing N (windowed)
     bool neon = false;               // NEON-vectorised normalize/denorm (else scalar libm)
+    bool entropy = false;            // rANS flattened-CDF + reciprocal coder (4ddbcc8); off = pre-opt CDF-lookup + divide baseline
     bool power = false;              // sample INA226/PMBus board power across the compress phase
     std::filesystem::path trace_out; // if set (--trace, --fanout only): dump per-lane stage timeline CSV
     bool verbose = false;

@@ -92,7 +92,8 @@ namespace ddc
     // Input z: float*, layout HWC (H*W*C elements).
     // Returns bitstring for one patch.
     // ---------------------------------------------------------------------------
-    std::vector<uint8_t> EntropyBottleneck::compress(const float *z, int H, int W) const
+    std::vector<uint8_t> EntropyBottleneck::compress(const float *z, int H, int W,
+                                                      bool use_entropy_opt) const
     {
         if (!loaded_)
             throw std::runtime_error("EntropyBottleneck: params not loaded");
@@ -124,9 +125,12 @@ namespace ddc
         }
 
         RansEncoderCxx enc;
-        return enc.encode_with_indexes(symbols, indexes,
-                                       enc_syms_.data(), enc_row_offsets_,
-                                       cdf_lengths_, offsets_);
+        if (use_entropy_opt)
+            return enc.encode_with_indexes(symbols, indexes,
+                                           enc_syms_.data(), enc_row_offsets_,
+                                           cdf_lengths_, offsets_);
+        return enc.encode_with_indexes_legacy(symbols, indexes, quantized_cdf_,
+                                              cdf_lengths_, offsets_);
     }
 
     // ---------------------------------------------------------------------------
@@ -206,7 +210,7 @@ namespace ddc
     // ---------------------------------------------------------------------------
     std::vector<uint8_t> GaussianConditional::compress(
         const float *y, const float *scales, const float *means,
-        int H, int W, int C) const
+        int H, int W, int C, bool use_entropy_opt) const
     {
         if (!loaded_)
             throw std::runtime_error("GaussianConditional: params not loaded");
@@ -231,9 +235,12 @@ namespace ddc
         }
 
         RansEncoderCxx enc;
-        return enc.encode_with_indexes(symbols, indexes,
-                                       enc_syms_.data(), enc_row_offsets_,
-                                       cdf_lengths_, offsets_);
+        if (use_entropy_opt)
+            return enc.encode_with_indexes(symbols, indexes,
+                                           enc_syms_.data(), enc_row_offsets_,
+                                           cdf_lengths_, offsets_);
+        return enc.encode_with_indexes_legacy(symbols, indexes, quantized_cdf_,
+                                              cdf_lengths_, offsets_);
     }
 
     // ---------------------------------------------------------------------------

@@ -325,10 +325,10 @@ void BenchPipeline::stage_ha(PatchState& s)
 void BenchPipeline::stage_eb_compress(PatchState& s)
 {
     if (has_gc_) {
-        s.z_bits  = eb_.compress(s.z.data(), s.zh, s.zw);
+        s.z_bits  = eb_.compress(s.z.data(), s.zh, s.zw, use_entropy_opt_);
         s.z_bytes = static_cast<int>(s.z_bits.size());
     } else {
-        s.y_bits    = eb_.compress(s.y.data(), s.yh, s.yw);
+        s.y_bits    = eb_.compress(s.y.data(), s.yh, s.yw, use_entropy_opt_);
         s.y_bytes   = static_cast<int>(s.y_bits.size());
         s.num_bytes = s.y_bytes;
     }
@@ -369,7 +369,7 @@ void BenchPipeline::stage_gc_compress(PatchState& s)
 {
     // means is pre-zeroed in make_patch_state; stays zero across iterations
     s.y_bits    = gc_.compress(s.y.data(), s.scales.data(), s.means.data(),
-                               s.yh, s.yw, C_MAIN * 2);
+                               s.yh, s.yw, C_MAIN * 2, use_entropy_opt_);
     s.y_bytes   = static_cast<int>(s.y_bits.size());
     s.num_bytes = s.z_bytes + s.y_bytes;
 }

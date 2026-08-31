@@ -33,6 +33,17 @@ struct RansSymbol {
     bool     bypass;
 };
 
+// Pre-4ddbcc8 baseline symbol: an explicit CDF range (start, range) rather than a
+// table index. Used only by the *_legacy encode/flush path below, which is a
+// verbatim restore of the divide-based encoder that predates build_enc_symbols —
+// selected at runtime by stream_pipeline's --entropy flag (off = this path), never
+// inside the per-symbol loop. See entropy_models.cpp and docs/onboard_pipeline.md §13 N6.
+struct RansSymbolLegacy {
+    uint16_t start;
+    uint16_t range;
+    bool     bypass;
+};
+
 // Precompute the reciprocal encoder symbols for a *static* CDF table (done once
 // at model-load, not per patch). enc_syms_out[row_offsets_out[r] + value] is the
 // Rans64EncSymbol for symbol `value` (0 .. cdfs_sizes[r]-2) of row r, i.e.
@@ -75,11 +86,24 @@ public:
 
     std::vector<uint8_t> flush();
 
+    // Legacy path (pre-4ddbcc8 baseline): per-symbol CDF pointer-chase here, then a
+    // per-symbol divide in flush_legacy(). Byte-identical output to the fast path
+    // above; slower. Selected once per compress() call by the caller — see
+    // entropy_models.cpp's use_entropy_opt.
+    void encode_with_indexes_legacy(const std::vector<int32_t>& symbols,
+                                    const std::vector<int32_t>& indexes,
+                                    const std::vector<std::vector<int32_t>>& cdfs,
+                                    const std::vector<int32_t>& cdfs_sizes,
+                                    const std::vector<int32_t>& offsets);
+
+    std::vector<uint8_t> flush_legacy();
+
 private:
     std::vector<RansSymbol>      _syms;
     const Rans64EncSymbol*       _enc_syms = nullptr;  // borrowed; valid through flush()
     std::vector<Rans64EncSymbol> _enc_syms_owned;      // storage for the convenience path
     std::vector<int32_t>         _row_offsets_owned;   // storage for the convenience path
+    std::vector<RansSymbolLegacy> _syms_legacy;        // storage for the legacy path
 };
 
 // ---------------------------------------------------------------------------
@@ -105,6 +129,14 @@ public:
 
     // Convenience path — vector-of-vectors CDF (tests / one-off callers).
     std::vector<uint8_t> encode_with_indexes(
+        const std::vector<int32_t>& symbols,
+        const std::vector<int32_t>& indexes,
+        const std::vector<std::vector<int32_t>>& cdfs,
+        const std::vector<int32_t>& cdfs_sizes,
+        const std::vector<int32_t>& offsets);
+
+    // Legacy path (pre-4ddbcc8 baseline) — see BufferedRansEncoderCxx::encode_with_indexes_legacy.
+    std::vector<uint8_t> encode_with_indexes_legacy(
         const std::vector<int32_t>& symbols,
         const std::vector<int32_t>& indexes,
         const std::vector<std::vector<int32_t>>& cdfs,
