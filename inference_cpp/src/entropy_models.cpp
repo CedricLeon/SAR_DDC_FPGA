@@ -15,6 +15,7 @@
 
 #include "npy_io.hpp"
 #include "rans/rans_interface_cxx.hpp"
+#include "rans/rans_profile.hpp"
 
 namespace ddc
 {
@@ -80,6 +81,9 @@ namespace ddc
         if (static_cast<int>(offsets_.size()) != channels_)
             throw std::runtime_error("EntropyBottleneck: offset size != channels");
 
+        // Precompute reciprocal encoder symbols once (static CDF → divide-free flush).
+        build_enc_symbols(quantized_cdf_, cdf_lengths_, enc_syms_, enc_row_offsets_);
+
         loaded_ = true;
     }
 
@@ -96,28 +100,33 @@ namespace ddc
         const int C = channels_;
         const int n = H * W * C;
 
+        DDC_RPROF_SETCTX(::ddc::rprof::CTX_EB);
+
         // symbols = round(z - medians)  per channel
         std::vector<int32_t> symbols(n);
         std::vector<int32_t> indexes(n);
-        for (int h = 0; h < H; ++h)
         {
-            for (int w = 0; w < W; ++w)
+            DDC_RPROF(::ddc::rprof::CTX_EB, ::ddc::rprof::ST_SYM);
+            for (int h = 0; h < H; ++h)
             {
-                for (int c = 0; c < C; ++c)
+                for (int w = 0; w < W; ++w)
                 {
-                    const int idx = (h * W + w) * C + c;
-                    // round_half_to_even: portable banker's rounding, FPU-mode independent.
-                    // Matches numpy.round() / torch.round() regardless of VART rounding mode.
-                    symbols[idx] = round_half_to_even(z[idx] - medians_[c]);
-                    indexes[idx] = c;
+                    for (int c = 0; c < C; ++c)
+                    {
+                        const int idx = (h * W + w) * C + c;
+                        // round_half_to_even: portable banker's rounding, FPU-mode independent.
+                        // Matches numpy.round() / torch.round() regardless of VART rounding mode.
+                        symbols[idx] = round_half_to_even(z[idx] - medians_[c]);
+                        indexes[idx] = c;
+                    }
                 }
             }
         }
 
-        // Build cdf_lengths as a plain vector (rANS API expects vector<int32_t>)
         RansEncoderCxx enc;
         return enc.encode_with_indexes(symbols, indexes,
-                                       quantized_cdf_, cdf_lengths_, offsets_);
+                                       enc_syms_.data(), enc_row_offsets_,
+                                       cdf_lengths_, offsets_);
     }
 
     // ---------------------------------------------------------------------------
@@ -170,6 +179,9 @@ namespace ddc
         if (quantized_cdf_.size() != scale_table_.size())
             throw std::runtime_error("GaussianConditional: CDF row count != scale_table size");
 
+        // Precompute reciprocal encoder symbols once (static CDF → divide-free flush).
+        build_enc_symbols(quantized_cdf_, cdf_lengths_, enc_syms_, enc_row_offsets_);
+
         loaded_ = true;
     }
 
@@ -203,20 +215,25 @@ namespace ddc
         std::vector<int32_t> symbols(n);
         std::vector<int32_t> indexes(n);
 
-        for (int i = 0; i < n; ++i)
+        DDC_RPROF_SETCTX(::ddc::rprof::CTX_GC);
         {
-            float val = y[i];
-            if (means)
-                val -= means[i];
-            // round_half_to_even: portable banker's rounding, FPU-mode independent.
-            // Matches numpy.round() and torch.round() regardless of VART rounding mode.
-            symbols[i] = round_half_to_even(val);
-            indexes[i] = scale_index(scales[i]);
+            DDC_RPROF(::ddc::rprof::CTX_GC, ::ddc::rprof::ST_SYM);
+            for (int i = 0; i < n; ++i)
+            {
+                float val = y[i];
+                if (means)
+                    val -= means[i];
+                // round_half_to_even: portable banker's rounding, FPU-mode independent.
+                // Matches numpy.round() and torch.round() regardless of VART rounding mode.
+                symbols[i] = round_half_to_even(val);
+                indexes[i] = scale_index(scales[i]);
+            }
         }
 
         RansEncoderCxx enc;
         return enc.encode_with_indexes(symbols, indexes,
-                                       quantized_cdf_, cdf_lengths_, offsets_);
+                                       enc_syms_.data(), enc_row_offsets_,
+                                       cdf_lengths_, offsets_);
     }
 
     // ---------------------------------------------------------------------------

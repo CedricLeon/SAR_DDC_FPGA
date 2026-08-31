@@ -1,0 +1,26 @@
+[project]
+name = "ddc-edge"
+version = "0.1.0"
+description = "Device-agnostic CUDA replica of the DDC onboard streaming pipeline's default (sequential) behavior — Jetson, desktop GPU, or CPU."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "lightning>=2.0.0",
+    "torchmetrics>=0.11.4",
+    "compressai==1.2.8",
+    "hydra-core==1.3.2",
+    "rootutils",
+    "numpy",
+]
+
+[project.scripts]
+ddc-edge = "ddc_edge.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

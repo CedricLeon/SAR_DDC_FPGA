@@ -35,10 +35,8 @@ We want three numbers, each a different **deadline**:
 3. **Downlink-fit** — is the compressed product small enough for the X-band link?
 
 Everything below exists to turn TSX specs into those three numbers. The single hardware fact from our
-side: one ZCU102 running the factorized-prior (FP) model at its best schedule compresses SLC at
-**≈ 34.7 MB/s warm** (the compute ceiling with storage non-limiting — representative of a focuser- or
-SSMM-fed stream) and **≈ 22.7 MB/s cold** (SD-card testbed, read-bound). Measured, λ=20, snap grid.
-`onboard_pipeline.md` §8 is the authoritative source for these numbers — **do not hardcode them
+the best throughputs per model, detailed below.
+`onboard_pipeline.md` §10 is the authoritative source for these numbers — **do not hardcode them
 elsewhere; they evolve with the design.**
 
 ---
@@ -269,32 +267,33 @@ uncompressed focused take on-board is marginal.
 
 ### 3.7 Compression
 
-Our DDC compresses the SLC ~**24×** (measured, `onboard_pipeline.md` §8). Worst-case take
-64.5 GB → **2.7 GB**; at 33.75 MB/s that downlinks in **~80 s**, well inside a 5–10 min contact. Note
-the raw is *already* downlinkable (BAQ + store-and-forward), so the value of DDC is **not** "enables
-downlink" but a ~6× smaller *exploitation* product, on-board semantic latents, and making on-board SLC
-storage feasible.
+Our DDC compresses the SLC **~200×** at the chosen λ=20 operating point (FP ~202×, ResSHyp ~237×;
+measured, `onboard_pipeline.md` §10) — a deliberate rate point; λ=1000 buys back ~+1–2 dB PSNR at
+roughly 10× less compression. Worst-case take 64.5 GB → **~0.3 GB**; at 33.75 MB/s that downlinks in
+**~9 s**, trivially inside a 5–10 min contact. Note the raw is *already* downlinkable (BAQ +
+store-and-forward), so the value of DDC is **not** "enables downlink" but a **~50× smaller**
+*exploitation* product, on-board semantic latents, and making on-board SLC storage feasible.
 
 ---
 
 ## 4. The three deadlines vs. our current implementation
 
 Requirements are the **worst case** (a 358 MB/s stream / a 64.5 GB take). "Current implementation" = the
-measured single-ZCU102 best schedule (`p0+s1+prefetch+neon`), **warm** basis (compute ceiling, storage
-non-limiting — representative of a focuser/SSMM-fed stream), **cold** SD-testbed in parentheses; λ=20
-(throughput is λ-independent). We state **both models explicitly**, as these numbers evolve with the design:
+measured single-ZCU102 for both archs (FP, ResSHyp) on a **warm** basis (compute ceiling, storage non-limiting
+— representative of a focuser/SSMM-fed stream) and **cold** SD-testbed in parentheses;
+seed s0, λ=20 (throughput is λ-independent).
+We state **both models explicitly**, as these numbers evolve with the design (see §5/§10):
 
-- **FP** (factorized-prior, CPU-bound): **34.7 MB/s warm** (22.7 cold), ~21.3× compression (λ1000)
-- **ResSHyp** (residual scale-hyperprior, DPU-bound): **6.0 MB/s** (SD read fully hidden → warm ≈ cold),
-  ~25.6× compression (λ1000)
+- **FP** (factorized-prior, CPU-bound; `s0, λ=20, fan-out 64L`): **51.1 MB/s warm** (22.0 cold), ~202× compression
+- **ResSHyp** (residual scale-hyperprior, DPU-bound; `s0, λ=20, fan-out 24L`): **9.9 MB/s** (SD read fully hidden → warm ≈ cold), ~237× compression
 
-- **(a) Real-time** — compress as fast as acquired (**needs 358 MB/s**): FP → **10.3× short warm**
-  (15.8× cold); ResSHyp → **59× short**.
+- **(a) Real-time** — compress as fast as acquired (**needs 358 MB/s**): FP → **7.0× short warm**
+  (16.3× cold); ResSHyp → **36× short**.
 - **(b) Before next contact** — finish the 64.5 GB take before the next pass ~92 min away (**needs
-  11.7 MB/s**): FP → **met, 3.0× headroom warm** (1.9× cold — met on every basis) ✅; ResSHyp →
-  **1.9× short**.
-- **(c) Downlink-fit** — compressed output must fit the 33.75 MB/s net link: FP → **16.5 MB/s, fits
-  2.0×** ✅; ResSHyp → **13.7 MB/s, fits 2.5×** ✅ (set by compression ratio, not throughput).
+  11.7 MB/s**): FP → **met, 4.4× headroom warm** (1.9× cold — met on every basis) ✅; ResSHyp →
+  **1.2× short**.
+- **(c) Downlink-fit** — compressed output must fit the 33.75 MB/s net link: FP → **1.8 MB/s, fits
+  19×** ✅; ResSHyp → **1.5 MB/s, fits 22×** ✅ (set by compression ratio, not throughput).
 
 > **Scaling note:** the real-time gap (a) can be close with more DPU cores or several boards in parallel, see `onboard_pipeline.md`.
 
@@ -320,16 +319,17 @@ Platform constants: downlink **270 Mb/s net / 300 gross**; SSMM **384 Gbit BOL /
 ground swath **30 km**; SLC **int16 4 B/px**.
 
 **Table B — current implementation vs. the worst-case objective** (single ZCU102, best schedule
-`p0+s1+prefetch+neon`, λ=20; **warm** basis, **cold** SD-testbed in parentheses; *evolves with the design*):
+**fan-out** at each arch's roof — FP 64 lanes, ResSHyp 24; seed s0, λ=20; **warm** basis, **cold**
+SD-testbed in parentheses; *evolves with the design*):
 
 | metric | FP (CPU-bound) | ResSHyp (DPU-bound) | requirement |
 | --- | --- | --- | --- |
-| SLC throughput | 34.7 (22.7 cold) MB/s | 6.0 MB/s (read hidden) | — |
-| compression ratio (λ1000) | 21.3× | 25.6× | — |
-| compressed worst-case take | 3.0 GB | 2.5 GB | ≤ contact budget |
-| (a) real-time | 10.3× short (15.8× cold) | 59× short | 358 MB/s |
-| (b) before-contact (92 min) | ✅ 3.0× headroom (1.9× cold) | 1.9× short | 11.7 MB/s |
-| (c) downlink-fit | ✅ fits 2.0× | ✅ fits 2.4× | ≤ 33.75 MB/s net |
+| SLC throughput | 51.1 (22.0 cold) MB/s | 9.9 MB/s (read hidden) | — |
+| compression ratio (λ=20) | ~202× | ~237× | — |
+| compressed worst-case take | 0.32 GB | 0.27 GB | ≤ contact budget |
+| (a) real-time | 7.0× short (16.3× cold) | 36× short | 358 MB/s |
+| (b) before-contact (92 min) | ✅ 4.4× headroom (1.9× cold) | 1.2× short | 11.7 MB/s |
+| (c) downlink-fit | ✅ fits 19× | ✅ fits 22× | ≤ 33.75 MB/s net |
 
 ---
 

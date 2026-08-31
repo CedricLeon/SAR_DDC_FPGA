@@ -46,6 +46,7 @@ PROJECT_ROOT = rootutils.setup_root(__file__, indicator=".project-root", pythonp
 from src.utils.metrics import enl, epd, get_all_distortion_metrics
 from src.utils.reconstruction import predict_linA
 from src.utils.sar_utils import load_cosar, symmetrize
+from src.utils.tiling import make_offsets
 
 PATCH = 256
 BLOCK = 1024
@@ -168,8 +169,12 @@ def load_region(
 
 
 def patch_positions(h: int, w: int) -> list[tuple[int, int]]:
-    """Top-left (row, col) of every non-overlapping 256x256 patch (extract_patches order)."""
-    return [(r, c) for r in range(0, h - PATCH + 1, PATCH) for c in range(0, w - PATCH + 1, PATCH)]
+    """Top-left (row, col) of every 256x256 patch on the **snap grid** — stride-spaced with the
+    last patch in each axis snapped flush to the edge (``src.utils.tiling.make_offsets``), matching
+    the onboard `.ddc` grid (onboard_pipeline.md §3) so the study scores the same 7,482-patch
+    coverage as the pipeline, not the old floor grid's 7,296 (which dropped the far-edge
+    sliver)."""
+    return [(r, c) for r in make_offsets(h, PATCH, PATCH) for c in make_offsets(w, PATCH, PATCH)]
 
 
 def whole_sym(region: np.ndarray, cos_stem: str, tag: str, no_cache: bool) -> np.ndarray:
@@ -202,12 +207,19 @@ def variant_patch(
     if variant == "patch":
         return symmetrize(region[r : r + PATCH, c : c + PATCH, :]).astype(np.float32)
     if variant == "block":
+        # Local 1024-block symmetrization. Anchor to (r//BLOCK, c//BLOCK); if the patch would
+        # straddle the block's far edge (snap-grid edge patches, whose offset dim-PATCH is not a
+        # BLOCK multiple), snap the block flush to the image edge so it still fully contains the
+        # patch. Without this the in-block slice below comes up short (< PATCH).
+        H, W = region.shape[0], region.shape[1]
         br, bc = (r // BLOCK) * BLOCK, (c // BLOCK) * BLOCK
+        if r + PATCH > br + BLOCK:
+            br = max(H - BLOCK, 0)
+        if c + PATCH > bc + BLOCK:
+            bc = max(W - BLOCK, 0)
         key = (br, bc)
         if key not in block_cache:
-            blk = region[
-                br : min(br + BLOCK, region.shape[0]), bc : min(bc + BLOCK, region.shape[1]), :
-            ]
+            blk = region[br : min(br + BLOCK, H), bc : min(bc + BLOCK, W), :]
             block_cache[key] = symmetrize(blk).astype(np.float32)
         sblk = block_cache[key]
         return sblk[r - br : r - br + PATCH, c - bc : c - bc + PATCH, :]
@@ -246,8 +258,17 @@ def load_or_compute_merlin_gt(
     for the first config and reuses it for the rest — as requested for long runs.
     """
     if cache_path.exists():
-        print(f"[merlin] GT cache hit: {cache_path}")
-        return np.load(cache_path, mmap_mode="r")
+        cached = np.load(cache_path, mmap_mode="r")
+        if cached.shape[0] == len(positions):
+            print(f"[merlin] GT cache hit: {cache_path}")
+            return cached
+        # Per-patch GT is position-dependent: a grid change (e.g. floor 7,296 -> snap 7,482) makes
+        # the cache stale. Detect it loudly and recompute rather than mis-index/mis-score.
+        print(
+            f"[merlin] GT cache STALE ({cached.shape[0]} patches != {len(positions)} on the current "
+            f"grid) -> recomputing and overwriting: {cache_path}"
+        )
+        del cached
     print(f"[merlin] computing GT for {len(positions)} patches (cached for reuse)...")
     gt = np.empty((len(positions), PATCH, PATCH), dtype=np.float32)
     for s in range(0, len(positions), batch_size):

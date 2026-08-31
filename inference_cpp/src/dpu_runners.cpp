@@ -154,7 +154,8 @@ namespace ddc
     // XModelLoader::load
     // ---------------------------------------------------------------------------
     void XModelLoader::load(const std::string &xmodel_path,
-                            const std::string &meta_json_path)
+                            const std::string &meta_json_path,
+                            bool create_runners)
     {
         // Deserialize the xmodel graph
         graph_ = xir::Graph::deserialize(xmodel_path);
@@ -200,11 +201,14 @@ namespace ddc
 
             const std::string &role = it->second;
             subgraphs_[role] = sg;
-            runners_.emplace(role, DPUSubgraphRunner(sg, role));
-            LOG_INFO("XModelLoader: created runner for role=" + role + " (kernel=" + sg->get_name() + ")");
+            if (create_runners)
+            {
+                runners_.emplace(role, DPUSubgraphRunner(sg, role));
+                LOG_INFO("XModelLoader: created runner for role=" + role + " (kernel=" + sg->get_name() + ")");
+            }
         }
 
-        if (runners_.empty())
+        if (subgraphs_.empty())
             throw std::runtime_error("XModelLoader: no subgraphs matched; check meta.json and xmodel");
 
         loaded_ = true;

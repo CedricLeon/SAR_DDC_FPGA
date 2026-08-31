@@ -14,8 +14,12 @@
 // Two threads calling stages on the *same* PatchState is a data race — don't.
 // DPU runner safety under concurrency is addressed in the P0/P2 milestone.
 
+#include <chrono>
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "entropy_models.hpp"
@@ -82,6 +86,15 @@ struct PatchState {
     std::vector<float> recon_lina;
 };
 
+// Optional per-substep timing sink for --trace: invoked with (label, start, end) for each internal
+// step of an instrumented stage — the CPU glue (label "g_a_cpu") and each individual DPU call
+// (label "g_a"), so a lane's two g_a calls become two separate timeline events. Null = no tracing
+// (zero overhead: the stage just runs its steps untimed). NOTE: a DPU-call span here brackets the
+// whole DPUSubgraphRunner::run() (kept pure), so it includes the in-run() int8 quantize/dequantize
+// (a few tenths of a ms); that CPU slice cancels in the Gantt's wait reconstruction (measured − solo).
+using SubStageSink = std::function<void(const char* label, std::chrono::steady_clock::time_point a,
+                                        std::chrono::steady_clock::time_point b)>;
+
 // ---------------------------------------------------------------------------
 // BenchPipeline
 // ---------------------------------------------------------------------------
@@ -91,6 +104,20 @@ public:
     // Throws std::runtime_error on failure.
     explicit BenchPipeline(const std::filesystem::path& xmodel_path,
                            const std::filesystem::path& params_dir);
+
+    // Lane-mode construction for the deterministic fan-out (docs/onboard_pipeline.md §11-N1): loads
+    // only the entropy models — NO graph. The caller then injects DPU runners with adopt_runner() in a
+    // controlled global order, so VART's round-robin pins each lane to its own core (instead of the
+    // per-lane deserialize + round-robin lottery). Throws on host builds (HAVE_DPU=OFF).
+    struct LaneMode {};
+    BenchPipeline(const std::filesystem::path& params_dir, LaneMode);
+
+#ifdef HAVE_DPU
+    // Inject a DPU runner for `role` (lane mode only). The order in which the fan-out creates runners
+    // across lanes sets the core assignment (subgraph-major: all lanes' g_a, then h_a, then h_s ⇒ lane
+    // i on core i); g_s is omitted on the compress path. See stream_pipeline.cpp.
+    void adopt_runner(const std::string& role, DPUSubgraphRunner&& r);
+#endif
 
     // True = ScaleHyperprior path (g_a→h_a→EB→h_s→GC→g_s).
     // False = FactorizedPrior path (g_a→EB→g_s).
@@ -125,7 +152,8 @@ public:
     // Stage 1 (DPU + CPU): split norm_hwc → real/imag, run g_a on each,
     //   interleave y, compute |y| for h_a.
     //   Throws if compiled without HAVE_DPU.
-    void stage_ga(PatchState& s);
+    //   sink (optional): per-substep timing callback (g_a_cpu / g_a×2) for the --trace timeline.
+    void stage_ga(PatchState& s, const SubStageSink* sink = nullptr);
 
     // Stage 1 S1 variant: same as stage_ga but dispatches g_a(real) and
     //   g_a(imag) on two separate DPU runners concurrently (one std::thread).
@@ -169,6 +197,15 @@ private:
     XModelLoader loader_;
     std::optional<DPUSubgraphRunner> runner_ga2_;  // S1 duplicate for g_a(imag)
     std::optional<DPUSubgraphRunner> runner_gs2_;  // S1 duplicate for g_s(imag)
+    std::map<std::string, DPUSubgraphRunner> lane_runners_;  // injected runners (lane mode)
+    bool lane_mode_ = false;
+    // DPU runner for a role: injected (lane mode) or loaded from the shared graph (normal mode).
+    const DPUSubgraphRunner& dpu(const std::string& role) const {
+        return lane_mode_ ? lane_runners_.at(role) : loader_.runner(role);
+    }
+    bool has_dpu_role(const std::string& role) const {
+        return lane_mode_ ? (lane_runners_.count(role) > 0) : loader_.has_role(role);
+    }
 #endif
     EntropyBottleneck   eb_;
     GaussianConditional gc_;

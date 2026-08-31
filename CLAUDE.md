@@ -43,8 +43,29 @@ Read only what's relevant to the task at hand.
 | FPGA inference pipeline (C++), DPU runners, entropy models | `docs/FPGA_inference.md` ← read first for inference work |
 | Benchmark: ZCU102 hardware, methodology, power, results, future work + journal | `docs/FPGA_benchmark.md` |
 | GPU/CPU host benchmark + cross-platform (CPU/GPU/FPGA) comparison & unified runner | `docs/GPU_benchmark.md` |
-| Onboard streaming pipeline (receive→compress→downlink) — plan, feasibility, ZCU102 memory/storage facts, symmetrization study | `docs/onboard_pipeline.md` ← **planning** |
+| Onboard streaming pipeline (SLC→`.ddc`): design + measurements — fan-out core-scaling, symmetrization/overlap studies, full-scene throughput/energy/deadline results | `docs/onboard_pipeline.md` ← **systems paper** |
 | Analysis notebooks: purpose, data flow, shared modules (`_plotkit`, `_benchmark_loader`) | `docs/Notebooks.md` |
+| Vitis AI tools (xdputil static info, vaitrace DPU profiling, Vitis Analyzer) — capabilities + jargon-free glossary | `docs/AMD_Vitis_AI.md` |
+
+---
+
+## Model Architectures & Checkpoints
+
+Current focus is **inference**. Available checkpoints span **4 architectures × 10 λ
+`{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000}` × 6 seeds `{0, 1, 2, 3, 4, 5}`**.
+
+Each architecture is one combination of two independent binary choices:
+
+- **Prior** — **F**actorized **P**rior (`FP`) vs **S**cale-**Hyp**erprior (`SHyp`, a.k.a. `SH`); the
+  hyperprior adds the `h_a` / `h_s` subgraphs.
+- **Residual** — heavy residual blocks in the main encoder `g_a` / decoder `g_s` (the `Res` prefix),
+  carrying **~10× the OPs** of the plain variant (`net.no_residual_blocks: false` in `train_config.yaml`).
+
+This results in the FP, SHyp, ResFP, and ResSHyp architectures (where the first is the lightest and the last the most consequent).
+Because they differ so much computationally it is VERY important to always specify which architecture is mentioned/described when reporting numbers.
+
+> **Naming trap**: `FP` / `ResFP` and `SHyp` / `ResSHyp` both compile to the *same* xmodel class: the filename does **not** identify the architecture.
+> Read `model_name` in `manifest.json` (or `net.no_residual_blocks` in `train_config.yaml`).
 
 ---
 
@@ -150,15 +171,15 @@ The Python→C++ migration is done; **C++ is the only inference path** (no Pytho
 
 **Scope closed at M3.** The unified GPU/CPU/FPGA runner **is implemented**
 (`scripts/benchmark/run_unified_benchmark.py` — see the Cross-platform benchmark section below and
-`docs/GPU_benchmark.md`). Pipelining (M4 P0, M5 P2, P3) remains **future work, not implemented** —
-documented in `docs/FPGA_benchmark.md` §10. *Do not implement parallelism without a design discussion first.*
+`docs/GPU_benchmark.md`).
 
-**Onboard streaming pipeline (NEW — planning).** The end-to-end "receive SLC tile → despeckle +
-compress → write downlink bitstream" scenario — which *realizes* the P0/P2 pipelining + streaming as
-the systems-paper contribution — is now in active design in `docs/onboard_pipeline.md` (this is the
-required design discussion). First step: an offline **symmetrization-granularity study (E1)** to
-decide whether symmetrization can live inside the per-patch/per-block pipeline. Nothing implemented
-on-board yet.
+**Onboard streaming pipeline — implemented + board-verified.** The "SLC tile → despeckle + compress →
+`.ddc`" compressor is built and measured (`inference_cpp/src/stream/`, binary `stream_pipeline`; design
++ results → `docs/onboard_pipeline.md`). Composable, byte-identical optimizations
+(`--s1`/`--p0`/`--fanout`/`--prefetch`/`--neon`); studies done — symmetrization (E1), overlap (U5), DPU
+fan-out core-/lane-scaling, full-scene throughput/energy sweep at the coherent setup (λ=20, overlap 2,
+snap grid, 4 archs). **Currently: results analysis + figures** for the DATE'27 paper; remaining =
+Jetson (N2) / CCSDS (N5) baselines. Further schedule changes → discuss in `docs/onboard_pipeline.md` first.
 
 ---
 

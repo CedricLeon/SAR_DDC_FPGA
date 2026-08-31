@@ -9,6 +9,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---------------------------------------------------------------------------
 option(HAVE_DPU "Build with Vitis-AI VART/XIR DPU support (requires board libs)" ON)
 
+# Opt-in per-patch entropy-encode sub-stage profiler (symbuild / lookup / flush,
+# split EB vs GC). Off by default: zero overhead, byte-identical bitstream. See
+# src/rans/rans_profile.hpp and docs/onboard_pipeline.md (N6).
+option(DDC_RANS_PROFILE "Instrument the rANS encode path with sub-stage timers" OFF)
+
 # ---------------------------------------------------------------------------
 # Compiler flags
 # ---------------------------------------------------------------------------
@@ -52,9 +57,17 @@ endif()
 # ---------------------------------------------------------------------------
 add_library(rans_cxx STATIC
     src/rans/rans_interface_cxx.cpp
+    src/rans/rans_profile.cpp
 )
 target_include_directories(rans_cxx PUBLIC src/rans)
 # rans_interface_cxx has no external dependencies beyond the bundled rans64.h
+
+# When enabled, define DDC_RANS_PROFILE PUBLIC so it reaches every consumer that
+# uses the profiler macros (entropy_models.cpp via inference_lib links rans_cxx).
+if(DDC_RANS_PROFILE)
+    target_compile_definitions(rans_cxx PUBLIC DDC_RANS_PROFILE)
+    message(STATUS "DDC_RANS_PROFILE=ON — rANS encode sub-stage timers compiled in")
+endif()
 
 # ---------------------------------------------------------------------------
 # Core inference library
@@ -154,4 +167,20 @@ if(NLOHMANN_JSON_INCLUDE_DIR)
     target_link_libraries(stream_pipeline PRIVATE inference_lib)
 else()
     message(STATUS "Skipping stream_pipeline target (nlohmann/json not found)")
+endif()
+
+# ---------------------------------------------------------------------------
+# dump_latents — one-off debug tool: pre-entropy-coding y/z latents for named patches, for the
+# INT8-vs-FP32 bpp-gap investigation (docs/tmp_jetson_orin_overnight.md). Not part of any pipeline;
+# reuses BenchPipeline like stream_pipeline does, same build guard.
+# ---------------------------------------------------------------------------
+if(NLOHMANN_JSON_INCLUDE_DIR)
+    add_executable(dump_latents
+        src/tools/dump_latents.cpp
+        src/benchmark/bench_pipeline.cpp)
+    target_include_directories(dump_latents PRIVATE
+        src src/benchmark include ${NLOHMANN_JSON_INCLUDE_DIR})
+    target_link_libraries(dump_latents PRIVATE inference_lib)
+else()
+    message(STATUS "Skipping dump_latents target (nlohmann/json not found)")
 endif()

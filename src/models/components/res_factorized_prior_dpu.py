@@ -6,12 +6,10 @@ from typing import Dict, Tuple, Union
 
 import torch
 import torch.nn as nn
+from compressai.entropy_models import EntropyBottleneck
 from compressai.models import CompressionModel
 from torch import Size, Tensor
 
-from context.compressai_original import (  # from compressai.entropy_models
-    EntropyBottleneck,
-)
 from src.models.components.compressai_dpu import EntropyBottleneckPatched
 from src.models.components.layers import ResidualBlock, make_activation
 from src.utils.debug import log_tensor_shape

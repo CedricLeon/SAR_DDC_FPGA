@@ -34,15 +34,15 @@ table; the full-tile extrapolation.
 
 | # | Asset | Where | State |
 | --- | --- | --- | --- |
-| A1 | Optimization ladder seq→s1→p0→prefetch→neon, cold+warm, FP & ResSHyp, full 7,482-patch scene | `results/benchmark_stream/`, `onboard_pipeline.md` §8 | 🟢 λ=20 on snap grid |
-| A2 | Symmetrization granularity (E1): whole/none/patch/block × 2 archs × 3 λ, whole scene | `results/symmetrization_study/`, §5 | 🟢 |
-| A3 | Overlap study (U5): ov{0,2,4,8,16}, seam-band vs interior quality, cost | `results/benchmark_stream_overlap/`, §10 | 🟢 the cleanest co-design result |
-| A4 | Memory/storage: 3.87 GB f32 tile vs ~3.0 GB DDR (whole-load OOMs), 0.3 GB windowed, SD read ~24 MB/s | §2, §8 | 🟢 |
-| A5 | DPU roofline + per-arch core fan-out (`nn_only` dpu1/2/3) | `results/benchmark_hardware/` | 🟡 the ResSHyp dpu3 regression is unanalysed — §11 N1 |
+| A1 | Optimization ladder seq→s1→p0→prefetch→neon, cold+warm **per rung**, **all 4 archs**, full 7,540-patch scene | `results/benchmark_stream/`, `onboard_pipeline.md` §10 | 🟢 λ=20, overlap 2, snap grid |
+| A2 | Symmetrization granularity (E1): whole/none/patch/block × 2 archs × 3 λ, whole scene | `results/symmetrization_study/`, §7 | 🟢 |
+| A3 | Overlap study (U5): ov{0,2,4,8,16}, seam-band vs interior quality, cost | `results/benchmark_stream_overlap/`, §8 | 🟢 the cleanest co-design result |
+| A4 | Memory/storage: 3.87 GB f32 tile vs ~3.0 GB DDR (whole-load OOMs), 0.3 GB windowed, SD read ~24 MB/s | §2, §10 | 🟢 |
+| A5 | DPU fan-out lane scaling (4 archs × lanes 1–4) + pinned-vs-naive placement ablation; DPU-kernel roofline (OPs/bytes) | `results/benchmark_stream/` (fan-out), `onboard_pipeline.md` §5–§6; roofline `results/benchmark_hardware/_roofline/` | 🟢 |
 | A6 | Mission objective (TerraSAR-X): three deadlines, page-cited | `docs/TerraSAR-X_objective.md` | 🟢 except take/contact numbers (objective §6/§9) |
-| A7 | `.ddc` container + trailer offset table (O(1) access, prioritised downlink) | `src/utils/ddc_format.py`, §6 | 🟢 as artifact, **not** a contribution |
-| A8 | INT8 `g_s` output cap at 2100.1 clips brightest ~0.7 % (point scatterers) | §10 | 🟡 prose-only unless a metric is built |
-| A9 | Byte-identical correctness gate across every schedule | §4, §7 | 🟢 credibility, one sentence |
+| A7 | `.ddc` container + trailer offset table (O(1) access, prioritised downlink) | `src/utils/ddc_format.py`, §9 | 🟢 as artifact, **not** a contribution |
+| A8 | INT8 `g_s` output cap at 2100.1 clips brightest ~0.7 % (point scatterers) | §8 | 🟡 prose-only unless a metric is built |
+| A9 | Byte-identical correctness gate across every schedule | §4 | 🟢 credibility, one sentence |
 | A10 | Cross-platform CPU/GPU energy (desktop A4000 + Xeon) | `results/benchmark_unified/` | 🟡 **spent in TGRS** — retained as *reference context* in a comparison table (informative even if published), never a contribution; rides alongside a new baseline (Jetson N2 / CCSDS N5) |
 
 *(In this table, a bare §N refers to `onboard_pipeline.md` unless a doc is named.)*
@@ -59,7 +59,7 @@ stacked time-per-patch, overlap, optimization ladder; plus the ported DDC TikZ).
 | --- | --- | --- |
 | R1 | **Shaped as a measurement campaign** (DATE publishes named mechanisms, not case studies). | *Being addressed* — reframed around the topology-aware mechanism + a met deadline + a recognizable baseline (§6–§7). Keep the mechanism up front. |
 | R2 | Self-overlap with TGRS (same platform, models, scene). | §1 off-limits list as a checklist; confirm TGRS submission status before submitting. |
-| R3 | λ=1000 ladder is pre-snap (7,296) vs λ=20 snap (7,482). | Report throughput at λ=20 only (measured λ-independence); state once in setup. |
+| R3 | λ / grid mixing across sweeps. | **Resolved** — the whole corpus is re-run at one coherent setup (λ=20, overlap 2, snap grid 7,540); throughput is λ-independent (measured). State the setup once. |
 | R4 | Single scene, single board. | Be explicit — characterization scope, not a generalization claim. |
 | R5 | No SAR/EO/LIC prior art at DATE. | Motivate in systems terms (data rate, power, deadline); disambiguate "compression"/"architecture" (see `main.tex`); never assume the reader knows speckle or SLC. |
 
@@ -67,12 +67,13 @@ stacked time-per-patch, overlap, optimization ladder; plus the ported DDC TikZ).
 
 ## 4. Experiments to deepen the work
 
-Single home: **`onboard_pipeline.md` §11**. In brief — **N1** core-scaling diagnosis→fix (the
-mechanism's second component), **N2** Jetson embedded-GPU baseline, **N3** deadline/budget-driven rate
-allocation (future policy), **N5** CCSDS-122 baseline; plus figure/data TODOs **A4** (ladder
-warm-per-rung) and **A5** (PL resource-usage table). N4 (INT8 range cap) is dropped as a study — it
-survives as a one-line limitation in `main.tex`. *Also dropped:* the architecture-predicted overlap
-rule (2 px is too small to be a receptive-field effect).
+Single home: **`onboard_pipeline.md` §5–§6 (fan-out, done) + §12 (TODO)**. **Done:** N1 core-scaling
+diagnosis→fix (the mechanism's second component — pinned placement recovers the third core, the
+hyperprior oversubscribes at a fourth) and A4 (ladder warm-per-rung). **Open:** **N2** Jetson
+embedded-GPU baseline, **N5** CCSDS-122 baseline, **A5** PL resource-usage table. **Dropped:** N3
+(deadline/budget rate allocation — tricky to implement), N4 (INT8 range cap → one-line limitation in
+`main.tex`), and the architecture-predicted overlap rule (2 px is too small to be a receptive-field
+effect).
 
 ---
 
@@ -121,7 +122,8 @@ before the next ground contact, but remains ~10× short of real-time in worst ca
    to storage.)
 2. A **bottleneck characterization**: the limit is architecture-dependent — CPU/entropy-bound for the
    factorized-prior model, DPU-bound for the scale-hyperprior — established with a byte-identical
-   optimization ladder, <!--, plus the DPU core-scaling anomaly (the hyperprior *regresses* on a third core). -->
+   optimization ladder, plus the DPU fan-out core-scaling (deterministic placement recovers the third
+   core; the hyperprior oversubscribes at a fourth).
 3. **Two hardware-forced relaxations, each priced** on the same pipeline: dropping whole-image
    symmetrization (which otherwise makes streaming impossible; ≤0.54 dB) and minimal patch overlap
    (which removes a real reconstruction seam; overlap-2 at ~1% latency / 0.8% downlink).
@@ -159,8 +161,8 @@ crop ov0 vs ov2 at a patch boundary** (one visible artifact > one plot); optiona
 justification, warm = representative / cold = SD-testbed, power sampling). **Fig: optimization ladder**
 (throughput per rung, two archs, SD-read + warm ceilings — the archs climb through different rungs and
 stop against different ceilings). **Fig: stacked time per patch** (read/normalize/DPU/entropy — makes
-CPU- vs DPU-bound visible). Energy: J/patch (parallelism costs power, saves energy). DPU core scaling +
-the hyperprior anomaly (N1, if diagnosed). Baseline: embedded GPU vs FPGA SoC (N2) and/or CCSDS (N5),
+CPU- vs DPU-bound visible). Energy: J/patch (parallelism costs power, saves energy). DPU fan-out lane
+scaling + the pinned-placement ablation and the 4-lane oversubscription cliff. Baseline: embedded GPU vs FPGA SoC (N2) and/or CCSDS (N5),
 desktop CPU/GPU as reference context. **Table: throughput vs mission deadlines** (real-time /
 before-contact / downlink-fit; two archs; warm + cold) — the matrix, not a figure.
 
@@ -184,7 +186,7 @@ optimization.
 5. Energy per patch across the ladder and architectures.
 6. Quality cost of dropping symmetrization, across architectures and rate points.
 7. Seam-band vs interior quality across overlap, plus latency and downlink cost.
-8. DPU fan-out scaling per architecture across core counts, including the hyperprior anomaly (N1).
+8. DPU fan-out lane scaling per architecture (1–4 lanes), the pinned-vs-naive placement ablation, and the 4-lane oversubscription cliff.
 9. *[N2/N5]* Embedded GPU vs FPGA SoC on the same pipeline and/or CCSDS, desktop CPU/GPU as context.
 10. Measured throughput vs each mission deadline (real-time / before-contact / downlink-fit): met, and
     by how much missed. Side note: peak DDR footprint, windowed vs whole-tile.

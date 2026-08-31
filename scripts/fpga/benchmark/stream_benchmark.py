@@ -26,6 +26,7 @@ import json
 import re
 import statistics
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import rootutils
@@ -36,12 +37,23 @@ from scripts.fpga.benchmark.board_thermal import cooldown, read_thermal  # noqa:
 
 BOARD = "ZCU102"
 BOARD_ROOT = "/home/root/SAR_DDC"
+# Streaming patch overlap default: 2 px removes the seam-band deficit at ~1% cost (U5 study,
+# docs/onboard_pipeline.md §8). Canonical, so it is NOT put in the result filename (only deviations
+# are), keeping the label stable across the overlap-0 → overlap-2 switch for the downstream tables.
+CANONICAL_OVERLAP = 2
 
 _SUMMARY = re.compile(
     r"(\d+) patches \((\d+) x (\d+)\) \| bpp=([\d.]+) \| ([\d.]+) patch/s \| total=([\d.]+) s"
 )
 _READ = re.compile(r"read=([\d.]+)")
 _POWER = re.compile(r"\[power\] ([\d.]+) W .*?([\d.]+) J \| ([\d.]+) J/patch")
+# Per-lane fan-out timing (one line per DPU lane); g_a ms/call across lanes is the placement proxy.
+_LANE = re.compile(
+    r"\[lane (\d+)\] patches=(\d+) \| g_a=([\d.]+) ms/patch \(([\d.]+)/call\) "
+    r"h_a=([\d.]+) h_s=([\d.]+) norm=([\d.]+) entropy=([\d.]+)"
+)
+# Per-rail-group mean W (PL/PS/DPU_fabric/PS_compute/MGT/MPSoC) — the DPU(PL) vs CPU(PS) energy split.
+_POWER_GROUPS = re.compile(r"\[power-groups\]\s*(.+)")
 
 
 def ssh_capture(remote_cmd: str) -> str:
@@ -87,6 +99,29 @@ def parse_run(stdout: str) -> dict:
     n, grid_a, grid_r, bpp, patch_s, total_s = m.groups()
     read = _READ.search(stdout)
     pw = _POWER.search(stdout)
+    lanes = [
+        {
+            "lane": int(m[0]),
+            "patches": int(m[1]),
+            "ga_ms_patch": float(m[2]),
+            "ga_ms_call": float(m[3]),
+            "ha_ms_patch": float(m[4]),
+            "hs_ms_patch": float(m[5]),
+            "norm_ms_patch": float(m[6]),
+            "entropy_ms_patch": float(m[7]),
+        }
+        for m in _LANE.findall(stdout)
+    ]
+    pg = _POWER_GROUPS.search(stdout)
+    power_groups = {}
+    if pg:
+        for tok in pg.group(1).split():
+            k, _, v = tok.partition("=")
+            if v:
+                try:
+                    power_groups[k] = float(v)
+                except ValueError:
+                    pass
     return {
         "n_patches": int(n),
         "grid_a": int(grid_a),
@@ -98,6 +133,65 @@ def parse_run(stdout: str) -> dict:
         "avg_power_w": float(pw.group(1)) if pw else None,
         "energy_j": float(pw.group(2)) if pw else None,
         "j_per_patch": float(pw.group(3)) if pw else None,
+        "power_groups": power_groups,
+        "lanes": lanes,
+    }
+
+
+def _median_opt(vals):
+    """Median of the non-None values, or None if they are all None (e.g. power off)."""
+    xs = [v for v in vals if v is not None]
+    return statistics.median(xs) if xs else None
+
+
+def median_lanes(runs: list) -> list:
+    """Per-lane median of every timing field across the timed iterations.
+
+    Lanes are matched by their stable ``lane`` id; load balancing makes per-lane ``patches``
+    vary slightly between runs, so that count is medianed too (it is informational). Reporting
+    the median (not the first iteration) is what makes the placement diagnosis robust to a single
+    unlucky run — the whole point of running ``--iters`` > 1 for the fan-out sweep.
+    """
+    by_lane: dict = {}
+    for r in runs:
+        for lane in r.get("lanes", []):
+            by_lane.setdefault(lane["lane"], []).append(lane)
+    out = []
+    for lane_id in sorted(by_lane):
+        group = by_lane[lane_id]
+        out.append({k: statistics.median(lane[k] for lane in group) for k in group[0]})
+    return out
+
+
+def _median_groups(runs: list) -> dict:
+    """Per-group median W across the timed iterations (PL/PS/DPU_fabric/PS_compute/MGT/MPSoC)."""
+    keys = set()
+    for r in runs:
+        keys |= set(r.get("power_groups") or {})
+    out = {}
+    for k in sorted(keys):
+        vals = [r["power_groups"][k] for r in runs if k in (r.get("power_groups") or {})]
+        if vals:
+            out[k] = statistics.median(vals)
+    return out
+
+
+def _git_provenance() -> dict:
+    """Record which host source produced this run (the board binary is rebuilt from it)."""
+
+    def _q(args):
+        try:
+            return subprocess.run(
+                ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True
+            ).stdout.strip()
+        except Exception:
+            return None
+
+    dirty = _q(["status", "--porcelain", "inference_cpp", "scripts/fpga/benchmark"])
+    return {
+        "git_sha": _q(["rev-parse", "--short", "HEAD"]) or None,
+        "git_dirty": bool(dirty),
+        "run_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
 
@@ -106,6 +200,12 @@ def schedule_flags(args) -> list:
     flags = []
     if args.schedule == "p0":
         flags += ["--p0", "--threads", str(args.threads)]
+    if args.fanout:
+        flags.append("--fanout")  # p0 modifier: --threads independent DPU lanes (excludes --s1)
+    if args.lane_major:
+        flags.append(
+            "--lane-major"
+        )  # naive pipeline-major placement baseline (else pinned/deterministic)
     if args.s1:
         flags.append("--s1")
     if not args.whole:
@@ -116,8 +216,7 @@ def schedule_flags(args) -> list:
         flags.append("--neon")
     if args.power:
         flags.append("--power")
-    if args.overlap > 0:
-        flags += ["--overlap", str(args.overlap)]
+    flags += ["--overlap", str(args.overlap)]  # always forward: stream_pipeline now defaults to 2
     if args.max_rows >= 0:
         flags += ["--max-rows", str(args.max_rows)]
     return flags
@@ -141,12 +240,18 @@ def label(args, cold: bool) -> str:
         parts.append("s1")
     if args.schedule == "p0":
         parts.append(f"t{args.threads}")
+    if args.fanout:
+        parts.append("lanemaj" if args.lane_major else "fo")
     if args.prefetch:
         parts.append("pf")
     if args.neon:
         parts.append("neon")
-    if args.overlap > 0:
+    if (
+        args.overlap != CANONICAL_OVERLAP
+    ):  # canonical overlap stays unsuffixed; flag deviations only
         parts.append(f"ov{args.overlap}")
+    if getattr(args, "tag", ""):
+        parts.append(args.tag)
     parts.append("cold" if cold else "warm")
     if args.max_rows >= 0:
         parts.append(f"r{args.max_rows}")
@@ -160,12 +265,26 @@ def parse_args():
     )
     p.add_argument("--schedule", choices=["seq", "p0"], default="p0", help="base schedule")
     p.add_argument("--s1", action="store_true", help="channel-parallel g_a (composes with both)")
+    p.add_argument(
+        "--fanout",
+        action="store_true",
+        help="p0 modifier: --threads independent DPU lanes (N1 data-parallel fan-out; excludes --s1)",
+    )
+    p.add_argument(
+        "--lane-major",
+        dest="lane_major",
+        action="store_true",
+        help="--fanout naive pipeline-major placement baseline (all g_a collide on one core; else pinned)",
+    )
     p.add_argument("--threads", type=int, default=4, help="worker count for --schedule p0")
     p.add_argument("--prefetch", action="store_true", help="double-buffer row-block reads")
     p.add_argument("--neon", action="store_true", help="NEON-vectorised normalize/denorm")
     p.add_argument("--power", action="store_true", help="sample board power (INA226/PMBus)")
     p.add_argument(
-        "--overlap", type=int, default=0, help="patch overlap px (stream_pipeline --overlap N)"
+        "--overlap",
+        type=int,
+        default=CANONICAL_OVERLAP,
+        help="patch overlap px (stream_pipeline --overlap N); default 2 = streaming seam default",
     )
     p.add_argument(
         "--tile", default="data/stream_tile_1k_i16.npy", help="board-relative tile path"
@@ -174,6 +293,11 @@ def parse_args():
         "--whole", action="store_true", help="load whole tile (default: windowed stream)"
     )
     p.add_argument("--max-rows", type=int, default=-1, help="cap azimuth patch-rows (-1 = full)")
+    p.add_argument(
+        "--tag",
+        default="",
+        help="optional label suffix (e.g. 'ent') to keep a run distinct from an existing result set",
+    )
     p.add_argument("--keep-cache", action="store_true", help="WARM: skip the cache drop")
     p.add_argument(
         "--cooldown", action="store_true", help="thermal cooldown-gate + telemetry per run"
@@ -199,6 +323,10 @@ def main():
     args = parse_args()
     if args.prefetch and args.whole:
         raise SystemExit("--prefetch requires windowed streaming (drop --whole)")
+    if args.fanout and args.schedule != "p0":
+        raise SystemExit("--fanout is a --schedule p0 modifier")
+    if args.fanout and args.s1:
+        raise SystemExit("--fanout excludes --s1 (both contend for the same 3 DPU cores)")
     cold = not args.keep_cache
 
     if args.dry_run:
@@ -271,7 +399,12 @@ def main():
         "label": label(args, cold),
         "schedule": args.schedule,
         "s1": args.s1,
+        "fanout": args.fanout,
+        "lane_major": args.lane_major,
         "threads": args.threads if args.schedule == "p0" else None,
+        "lanes": median_lanes(
+            runs
+        ),  # per-lane fan-out timing (median over iters; placement diagnosis)
         "prefetch": args.prefetch,
         "neon": args.neon,
         "windowed": not args.whole,
@@ -287,11 +420,13 @@ def main():
         "median_patch_s": med_patch_s,
         "scene_bytes": scene_bytes,
         "slc_mb_s": slc_mb_s,
-        "read_ms": runs[0]["read_ms"],
-        "avg_power_w": runs[0]["avg_power_w"],
-        "energy_j": runs[0]["energy_j"],
-        "j_per_patch": runs[0]["j_per_patch"],
+        "read_ms": _median_opt(r["read_ms"] for r in runs),
+        "avg_power_w": _median_opt(r["avg_power_w"] for r in runs),
+        "energy_j": _median_opt(r["energy_j"] for r in runs),
+        "j_per_patch": _median_opt(r["j_per_patch"] for r in runs),
+        "power_groups": _median_groups(runs),
         "overlap": args.overlap,
+        "provenance": _git_provenance(),
     }
     if args.cooldown and therms:
         throttled = any(t["a53_throttled"] for t in therms)
@@ -316,8 +451,8 @@ def main():
 
     print("-" * 68)
     pw = (
-        f" | {runs[0]['j_per_patch']:.4f} J/patch @ {runs[0]['avg_power_w']:.1f} W"
-        if runs[0]["avg_power_w"]
+        f" | {result['j_per_patch']:.4f} J/patch @ {result['avg_power_w']:.1f} W"
+        if result["avg_power_w"]
         else ""
     )
     print(

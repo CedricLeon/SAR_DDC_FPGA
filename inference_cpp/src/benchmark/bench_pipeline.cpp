@@ -93,6 +93,31 @@ BenchPipeline::BenchPipeline(const std::filesystem::path& xmodel_path,
 #endif
 }
 
+// Lane-mode ctor: entropy models only; DPU runners injected later via adopt_runner().
+BenchPipeline::BenchPipeline(const std::filesystem::path& params_dir, LaneMode)
+{
+    eb_.load_params(params_dir);
+    auto gc_scale = params_dir / "gc_scale_table.npy";
+    if (std::filesystem::exists(gc_scale)) {
+        gc_.load_params(params_dir);
+        has_gc_ = gc_.is_loaded();
+    }
+#ifdef HAVE_DPU
+    lane_mode_ = true;  // DPU runners injected via adopt_runner(); no graph loaded here
+#else
+    throw std::runtime_error("BenchPipeline(LaneMode) requires HAVE_DPU");
+#endif
+}
+
+#ifdef HAVE_DPU
+void BenchPipeline::adopt_runner(const std::string& role, DPUSubgraphRunner&& r)
+{
+    if (!lane_mode_)
+        throw std::runtime_error("adopt_runner: only valid on a LaneMode pipeline");
+    lane_runners_.emplace(role, std::move(r));
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // make_patch_state
 // ---------------------------------------------------------------------------
@@ -108,7 +133,7 @@ PatchState BenchPipeline::make_patch_state(int H, int W) const
     s.imag_ch  .resize(static_cast<size_t>(H * W));
 
 #ifdef HAVE_DPU
-    const auto& ga        = loader_.runner("g_a");
+    const auto& ga        = dpu("g_a");
     const auto& ga_shape  = ga.output_shape();   // [N, H', W', C]
     s.yh = ga_shape[1];
     s.yw = ga_shape[2];
@@ -123,14 +148,14 @@ PatchState BenchPipeline::make_patch_state(int H, int W) const
     s.y_abs.resize(static_cast<size_t>(y_len * 2));
 
     if (has_gc_) {
-        const auto& ha       = loader_.runner("h_a");
+        const auto& ha       = dpu("h_a");
         const auto& ha_shape = ha.output_shape();
         s.zh = ha_shape[1];
         s.zw = ha_shape[2];
         s.z    .resize(static_cast<size_t>(ha.output_numel()));
         s.z_hat.resize(static_cast<size_t>(ha.output_numel()));
 
-        const auto& hs = loader_.runner("h_s");
+        const auto& hs = dpu("h_s");
         s.scales.resize(static_cast<size_t>(hs.output_numel()));
         s.y_hat .resize(static_cast<size_t>(y_len * 2));
         s.means .assign(static_cast<size_t>(y_len * 2), 0.0f);
@@ -142,9 +167,13 @@ PatchState BenchPipeline::make_patch_state(int H, int W) const
     s.yh_real.resize(static_cast<size_t>(y_len));
     s.yh_imag.resize(static_cast<size_t>(y_len));
 
-    const auto& gs = loader_.runner("g_s");
-    s.recon_real .resize(static_cast<size_t>(gs.output_numel()));
-    s.recon_imag .resize(static_cast<size_t>(gs.output_numel()));
+    // g_s sizing only when g_s is present. The deterministic fan-out compress path omits g_s (decode-
+    // only), so recon buffers stay empty there — they are never used without stage_gs.
+    if (has_dpu_role("g_s")) {
+        const auto& gs = dpu("g_s");
+        s.recon_real .resize(static_cast<size_t>(gs.output_numel()));
+        s.recon_imag .resize(static_cast<size_t>(gs.output_numel()));
+    }
 #else
     // Fallback sizing from constants so host builds compile.
     // Stages will throw at runtime if called without HAVE_DPU.
@@ -228,17 +257,30 @@ void BenchPipeline::stage_normalize(PatchState& s)
 // ---------------------------------------------------------------------------
 // Stage 1 — DPU g_a + CPU interleave
 // ---------------------------------------------------------------------------
-void BenchPipeline::stage_ga(PatchState& s)
+void BenchPipeline::stage_ga(PatchState& s, const SubStageSink* sink)
 {
-    channel_split(s);
+    // Run each step; when a --trace sink is attached, bracket it and report [start,end] so the two
+    // g_a DPU calls (real, imag) and the CPU glue become separate timeline events. No sink -> the
+    // step just runs (no clock reads), so the non-tracing path is unchanged.
+    auto timed = [&](const char* label, auto&& fn) {
+        if (sink) {
+            const auto a = std::chrono::steady_clock::now();
+            fn();
+            (*sink)(label, a, std::chrono::steady_clock::now());
+        } else {
+            fn();
+        }
+    };
+    timed("g_a_cpu", [&] { channel_split(s); });
 #ifdef HAVE_DPU
-    const auto& ga = loader_.runner("g_a");
-    ga.run(s.real_ch.data(), s.y_real.data());
-    ga.run(s.imag_ch.data(), s.y_imag.data());
+    const auto& ga = dpu("g_a");
+    timed("g_a", [&] { ga.run(s.real_ch.data(), s.y_real.data()); });
+    timed("g_a", [&] { ga.run(s.imag_ch.data(), s.y_imag.data()); });
 #else
+    (void)timed;
     throw std::runtime_error("stage_ga: compiled without HAVE_DPU");
 #endif
-    interleave_and_abs(s);
+    timed("g_a_cpu", [&] { interleave_and_abs(s); });
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +309,7 @@ void BenchPipeline::stage_ga_s1(PatchState& s)
 void BenchPipeline::stage_ha(PatchState& s)
 {
 #ifdef HAVE_DPU
-    const auto& ha = loader_.runner("h_a");
+    const auto& ha = dpu("h_a");
     ha.run(s.y_abs.data(), s.z.data());
 #else
     (void)s;
@@ -312,7 +354,7 @@ void BenchPipeline::stage_eb_decompress(PatchState& s)
 void BenchPipeline::stage_hs(PatchState& s)
 {
 #ifdef HAVE_DPU
-    const auto& hs = loader_.runner("h_s");
+    const auto& hs = dpu("h_s");
     hs.run(s.z_hat.data(), s.scales.data());
 #else
     (void)s;
@@ -348,7 +390,7 @@ void BenchPipeline::stage_gs(PatchState& s)
 {
     deinterleave_yhat(s);
 #ifdef HAVE_DPU
-    const auto& gs = loader_.runner("g_s");
+    const auto& gs = dpu("g_s");
     gs.run(s.yh_real.data(), s.recon_real.data());
     gs.run(s.yh_imag.data(), s.recon_imag.data());
 #else
