@@ -3,7 +3,7 @@
 > **Temporary working doc** for the DATE'27 submission. Dissolve into
 > `LaTeX/SAR_DDC_FPGA_DATE27/` + the permanent docs once the manuscript takes shape.
 > **The story we follow is the mechanism cut; the draft is `main.tex` and this doc plans around it.**
-> Condensed DATE venue evidence is in §7.
+> Condensed DATE venue evidence is in §0.
 >
 > **DATE 2027**, 22–24 March, Dresden. Abstract **13 Sep 2026**, paper **20 Sep 2026 AoE**.
 > 6 pages + 1 reference page, IEEE double column. **Track: E3** (ML solutions for embedded and
@@ -100,133 +100,222 @@ The older `stream_gantt` / `stream_roofline` / `stream_sysplot` sketches (`scrip
 
 ---
 
-## 4. Post-draft feedback — Dirk, 2026-08-26 (consolidated)
+## 4. Execution plan — to a full prose draft for feedback round 2
 
-Three sources merged and deduplicated — **(E)** his email, **(O)** his Overleaf comments (`\DS{}` in
-`main.tex` @ `2015a9e`), **(K)** points/reactions I added. Status marks: **✍** writing/figure work,
-**✅** question resolved below, **⚠** decision still open, **🔍** research needed.
-Overall verdict (E): *"quite difficult to understand at the moment"* — partly because the draft is
-still bullet points, but the structure itself needs simplification.
+**Goal**: transform `main.tex` from the bullet-point skeleton into full prose with the restructured
+story and refreshed figures — not submission-ready, but clean enough for another Dirk/Martin pass.
+**Clock**: abstract 13 Sep, paper 20 Sep AoE → Phase 0 this week (≤ Sep 4), figures by ~Sep 8, draft
+to reviewers ~Sep 11, buffer to submission.
+**Markers**: **🔄** = outcome may change this plan (changed numbers, broken story, new insight) —
+when a 🔄 task lands, update §4.0 and downstream tasks *first*, then continue. All 🔄 tasks are
+front-loaded into Phase 0. Mark tasks done by checking them off here; fold measurement outcomes into
+`onboard_pipeline.md` as usual.
+**Execution notes**: board tasks need the ZCU102 → serialize them (one session at a time owns the
+board). Research and figure tasks are agent-delegable and parallel. Every number written into
+text/figures gets computed by a `python3` command first (repo convention).
 
-### 4.1 Restructure (the big item) ✍
+### 4.0 Settled decisions & facts (ledger for all writers)
 
-Adopt Dirk's narrative (E) — open with a quick overview of the structure, then the sections:
+**Paper skeleton** (replaces the current section cut):
 
-1. **Characterization** — stacked-time figure *without* SD card → DPU time is significant for all
-   configurations → optimize the DPU first.
-2. **DPU optimization** — fan-out scheduling + subgraph-to-core placement + matching CPU workers to
-   DPU lanes → speedup X. Dirk: *"I think this is the most important part."* Show the new runtime in
-   a stacked-time-style diagram.
-3. **CPU optimization** — now that the DPU is faster, CPU dominates the non-residual nets → pool /
-   prefetch / neon / entropy. Again show the resulting stacked-time.
-4. **Combine** — final numbers, transferable rules of thumb, how the insights apply to other
-   architectures/applications.
-5. **Energy** — effect of the optimizations on energy (important for RS); in-section or Discussion.
+- **I. Introduction** — contributions rewritten to match the new structure.
+- **II. Background & Related Work** — SAR/SLC/speckle · BAQ + TerraSAR-X · LIC ¶ · DDC ¶ ·
+  *condensed* classical-SAR-baseline ¶ (CCSDS/BAQ, moved from old §Eval) · architecture-selection ¶ ·
+  platform ¶ (DPU-first) + Table 1 · delta vs prior work.
+- **III. Analysis & Optimizations** — subsections: *System & setup* → *Characterization* →
+  *DPU/scheduling optimizations* → *CPU optimizations* → *Combined results & rules of thumb*.
+  (The old "Onboard Streaming Pipeline" section content lives in *System & setup*; ⚠ if III grows
+  too big, System & setup can be promoted back to its own short section.)
+- **IV. Evaluation** — *Relaxations* (old Sec. V, condensed) → *Cross-platform baseline* (prominent)
+  → *TerraSAR-X deadlines* → *Energy*.
+- **V. Discussion & Conclusion** — possibly split if content justifies it.
 
-Notes on mapping from the current draft:
+**The ladder** (one figure, cumulative, all 4 archs, replaces the two side-by-side ladders):
+`seq → mt → fo3 → fo3p → knee → +neon → +dbuf → +ent`, i.e.
 
-- The current cut is "characterize → two ladders side by side"; the new cut serializes DPU-first,
-  then CPU. **⚠ Check what we lose**: the "optimizations fork by binding resource" insight must
-  survive — it can become the *conclusion* of steps 2+3 instead of their premise. This likely also
-  dissolves my ladder-ordering worry (rung order changing the reading, "+entropy hidden behind the
-  shared DPU"): with a DPU block and a CPU block, within-block ordering matters less.
-- **Sec. V (relaxations)** → fold into background or directly into evaluation (E). ⚠ where.
-- **Evaluation narrative** (E): (i) vs. a similar-sized embedded GPU we are faster with our
-  optimizations; (ii) but still short of real-time; (iii) **gap analysis**: what would close the
-  ~7× — bigger FPGA? faster CPU? faster memory? two FPGAs? Versal? and at what power cost / is it
-  within the power budget? ✍ *new content to produce* (pairs with the conclusion's
-  design-implications callout).
-- **Discussion section** (E): restate the topology/scheduling findings, the rule of thumb for other
-  applications, what new hardware architectures are required.
+| rung | config | shows |
+| --- | --- | --- |
+| r0 `seq` | sequential baseline | reference |
+| r1 `mt` | 4 CPU workers, shared serialized DPU (old `pool`) | obvious first step; big for CPU-bound archs |
+| r2 `fo3` | fan-out, 3 lanes (1/core), default round-robin placement | the *structure* change, isolated from oversubscription (3 L not 4 L — 4 on 3 cores is the imbalance case the lane study explains later) |
+| r3 `fo3p` | + pinned subgraph-to-core placement | the core fix |
+| r4 `knee` | fan-out at per-arch knee lanes (FP 32/SH 24/ResFP 6/ResSH 20), pinned | lane-count selection |
+| r5 `+neon` | + NEON log-approx normalization | CPU kernel opt |
+| r6 `+dbuf` | + double-buffered row-block read | CPU kernel opt |
+| r7 `+ent` | + optimized rANS (flattened CDF + reciprocal, `4ddbcc8`) | CPU kernel opt |
 
-### 4.2 Figures ✍
+Fallback decision inside P0.2: if the r2→r3 delta is negligible at 3 lanes (placement pathology may
+only bite at higher lane counts), swap r3/r4 — show naive-vs-pinned *at the knee* (where the 2.8×
+was seen). Two shaded bands on the figure: rungs r1–r4 = "scheduling", r5–r7 = "CPU kernels"; each
+paper subsection points into its band.
 
-- **Uniformity** (E): figures don't share a visual language; hard to see *what* got faster and how
-  the CPU/DPU split changed (Fig. 3 shows per-kernel latency, but Fig. 5 only whole-app patch/s).
-- **`fig:stacked_time`**: drop the SD-card segment (E,O,K); *repeat* the breakdown after each
-  optimization block — e.g. subfigures: baseline / +DPU opt / +CPU+DPU opt (E,O,K).
-- **`fig:ladder` colors** (E): blue/orange already mean CPU/DPU in Fig. 3; the ladder reuses them
-  for combined throughput → change palette or align semantics.
-- **Roofline** (E,O,K): drop the 6.11 GB/s line (a measured point, not a ceiling — see 4.3); keep
-  9.6 GB/s as the single-core ceiling; add a 3-core roofline (compute ×3, memory capped at
-  17.06 GB/s — since 3×9.6 = 28.8 > 17.06 the 3-core roof is DDR-capped; Dirk's picture, consistent
-  with ours); try a CPU roofline with points for +neon/+prefetch; optionally show points moving with
-  optimizations. h_a/h_s "not bound by anything and time-wise irrelevant" can shrink to one line of
-  text if space is needed (E).
-- **Fan-out lane figure**: drop the 128-lane point; XRT wall becomes one sentence/footnote (O,K —
-  see 4.3).
-- **Energy ladder**: bring back with a short discussion — Dirk finds it relevant (O,K); place per
-  4.1 step 5.
-- **Cross-platform table**: make it more prominent; bold the best board per row (O,K).
-- **Deadline table**: replace headroom/short ratios + marks with plain percentages of the deadline
-  (450 % instead of 4.5×, 15 % instead of 6.8× short) (O,K).
-- **Table 1 (PL util)**: tool versions moved into the caption @`2015a9e` (O). ⚠ keep the table at
-  all?
+**Entropy micro-opt**: no further algorithm work (N6's `4ddbcc8` optimization is final), but it gets
+a **runtime flag** (`--entropy`, task P0.0) like every other optimization, so entropy-off configs
+are reachable without commit swaps. In the ladder it is the last CPU-kernel rung `+ent`; rungs
+r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from the profiling notes
+(`docs/tmp_entropy-coding_opt_opportunities.md`).
 
-### 4.3 Fact checks & answered questions ✅
+**Renames** (paper-level only; code/CLI flags unchanged — figure scripts map names at plot time):
+`pool` → **`mt`** (thread pool / multithreading); `prefetch` → **`dbuf`** (double-buffered read).
 
-- **Dirk's 17.35 GB/s puzzle** (O: "1374 FPS × 12.63 MB/frame = 17 353 MB/s — do you use
-  batch > 1?") — resolved; his premise is off, but it exposes a table-clarity bug. `Mem [MB]` in
-  Tab. 2 is the **FP32 checkpoint size** (params × 4 B: 3.16 M × 4 = 12.63 MB), which the DPU never
-  touches. Per inference (batch = 1, weights re-read every frame) the DPU loads the **INT8** consts:
-  `const_bytes` = 3.16 MB for h_s (xmodel static info; vaitrace measures LdWB = 3.0 MB/frame,
-  97–99 % of h_a/h_s DDR traffic). `Max DPU FPS` is the measured `xdputil benchmark` DPU-only peak.
-  Implied bandwidth: 1374.7 × 3.16 MB = **4.34 GB/s** (h_a: 6.04 GB/s) — consistent with the
-  roofline's 6.11 GB/s (= static bytes ÷ HW_RT), nothing excessive. **Actions ✍**: rename the
-  column (e.g. "FP32 size") or add an INT8/per-frame-traffic column; footnote what Max DPU FPS
-  means; state batch = 1 explicitly (O,K).
-- **Memory ceilings** (E,O,K): all numbers check out. 9.6 GB/s **per core** = 2 × 128-bit
-  `M_AXI_DATA` × 300 MHz (PG338) — Dirk agrees. 17.06 GB/s chip-wide = DDR4-2133 × 64-bit (the
-  ZCU102's Kingston KVR21SE15S8/4 SODIMM is 2133 MT/s; papers quoting 19.2 GB/s assume DDR4-2400).
-  6.11 GB/s is *not* a hardware ceiling — it's the measured best-case weight-load rate of h_a/h_s
-  (single-core, uncontended; `onboard_pipeline.md` §6) → remove as a line, keep at most as an
-  annotation on the points.
-- **Practical DDR ceilings from Dirk's refs** 🔍: <https://dl.acm.org/doi/10.1145/3517131> (p. 19:
-  13.3 GB/s max parallel read @300 MHz, ZCU104 ≈ ZCU102) and
-  <https://ieeexplore.ieee.org/document/8977835> (14.4 GB/s for 3 ports, 13.3 GB/s for 4,
-  @300 MHz). His own experiments agree. Read both; decide whether to draw a measured ~13–14 GB/s
-  ceiling on the 3-core roofline or just cite them.
-- **Datatypes** (O,K): the DPU computes in **INT8 (signed, per-tensor fixpos scaling)** — not uint8
-  as Dirk wrote. CPU side: raw complex int16 in, fp32 normalization, int8 to/from the DPU, rANS
-  bitstream out. ✍ state this along the end-to-end path + in the platform paragraph.
-- **`pool` = multithreading?** (O,K): yes — N CPU worker threads sharing the 3 serialized DPU
-  cores. ✍ rename (e.g. `mt`/`workers`) and call it a thread pool.
-- **`prefetch` rename** (O,K): the prefetcher Dirk thought of is the CPU's *hardware cache
-  prefetcher* (or `__builtin_prefetch`); ours is a double-buffered row-block read that overlaps I/O
-  with compute. ✍ rename → `double-buffer` / `overlap-read` / "parallel load".
-- **XRT wall** (O,K): hyperprior archs need 3 runners/lane → 64 L = 192 runners works, 128 L = 384
-  fails; limit estimated ≈300 runners (i.e. ≈100 lanes for hyperprior). ✍ compress to one
-  sentence/footnote, drop the figure's last point. (Exact XRT limit unverified — keep "≈".)
+**Terminology & facts every writer must respect**:
 
-### 4.4 Small text edits ✍
+- "**SoC FPGA**" everywhere (never "FPGA MPSoC" / "FPGA SoC").
+- DPU datatype = **signed INT8** (per-tensor fixpos); CPU path: complex int16 in → fp32 normalize →
+  int8 to/from DPU → rANS bitstream out. **Batch = 1** everywhere, stated explicitly.
+- Tab. 2 semantics: `Mem [MB]` = FP32 checkpoint (params × 4 B) — rename to "FP32 size" and/or add
+  INT8 const-bytes column; `Max DPU FPS` = measured `xdputil benchmark` DPU-only peak (footnote).
+  Dirk's 17.35 GB/s objection dissolves: 1374.7 FPS × 3.16 MB INT8 consts = 4.34 GB/s.
+- Roofline ceilings: **9.6 GB/s** single-core (2 × 128-bit `M_AXI_DATA` @ 300 MHz, PG338) and
+  **17.06 GB/s** chip DDR (DDR4-2133 × 64-bit; papers quoting 19.2 assume DDR4-2400). The 6.11 GB/s
+  line is dropped (measured point, not a ceiling). 3-core roof: compute 3 × 1229 = 3687 GOP/s,
+  memory capped at 17.06 (3 × 9.6 = 28.8 > 17.06) → ridge moves 128 → 216 OP/B.
+- 3-core roofline insight (verify in P0.4, don't oversell): residual g_a pulls ~2 GB/s at 3 cores —
+  scales cleanly; h_a/h_s pull ~6 GB/s *each per core* → 3 concurrent ≈ 18 GB/s > 17.06 → the
+  weight-bound side networks collide with the shared DDR ceiling under fan-out (matches the measured
+  2.2–6.0 GB/s spread at 6 lanes). Caveat in text: explains *their* efficiency drop, not the system
+  bottleneck (they are a small share of wall-time).
+- **No CPU roofline in the paper** (rANS is integer/lookup-bound; FLOP-based AI indefensible).
+  Instead: measured per-kernel times + isolated speedups (neon 2.42×, entropy numbers), and "how
+  close normalize gets to the CPU compute bound" if R3 produces defensible ceilings.
+- XRT wall: one footnote — hyperprior archs need 3 runners/lane; 64 L (192 runners) works, 128 L
+  (384) fails; limit estimated ≈300 runners. 128 L point dropped from the lane figure.
+- Deadline table: plain percentages of the deadline (450 %, 15 %) instead of ×-ratios + marks.
+- Cross-platform table: more prominent in the narrative; bold best board per row/metric; keep the
+  Orin-runs-FP32-unoptimized caveat.
+- Table 1 (PL util) stays; falls back to text only if space runs out.
+- Energy lives in IV.Evaluation for now (flexible → Discussion if flow prefers).
 
-- Say **"SoC FPGA"** everywhere (not "FPGA MPSoC" / "FPGA SoC") (O,K).
-- **Architecture-selection paragraph** (O,K): explain the two binary choices properly — what
-  *residual* means (the plain variant has no internal residual blocks in g_a/g_s), why these four,
-  and that they represent typical LIC-codec topologies. Draft (K, improve): *"Similarly to Léonard
-  et al., we experiment with 4 model architectures following the combinations of two binary
-  choices: whether the entropy prior is factorized or a hyperprior, and whether the main
-  encoder/decoder use internal residual connections to unlock larger representation capacities."*
-- **Platform paragraph DPU-first** (O,K): "We use the default B4096 DPU (…, 2 × 128-bit AXI data
-  ports per core) implemented at 300 MHz × 3 cores on a ZCU102 (4× Cortex-A53, 4 GB DDR4-2133
-  64-bit)" — include memory speed and port width.
-- **CCSDS / SAR-compression-baseline paragraph** (O): Dirk didn't get what to learn from it → move
-  to background or next to the architecture-choice explanation. ⚠ interacts with the keep/drop
-  decision (4.5).
+### 4.1 Phase 0 — measurement campaign & story-risk retirement (board; all 🔄)
 
-### 4.5 Open decisions ⚠
+- [ ] **P0.0 `--entropy` runtime flag** (N6's remainder; blocks P0.2) — wrap the `4ddbcc8` rANS
+  optimization behind a runtime flag like the other optimizations (surgical area:
+  `entropy_models.{cpp,hpp}` + `rans/rans_interface_cxx.{cpp,hpp}`; host edit, board rebuild).
+  Verify byte-identity both ways on a small patch subset: flag-on ≡ current `HEAD` output, flag-off
+  ≡ the pre-`4ddbcc8` build (e.g. `324744f`).
+- [ ] **P0.1 Pre-flight** 🔄 — board reachable, active λ=20/seed-0 models for all 4 archs
+  deployable, C++ builds from current `HEAD` (with P0.0's flag). Check `stream_pipeline` flags: can we
+  select *naive round-robin* vs *pinned* placement at runtime (needed for r2 vs r3)? If pinned is
+  hardwired, expose the naive path with a minimal flag. Also trace where `stacked_time.pdf` data
+  comes from (`benchmark_hardware` s0 vs stream trace) so P0.2 refreshes that too.
+- [ ] **P0.2 The sweep** 🔄 — this *is* N7 for every streaming number. Per arch (FP, SH, ResFP,
+  ResSH), full scene, λ=20, overlap 2, snap grid, warm read, with power sampling: one run per ladder
+  rung r0–r7 (cumulative configs above). Plus the lane grid for the lane-study figure (existing
+  grid minus 128 L). Outputs → `results/benchmark_stream/` (new timestamped tree; don't overwrite).
+  Also re-collect `benchmark_hardware` s0 per-stage + xdputil peaks if P0.1 shows the stacked-time /
+  Tab. 2 numbers come from there.
+- [ ] **P0.3 Occupancy checkpoints** 🔄 — CPU-busy% / DPU-busy% at r0, r4, r7 per arch
+  (`fanout_occupancy.py` tracing; check it runs on non-fanout configs — if not, stacked-time shares
+  for r0 + traces for r4/r6). Decide: occupancy panel under the ladder vs numbers in text.
+- [ ] **P0.4 3-core roofline data** 🔄 — vaitrace at each arch's knee operating point (per-core
+  counters → aggregate achieved GOP/s per subgraph) + keep the 1-lane uncontended reference.
+  Verify the h_a/h_s DDR-collision reading and *where the 2.8× placement number actually comes
+  from* (needed for r3 prose).
+- [ ] **P0.5 Delta report** 🔄 — one table: every paper number, old value → new value. Changed
+  story-level numbers (bottleneck shares ~73 %, cumulative ×5.6/×5.0/×3.7, knee lanes, 2.8×,
+  0.54 dB, ~1 %, deadline margins) ⇒ **stop, update §4.0 + affected tasks, then continue**.
+- [ ] **P0.6** Fold results into `onboard_pipeline.md` (N7 progress note; any new insight into its
+  section).
 
-- **SAR compression baseline (CCSDS/BAQ ¶)**: keep (moved to background, per Dirk) or drop? My
-  callout worried about overselling; relocating it lowers the stakes.
-- **Sec. V placement**: background vs. evaluation (4.1).
-- **Table 1 (PL utilization)**: keep, shrink, or fold into text?
-- **Which memory ceiling(s) on the roofline**: 9.6 single-core + 17.06 3-core (+ cite measured
-  ~13–14)? → settle after reading Dirk's two refs.
-- **Where energy lives**: inside the optimization section vs. Discussion.
+### 4.2 Phase 0b — research (agents; parallel with 4.1)
 
-### 4.6 Research todos 🔍
+- [ ] **R1** Non-SoC-FPGA prior art: has any LIC codec been deployed on a *non-SoC* FPGA? Verify
+  which platforms Mazouz 2025 and Sun 2024 actually used (we cite them as DPU-for-LIC precedents).
+  Output: 3–5 sentences + BibTeX candidates → feeds II (related work) and the SoC-FPGA framing.
+- [ ] **R2** Read the two memory papers Dirk cited — <https://dl.acm.org/doi/10.1145/3517131>
+  (p. 19: 13.3 GB/s parallel read @ 300 MHz, ZCU104) and
+  <https://ieeexplore.ieee.org/document/8977835> (14.4 GB/s 3 ports / 13.3 GB/s 4 ports) — decide:
+  draw a measured ~13–14 GB/s ceiling on the 3-core roofline or cite-only (default: cite-only, keep
+  the figure clean). Record numbers + page refs per the sourced-numbers convention.
+- [ ] **R3** (exploratory, low priority — small agent) CPU-roofline feasibility: A53 NEON peak
+  GFLOP/s (spec + microbenchmark; the 19.2 GFLOP/s = 4 × 1.2 GHz × 4 FLOP/cyc estimate is
+  UNVERIFIED), STREAM-triad DDR bandwidth from the A53s (board experiment), FLOP/byte count for
+  normalize. Deliverable: a short memo — can a defensible normalize-only roofline point be built?
+  Default remains: not in the paper; salvage "normalize reaches X % of CPU peak" as a sentence.
+- [ ] **R4** (optional) Skim the two most framing-relevant DATE papers (§0: hearable beamformer,
+  FAMERS) for evaluation/deadline phrasing patterns.
+- [ ] **R5** Verify the TerraSAR-X take/contact numbers used by the deadline table (9.9 GB contact
+  budget, 64.5 GB worst-case orbit — `docs/TerraSAR-X_objective.md` §6/§9 flags them) before the
+  percentage rework bakes them in.
 
-- **Non-SoC-FPGA prior art** (O): has a LIC codec been deployed on a *non-SoC* FPGA platform? Also
-  check which platforms our cited works (Mazouz 2025, Sun 2024) actually used.
-- Read the two memory-characterization papers (links in 4.3).
-- DATE reading list (§0) still mostly unread.
+### 4.3 Phase 1 — figures & tables (after P0 data; scripts in `LaTeX/…/figures/scripts/`)
+
+Shared first step: define one palette/legend convention (CPU = one hue, DPU = another, *everywhere*;
+combined-throughput bars in neutral colors that clash with neither) in a small shared module the
+scripts import — this answers the figure-uniformity complaint structurally.
+
+- [ ] **F1** `stacked_time.py` — drop the SD segment (warm-read baseline only); becomes *the*
+  characterization figure; CPU/DPU palette.
+- [ ] **F2** `optimization_ladder.py` — single ladder, rungs r0–r7, two shaded bands
+  ("scheduling" r1–r4, "CPU kernels" r5–r7), per-arch cumulative × annotations, neutral bar colors,
+  renamed rung labels (`mt`, `dbuf`, `ent`).
+- [ ] **F3** `roofline_subgraph.py` — remove the 6.11 line; draw 1-core (solid) + 3-core (dashed)
+  ceiling pairs; add aggregate dots from P0.4 (marker-distinguished from single-core dots); optional
+  cited measured-BW ceiling per R2; short annotation at the weight-bound points.
+- [ ] **F4** `fanout_lane_plot.py` — drop 128 L; XRT wall out of the figure (footnote in text);
+  refresh with P0.2 lane grid.
+- [ ] **F5** Energy figure for IV — J/patch per rung (or per key configs) from P0.2 power data;
+  keep it small; decide bar-ladder vs table during design.
+- [ ] **F6** `fp_cpu_stack.py` — refresh with new data; keep only if III's lane-study prose needs it
+  and space allows (candidate cut).
+- [ ] **F7** Occupancy checkpoint panel — only if P0.3 verdict = informative.
+- [ ] **F8** Tables: Tab. 2 (column rename + INT8 const-bytes and/or footnotes: batch 1, xdputil
+  peak definition); deadline table → percentages (recompute every cell with python); cross-platform
+  table bold-best per row; Tab. 1 caption already carries tool versions.
+- [ ] **F9** Dataflow figures (`system_dataflow`, `SAR_DDC_inference_dataflow`) — annotate datatypes
+  along the path (int16 → fp32 → int8 → bitstream), align style with the palette convention. There
+  is uncommitted WIP on these in the LaTeX worktree `date27-ddc-dataflow-fig` — reconcile/finish it
+  rather than starting fresh.
+- [ ] **F10** Export all to `figures/images/*.pdf`, compile check, eyeball pass in the PDF.
+
+### 4.4 Phase 2 — writing (full prose; reuse the existing bullet phrasing wherever it is good)
+
+Order: III first (hardest, most restructured), then IV, II, V, I, abstract last. Each task = turn
+the section's bullets into prose under the new skeleton, keeping the §4.0 ledger in hand.
+
+- [ ] **W1** III.*System & setup* — end-to-end path (with datatypes + batch 1), streaming as the
+  acquisition model, `.ddc` product (condensed), SD-card note (consider footnoting), byte-identity
+  gate (one paragraph, credibility).
+- [ ] **W2** III.*Characterization* — stacked-time reading (F1), Tab. 2 with fixed semantics,
+  roofline (F3) including the 3-core story + caveat; conclusion: the bottleneck migrates with
+  topology and is predictable from it. h_a/h_s "cheap in absolute time" can shrink to one line.
+- [ ] **W3** III.*DPU/scheduling optimizations* — the mechanism, as four named components in rung
+  order: `mt` → fan-out structure → pinned placement (with the verified 2.8× context) → lane-count
+  rule (knee; multiples of #cores for DPU-bound, ≥2/core to hide CPU work; many more for CPU-bound).
+  XRT footnote here. This is the section Dirk called the most important — spend the words here.
+- [ ] **W4** III.*CPU optimizations* — `neon` (2.42× isolated), `dbuf`, `ent` (the rANS
+  flattened-CDF + reciprocal optimization, now a measured rung; isolated numbers from the profiling
+  notes if useful); per-kernel numbers instead of a CPU roofline (+ R3 salvage sentence if
+  defensible).
+- [ ] **W5** III.*Combined & rules of thumb* — ladder reading (F2), occupancy deltas (P0.3), then
+  the transferable rules stated *as the conclusion*: optimizations fork by binding resource;
+  topology predicts the binding resource before any run; placement + lane rules.
+- [ ] **W6** IV — *Relaxations* (symmetrization table + overlap study, condensed from old Sec. V,
+  framed as "hardware-forced relaxations, priced"); *Cross-platform baseline* (prominent, bolded
+  table, FP32-Orin caveat); *TerraSAR-X deadlines* (percentage framing); *Energy* (F5 + short
+  discussion: PL dominates draw; more optimization ⇒ less J/patch despite higher W).
+- [ ] **W7** II — background blocks from the current draft + new: condensed CCSDS/BAQ baseline ¶
+  (from old §Eval, trimmed), architecture-selection ¶ (the two binary choices, what *residual*
+  means, "representative LIC topologies" — draft phrasing in this file's git history), platform ¶
+  DPU-first with port widths + DDR4-2133 (+ check whether the DSPs run at double clock — PG338),
+  Tab. 1, delta-vs-prior-work with double-blind-safe wording, R1 result if any.
+- [ ] **W8** V — Discussion: restate the mechanism + rules of thumb, transferability to other
+  models/applications, **gap analysis** grounded in the characterization (what closes the ~7×
+  real-time gap: more DPU compute for Res archs — PL is at 85 % DSP, so bigger FPGA / Versal AIE;
+  faster CPU or more cores for non-res archs; memory ceiling for weight-bound side nets; rough power
+  cost framing); limitations (g_s INT8 cap one-liner, SD bandwidth, INT8-only quality delta cited
+  from prior work); future work. Conclusion paragraph updated to the new structure.
+- [ ] **W9** I — introduction + contributions list rewritten to the new skeleton ("SoC FPGA"
+  wording); outline paragraph rewritten.
+- [ ] **W10** Abstract + title pass — venue findings (§0 F4/F5) favor a named mechanism and a
+  headline ratio; ⚠ decide with Cédric whether to name the scheduling mechanism.
+- [ ] **W11** Polish for the feedback round — delete resolved `\callout`/`\CL`/`\DS` markers, run
+  the P0.5 delta report against every number in the text, chktex/typo pass, full compile, PDF to
+  Dirk + Martin.
+
+### 4.5 Milestones
+
+- **M-A** (≈ Sep 4): Phase 0 + 0b done → checkpoint with Cédric; §4.0 ledger updated if 🔄 fired.
+- **M-B** (≈ Sep 8): figures compiled into the draft → quick visual review (send PNGs).
+- **M-C** (≈ Sep 11): full prose draft → feedback round 2 (Dirk/Martin) — leaves ~1 week of buffer
+  to the 20 Sep deadline (abstract due 13 Sep — register early with title + abstract from W10).

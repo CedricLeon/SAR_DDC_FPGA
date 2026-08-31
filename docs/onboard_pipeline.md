@@ -15,8 +15,9 @@ throughput/latency/energy sweep (§10) are done and board-verified at the cohere
 across the full 4-arch × 4-power-mode matrix; a per-arch quality sweep and Thor both remain (§12). The
 classical SAR baseline (N5, §10) is resolved paper-only — no CCSDS standard targets SAR, so the paper
 cites the closest literature instead of reimplementing.
-Remaining (§13): an entropy-coding optimization pass (N6 — partially done, see
-§13), the PL resource table (A5), and figure polish. Last updated 2026-08-25.
+Remaining (§13): the `--entropy` runtime flag (N6) and the pre-submission re-verification sweep (N7),
+both folded into the DATE'27 plan's Phase 0 (`DATE27_paper_plan.md` §4.1, which also carries the
+figure/writing work). Last updated 2026-08-31.
 
 ---
 
@@ -696,31 +697,26 @@ narrative, and be ready for any experiment to resolve *against* the story. Each 
 manuscript slot it *would* unblock (**→ main.tex …**) purely as navigation, never as a hole that must be
 filled.
 
-**N6 — Optimize the entropy coding (partially done).** Profiling is done and one optimization from it is
-already implemented + committed (`4ddbcc8`: flattened CDF table + a precomputed reciprocal per table
-entry, replacing a division). Temporary notes still exist: **`docs/tmp_entropy-coding_opt_opportunities.md`**.
-**Before submission — fix the toggle, not the algorithm**: entropy-on/off is currently a *commit*-level
-switch (off = build the pre-`4ddbcc8` state, e.g. `324744f`), not a runtime one like every other pipeline
-optimization (`--fanout`/`--prefetch`/`--neon`). Wrap the reciprocal-symbol path behind a real flag (e.g.
-`--entropy`) so both states are reachable from one build — cost real time during the DATE27 ladder-figure
-data collection (surgical revert of `entropy_models.{cpp,hpp}` + `rans/rans_interface_cxx.{cpp,hpp}`,
-rebuild, run, restore, rebuild again, per entropy-off batch), exactly what a flag would make trivial.
-
-**A5 — Hardware platform details (HW-community venue).** **→ main.tex §Background/Setup (platform
-table).** Report the accelerator's internal design: DPU `3× B4096 @ 300 MHz` (check whether the DSPs run
-at double clock), PS DDR4 ≈17 GB/s, ZU9EG (base facts in §2), **plus PL resource utilisation**
-(LUT/FF/BRAM/URAM/DSP) and clocks from the Vivado/DPU report — as a short platform table in `main.tex`.
+**N6 — Entropy coding: algorithm closed, runtime flag pending (2026-08-31).** Profiling is done and
+the one worthwhile optimization is implemented + committed (`4ddbcc8`: flattened CDF table + a
+precomputed reciprocal per table entry, replacing a division); no further algorithm passes (notes:
+`docs/tmp_entropy-coding_opt_opportunities.md`). **Remaining — fix the toggle, not the algorithm**:
+entropy-on/off is currently a *commit*-level switch (off = build the pre-`4ddbcc8` state, e.g.
+`324744f`), not a runtime one like every other pipeline optimization (`--fanout`/`--prefetch`/
+`--neon`). Wrap the optimized path behind a real flag (e.g. `--entropy`) so both states are reachable
+from one build; surgical area: `entropy_models.{cpp,hpp}` + `rans/rans_interface_cxx.{cpp,hpp}`.
+Scheduled **early** in the DATE'27 plan (task P0.0, `DATE27_paper_plan.md` §4.1) — the ladder sweep
+depends on it.
 
 **N7 — Full result re-verification pass (pre-submission).** Every number that goes in the paper gets
 recomputed from a clean, current-`HEAD` sweep before submission — development happened too
 unsequentially (interleaved commits, stashes, branch swaps) to trust that today's `results/` trees are
-all mutually consistent with each other or with the current codebase. Not urgent: the current push is
-the draft/skeleton with figures and tables; this is the last pass, right before submission.
+all mutually consistent with each other or with the current codebase. **Folded into the DATE'27
+plan's Phase-0 measurement campaign** (`DATE27_paper_plan.md` §4.1): the ladder re-measurement in the
+new rung order doubles as this re-verification for the streaming numbers.
 
 ### Deferred / optional
 
-- **N3 — Deadline/budget-driven rate allocation** (vary λ across the scene under a bit-budget or
-  wall-clock deadline). **Cancelled** — tricky to implement cleanly.
 - **N4 — INT8 `g_s` output cap** at 2100.1 (clips the brightest ~0.7 % of pixels). Metric-invisible;
   lives as a one-line **limitation** in `main.tex` §Discussion, not a deepening study.
 - **On-ground SHyp `.ddc` decoder** (optional, decoupled). Reproduce the board INT8 `h_s` on host so
