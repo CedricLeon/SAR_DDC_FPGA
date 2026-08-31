@@ -193,19 +193,27 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   `entropy_models.{cpp,hpp}` + `rans/rans_interface_cxx.{cpp,hpp}`; host edit, board rebuild).
   Verify byte-identity both ways on a small patch subset: flag-on ≡ current `HEAD` output, flag-off
   ≡ the pre-`4ddbcc8` build (e.g. `324744f`).
-- [ ] **P0.C Results cleanup** — archive + delete the superseded result trees and create
+- [x] **P0.C Results cleanup** — archive + delete the superseded result trees and create
   `results/date27/` + `MANIFEST.md`, exactly per §4.1a. Runs *before* the sweep so only traceable
   results exist afterwards.
-- [ ] **P0.1 Pre-flight** 🔄 — board reachable; all 4 archs (λ=20, seed 0) deployable; `make clean`
+- [x] **P0.1 Pre-flight** 🔄 — board reachable; all 4 archs (λ=20, seed 0) deployable; `make clean`
   full rebuild of current `HEAD` on the board (incremental builds mis-trigger — board clock unset,
   see `onboard_pipeline.md` §4); verify `--entropy` works and the naive-placement path is reachable
   (`lane_major` option in `stream_pipeline.hpp` — confirm its CLI spelling via `--help`; pinned is
   the default); one smoke run per binary. *(Resolved earlier: `stacked_time.py` reads stages from
-  `benchmark_hardware/<arch>…L1000…/s0_compress.json` — a λ mix E3 fixes at λ=20.)*
-- [ ] **P0.2 The sweep** 🔄 — this *is* N7 for every streaming number. Run E1–E6 from the §4.1a
+  `benchmark_hardware/<arch>…L1000…/s0_compress.json` — a λ mix E3 fixes at λ=20.)* *(Found during
+  pre-flight: `stream_benchmark.py` never forwarded `--entropy`/`--trace` to `stream_pipeline` despite
+  the binary supporting both since P0.0, and `benchmark_hardware` had no way to disable the rANS
+  optimization at all — added trivial CLI plumbing for all three, reusing the existing
+  `set_entropy_opt()` setter (`--no-entropy-opt` on `benchmark_hardware`).)*
+- [x] **P0.2 The sweep** 🔄 — this *is* N7 for every streaming number. Run E1–E6 from the §4.1a
   table, arch by arch (deploy → all runs for that arch → next arch), full scene, λ=20, overlap 2,
   snap grid, warm read, power sampling on. Outputs → `results/date27/` only, one `MANIFEST.md` line
-  per run.
+  per run. *(Done 2026-09-01: all 4 archs × E1–E6, 740/740 independent validation checks passed —
+  zero anomalies, byte-identity gate holds on every arch, E1 ladder non-decreasing r0→r7 on every
+  arch, E2 knee within ~1% of peak everywhere. Delta vs the old committed numbers: seq baselines
+  reproduce within ~2.7%; roof/peak throughput +0.2–3.5% (CPU-bound FP/SHyp gained from N6's entropy
+  optimization, DPU-bound ResFP/ResSHyp ~unchanged, as expected).)*
 - [ ] **P0.3 Occupancy checkpoints** 🔄 — CPU-busy% / DPU-busy% at r0, r4, r7 per arch
   (`fanout_occupancy.py` tracing; check it runs on non-fanout configs — if not, stacked-time shares
   for r0 + traces for r4/r7). Decide: occupancy panel under the ladder vs numbers in text.

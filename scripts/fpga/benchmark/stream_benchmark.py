@@ -214,11 +214,15 @@ def schedule_flags(args) -> list:
         flags.append("--prefetch")
     if args.neon:
         flags.append("--neon")
+    if args.entropy:
+        flags.append("--entropy")
     if args.power:
         flags.append("--power")
     flags += ["--overlap", str(args.overlap)]  # always forward: stream_pipeline now defaults to 2
     if args.max_rows >= 0:
         flags += ["--max-rows", str(args.max_rows)]
+    if args.trace:
+        flags += ["--trace", args.trace]
     return flags
 
 
@@ -246,6 +250,8 @@ def label(args, cold: bool) -> str:
         parts.append("pf")
     if args.neon:
         parts.append("neon")
+    if args.entropy:
+        parts.append("ent")
     if (
         args.overlap != CANONICAL_OVERLAP
     ):  # canonical overlap stays unsuffixed; flag deviations only
@@ -279,7 +285,19 @@ def parse_args():
     p.add_argument("--threads", type=int, default=4, help="worker count for --schedule p0")
     p.add_argument("--prefetch", action="store_true", help="double-buffer row-block reads")
     p.add_argument("--neon", action="store_true", help="NEON-vectorised normalize/denorm")
+    p.add_argument(
+        "--entropy",
+        action="store_true",
+        help="rANS flattened-CDF+reciprocal optimization (4ddbcc8); default off = "
+        "pre-optimization CDF-lookup+divide baseline (matches stream_pipeline's own default)",
+    )
     p.add_argument("--power", action="store_true", help="sample board power (INA226/PMBus)")
+    p.add_argument(
+        "--trace",
+        default="",
+        help="board-side path for the fan-out per-lane timeline CSV "
+        "(stream_pipeline --trace; requires --fanout)",
+    )
     p.add_argument(
         "--overlap",
         type=int,
@@ -407,6 +425,7 @@ def main():
         ),  # per-lane fan-out timing (median over iters; placement diagnosis)
         "prefetch": args.prefetch,
         "neon": args.neon,
+        "entropy": args.entropy,
         "windowed": not args.whole,
         "cold": cold,
         "tile": args.tile,
