@@ -1,0 +1,142 @@
+{
+  "model_name": "ResFP-relu_s0_L20_pt",
+  "label": "p0_t6_fo_neon_warm",
+  "schedule": "p0",
+  "s1": false,
+  "fanout": true,
+  "lane_major": false,
+  "threads": 6,
+  "lanes": [
+    {
+      "lane": 0,
+      "patches": 1298,
+      "ga_ms_patch": 129.09,
+      "ga_ms_call": 64.54,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 3.81,
+      "entropy_ms_patch": 7.31
+    },
+    {
+      "lane": 1,
+      "patches": 1297,
+      "ga_ms_patch": 129.75,
+      "ga_ms_call": 64.88,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 3.78,
+      "entropy_ms_patch": 6.89
+    },
+    {
+      "lane": 2,
+      "patches": 1286,
+      "ga_ms_patch": 131.1,
+      "ga_ms_call": 65.55,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 3.88,
+      "entropy_ms_patch": 6.91
+    },
+    {
+      "lane": 3,
+      "patches": 1250,
+      "ga_ms_patch": 135.35,
+      "ga_ms_call": 67.68,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 3.84,
+      "entropy_ms_patch": 7.14
+    },
+    {
+      "lane": 4,
+      "patches": 1217,
+      "ga_ms_patch": 136.06,
+      "ga_ms_call": 68.03,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 3.82,
+      "entropy_ms_patch": 7.07
+    },
+    {
+      "lane": 5,
+      "patches": 1192,
+      "ga_ms_patch": 136.88,
+      "ga_ms_call": 68.44,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 3.79,
+      "entropy_ms_patch": 6.93
+    }
+  ],
+  "prefetch": false,
+  "neon": true,
+  "entropy": false,
+  "windowed": true,
+  "cold": false,
+  "tile": "data/full_scene_i16.npy",
+  "max_rows": -1,
+  "n_patches": 7540,
+  "grid": [
+    130,
+    58
+  ],
+  "bpp": 0.1546,
+  "iters": 1,
+  "totals_s": [
+    194.5
+  ],
+  "median_total_s": 194.5,
+  "median_patch_s": 38.77,
+  "scene_bytes": 1932736344,
+  "slc_mb_s": 9.936947784061696,
+  "read_ms": 3874.1,
+  "avg_power_w": 19.1,
+  "energy_j": 3708.5,
+  "j_per_patch": 0.4918,
+  "power_groups": {
+    "DPU_fabric": 16.304,
+    "FMC": 0.0,
+    "MGT": 0.112,
+    "MPSoC": 19.104,
+    "PL": 16.706,
+    "PS": 2.398,
+    "PS_compute": 1.943,
+    "peripherals": 2.68
+  },
+  "overlap": 2,
+  "provenance": {
+    "git_sha": "3a198c3",
+    "git_dirty": true,
+    "run_utc": "2026-08-31T17:34:08+00:00"
+  },
+  "thermal": {
+    "baseline": {
+      "die_c": 72.4,
+      "ps_c": 69.4,
+      "pl_c": 72.4,
+      "a53_mhz": 1199,
+      "a53_throttled": false
+    },
+    "cooldowns": [
+      {
+        "wait_s": 36.5,
+        "target_c": 58.0,
+        "start_die_c": 70.3,
+        "end_die_c": 58.0,
+        "capped": false
+      }
+    ],
+    "post_iter": [
+      {
+        "die_c": 73.8,
+        "ps_c": 72.3,
+        "pl_c": 73.8,
+        "a53_mhz": 1199,
+        "a53_throttled": false
+      }
+    ],
+    "max_die_c": 73.8,
+    "min_a53_mhz": 1199,
+    "throttled": false
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "model_name": "SHyp-relu_s0_L20_pt",
+  "label": "seq_cold",
+  "schedule": "seq",
+  "s1": false,
+  "fanout": false,
+  "lane_major": false,
+  "threads": null,
+  "lanes": [],
+  "prefetch": false,
+  "neon": false,
+  "entropy": false,
+  "windowed": true,
+  "cold": true,
+  "tile": "data/full_scene_i16.npy",
+  "max_rows": -1,
+  "n_patches": 7540,
+  "grid": [
+    130,
+    58
+  ],
+  "bpp": 0.1474,
+  "iters": 1,
+  "totals_s": [
+    336.3
+  ],
+  "median_total_s": 336.3,
+  "median_patch_s": 22.42,
+  "scene_bytes": 1932736344,
+  "slc_mb_s": 5.747060196253345,
+  "read_ms": 82107.4,
+  "avg_power_w": 9.45,
+  "energy_j": 3156.2,
+  "j_per_patch": 0.4186,
+  "power_groups": {
+    "DPU_fabric": 6.925,
+    "FMC": 0.0,
+    "MGT": 0.112,
+    "MPSoC": 9.45,
+    "PL": 7.325,
+    "PS": 2.125,
+    "PS_compute": 1.757,
+    "peripherals": 2.474
+  },
+  "overlap": 2,
+  "provenance": {
+    "git_sha": "3a198c3",
+    "git_dirty": true,
+    "run_utc": "2026-08-31T20:05:33+00:00"
+  },
+  "thermal": {
+    "baseline": {
+      "die_c": 53.7,
+      "ps_c": 51.1,
+      "pl_c": 53.7,
+      "a53_mhz": 1199,
+      "a53_throttled": false
+    },
+    "cooldowns": [
+      {
+        "wait_s": 0.2,
+        "target_c": 58.0,
+        "start_die_c": 53.5,
+        "end_die_c": 53.5,
+        "capped": false
+      }
+    ],
+    "post_iter": [
+      {
+        "die_c": 52.6,
+        "ps_c": 52.6,
+        "pl_c": 52.3,
+        "a53_mhz": 1199,
+        "a53_throttled": false
+      }
+    ],
+    "max_die_c": 52.6,
+    "min_a53_mhz": 1199,
+    "throttled": false
+  }
+}

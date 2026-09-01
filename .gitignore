@@ -3,7 +3,11 @@
 compressai_original.py
 docker_run.sh
 # FPGA-specific files
-results/
+# results/ is untracked bulk, EXCEPT results/date27/: the DATE'27 campaign is the
+# paper's canonical data (~31 MB, frozen, MANIFEST.md-provenanced) and is versioned
+# so the figures are reproducible from a clone.
+results/*
+!results/date27/
 context/
 # C++ inference build directories (build_local, build_aarch64, etc.)
 inference_cpp/build*/

@@ -1,0 +1,30 @@
+{
+  "model_name": "FP-relu_s0_L20_pt",
+  "xmodel": "/home/root/SAR_DDC/active_model/FactorizedPriorDPUWrapper_pt.xmodel",
+  "subgraphs": {
+    "g_s": {
+      "index": 2,
+      "peak_fps": 266.131,
+      "workload_ops": 2888499200,
+      "const_bytes": 806912,
+      "workspace_bytes": 2752512,
+      "input_bytes": 32768,
+      "output_bytes": 65536,
+      "fixpos_in": 3,
+      "fixpos_out": 8
+    },
+    "g_a": {
+      "index": 4,
+      "peak_fps": 219.351,
+      "workload_ops": 4511662080,
+      "const_bytes": 1249280,
+      "workspace_bytes": 2621440,
+      "input_bytes": 66320,
+      "output_bytes": 32768,
+      "fixpos_in": 6,
+      "fixpos_out": 4
+    }
+  },
+  "total_workload_ops": 7400161280,
+  "total_const_bytes": 2056192
+}

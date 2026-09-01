@@ -1,6 +1,12 @@
 default_language_version:
   python: python3
 
+# Raw measurement artifacts are committed byte-exact — no whitespace stripping, no
+# EOF fixing, no spell "corrections". results/date27/ is the DATE'27 paper's canonical
+# data (MANIFEST.md-provenanced), and vaitrace's own output carries AMD tool typos
+# ("Hareware") that codespell would otherwise rewrite inside a measurement record.
+exclude: '^results/'
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

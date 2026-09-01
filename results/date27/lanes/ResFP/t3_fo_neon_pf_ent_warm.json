@@ -1,0 +1,112 @@
+{
+  "model_name": "ResFP-relu_s0_L20_pt",
+  "label": "p0_t3_fo_pf_neon_ent_warm",
+  "schedule": "p0",
+  "s1": false,
+  "fanout": true,
+  "lane_major": false,
+  "threads": 3,
+  "lanes": [
+    {
+      "lane": 0,
+      "patches": 2520,
+      "ga_ms_patch": 73.48,
+      "ga_ms_call": 36.74,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 3.77,
+      "entropy_ms_patch": 5.02
+    },
+    {
+      "lane": 1,
+      "patches": 2520,
+      "ga_ms_patch": 73.6,
+      "ga_ms_call": 36.8,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 3.75,
+      "entropy_ms_patch": 4.9
+    },
+    {
+      "lane": 2,
+      "patches": 2500,
+      "ga_ms_patch": 74.47,
+      "ga_ms_call": 37.23,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 3.71,
+      "entropy_ms_patch": 4.8
+    }
+  ],
+  "prefetch": true,
+  "neon": true,
+  "entropy": true,
+  "windowed": true,
+  "cold": false,
+  "tile": "data/full_scene_i16.npy",
+  "max_rows": -1,
+  "n_patches": 7540,
+  "grid": [
+    130,
+    58
+  ],
+  "bpp": 0.1546,
+  "iters": 1,
+  "totals_s": [
+    209.2
+  ],
+  "median_total_s": 209.2,
+  "median_patch_s": 36.05,
+  "scene_bytes": 1932736344,
+  "slc_mb_s": 9.238701453154876,
+  "read_ms": 5343.5,
+  "avg_power_w": 18.29,
+  "energy_j": 3819.3,
+  "j_per_patch": 0.5065,
+  "power_groups": {
+    "DPU_fabric": 15.538,
+    "FMC": 0.0,
+    "MGT": 0.112,
+    "MPSoC": 18.286,
+    "PL": 15.938,
+    "PS": 2.348,
+    "PS_compute": 1.903,
+    "peripherals": 2.463
+  },
+  "overlap": 2,
+  "provenance": {
+    "git_sha": "3a198c3",
+    "git_dirty": true,
+    "run_utc": "2026-08-31T18:04:13+00:00"
+  },
+  "thermal": {
+    "baseline": {
+      "die_c": 60.7,
+      "ps_c": 60.6,
+      "pl_c": 60.7,
+      "a53_mhz": 1199,
+      "a53_throttled": false
+    },
+    "cooldowns": [
+      {
+        "wait_s": 10.6,
+        "target_c": 58.0,
+        "start_die_c": 59.9,
+        "end_die_c": 57.7,
+        "capped": false
+      }
+    ],
+    "post_iter": [
+      {
+        "die_c": 72.1,
+        "ps_c": 70.0,
+        "pl_c": 72.1,
+        "a53_mhz": 1199,
+        "a53_throttled": false
+      }
+    ],
+    "max_die_c": 72.1,
+    "min_a53_mhz": 1199,
+    "throttled": false
+  }
+}

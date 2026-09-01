@@ -1,0 +1,52 @@
+{
+  "model_name": "ResSHyp-relu_s0_L20_pt",
+  "xmodel": "/home/root/SAR_DDC/active_model/ResidualScaleHyperpriorDPUWrapper_pt.xmodel",
+  "subgraphs": {
+    "h_s": {
+      "index": 4,
+      "peak_fps": 1373.83,
+      "workload_ops": 176246784,
+      "const_bytes": 3158016,
+      "workspace_bytes": 20480,
+      "input_bytes": 1024,
+      "output_bytes": 65536,
+      "fixpos_in": 5,
+      "fixpos_out": 4
+    },
+    "h_a": {
+      "index": 6,
+      "peak_fps": 1223.5,
+      "workload_ops": 275272704,
+      "const_bytes": 4927488,
+      "workspace_bytes": 20480,
+      "input_bytes": 65536,
+      "output_bytes": 1024,
+      "fixpos_in": 3,
+      "fixpos_out": 5
+    },
+    "g_s": {
+      "index": 8,
+      "peak_fps": 28.489,
+      "workload_ops": 38131662848,
+      "const_bytes": 3289088,
+      "workspace_bytes": 8257536,
+      "input_bytes": 32768,
+      "output_bytes": 65536,
+      "fixpos_in": 3,
+      "fixpos_out": 8
+    },
+    "g_a": {
+      "index": 10,
+      "peak_fps": 27.8328,
+      "workload_ops": 39754825728,
+      "const_bytes": 3731456,
+      "workspace_bytes": 6291456,
+      "input_bytes": 66320,
+      "output_bytes": 32768,
+      "fixpos_in": 6,
+      "fixpos_out": 3
+    }
+  },
+  "total_workload_ops": 78338008064,
+  "total_const_bytes": 15106048
+}
