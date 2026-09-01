@@ -228,13 +228,19 @@ def load_xmodel_subgraphs(arch: str) -> dict[str, dict]:
 def vaitrace_path(arch: str, which: str) -> Path:
     """``which`` ∈ {``"1lane"``, ``"knee"``} → the per-core DPU-counter text dump.
 
-    (FP's knee file is ``vaitrace_knee32.txt`` — captured before the knee moved to
-    12 L; §4.1a keeps it as-run.)
+    The ``"knee"`` file is resolved at ``KNEE[arch]`` lanes: ``vaitrace_knee{K}.txt``.
+    FP was re-traced at its 12 L knee in P0.7 (``vaitrace_knee12.txt``); the 32 L
+    capture (``vaitrace_knee32.txt``) is kept for provenance but no longer the
+    default. If the exact-``K`` file is absent, fall back to the sole
+    ``vaitrace_knee*.txt`` on disk.
     """
     d = DATE27 / "vaitrace" / arch
     if which == "1lane":
         return d / "vaitrace_1lane.txt"
     if which == "knee":
+        exact = d / f"vaitrace_knee{KNEE[arch]}.txt"
+        if exact.is_file():
+            return exact
         hits = sorted(d.glob("vaitrace_knee*.txt"))
         if not hits:
             raise FileNotFoundError(f"no vaitrace_knee*.txt in {d}")
@@ -243,10 +249,17 @@ def vaitrace_path(arch: str, which: str) -> Path:
 
 
 def occupancy_full_trace_path(arch: str, rung: int) -> Path:
-    """Full-scene occupancy trace at ladder rung 4 or 7 (the only two captured)."""
+    """Full-scene occupancy trace at ladder rung 4 or 7 (the only two captured).
+
+    Resolved at ``KNEE[arch]`` lanes when a lane-tagged capture exists
+    (``r{rung}_full_t{K}.csv`` — FP's P0.7 re-trace at its 12 L knee), else the
+    untagged ``r{rung}_full.csv`` (captured at the as-run knee, 32 L for FP).
+    """
     if rung not in (4, 7):
         raise ValueError(f"occupancy/ only has r4 and r7 full-scene traces, not r{rung}")
-    return DATE27 / "occupancy" / arch / f"r{rung}_full.csv"
+    d = DATE27 / "occupancy" / arch
+    tagged = d / f"r{rung}_full_t{KNEE[arch]}.csv"
+    return tagged if tagged.is_file() else d / f"r{rung}_full.csv"
 
 
 def checks_dir(arch: str) -> Path:

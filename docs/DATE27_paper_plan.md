@@ -229,6 +229,16 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
 - Occupancy caveat for F7/W5: raw trace spans include DPU queue-wait — summing them exceeds 100 %
   busy; **always go through `fanout_occupancy.py`'s per-core attribution**, never raw span sums.
   r0 has no trace (tracer is fanout-only) → use E3 s0 shares for r0, as planned.
+- **Entropy time is near-independent of bitstream length** (verified 2026-09-01 against the archived
+  λ=1000 s0 runs, prompted by the stacked-time stage moving 11.9 → 10.9 ms). SHyp `gc_compress`
+  11.64 → 10.95 ms (−5.9 %) and ResSHyp 11.89 → 10.92 ms (−8.2 %) while bytes/patch fell
+  12 183 → 903, i.e. **13.5× fewer output bytes buys 6–8 % less time**; FP `eb_compress` 6.75 → 6.59
+  ms for 10× fewer bytes. Cost is per-symbol CDF work over a fixed-shape latent grid, not per output
+  byte — the quantitative form of W4's lookup-bound diagnosis, and the reason the stage is stable
+  across λ. *Also settles the stacked-time question: the shift is λ, not the entropy optimization —
+  E3 ran `--no-entropy-opt` on all four archs by design (`entropy_opt: false` in every s0 JSON).*
+- Stacked-time (F1) is now **λ=20 throughout**. The pre-migration figure mixed λ=1000 stage means
+  with a λ=20 SD read; P1.0's repoint onto `results/date27/s0/` removed that mix.
 
 ### 4.1 Phase 0 — measurement campaign & story-risk retirement (board; all 🔄)
 
@@ -283,6 +293,20 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
     source and needs re-grounding on the trace-derived numbers (FP 4-core CPU busy plateaus ≈ 63–68 %
     at the knee, vs DPU ≈ 70 %). Other stale plotters same as before: `fanout_full_table.py`,
     `fanout_gantt.py`, `fanout_lane_diagram.py`, `stream_gantt/roofline/sysplot`.
+- [ ] **P0.7 The last board session** (~30 min; added 2026-09-01 after the P1.0 review). Two
+  unrelated gaps, bundled so the board is touched once more rather than twice. Same discipline as
+  the campaign: campaign SHA, `make clean` rebuild, outputs into `results/date27/`, one MANIFEST
+  line per run, λ=20/seed 0/overlap 2/snap grid/full scene/warm/power-on/batch 1.
+  - **FP traces at the 12 L knee.** FP's `vaitrace/FP/vaitrace_knee32.txt` and
+    `occupancy/FP/r{4,7}_full.csv` were taken at 32 L, before the knee moved to 12 (§4.0). Re-run:
+    `vaitrace_knee12.txt` + `r4_full.csv` / `r7_full.csv` at `--threads 12`. Keep the 32 L files
+    (provenance, as with the ladder). Blocks F3's FP aggregate dots and any F7 panel.
+  - **`mpstat` CPU probe at the knee, all 4 archs** (4 runs). The trace-derived `kind=cpu` busy %
+    stays the basis of F4's dashed series — it is self-consistent across all 15 lane counts and free
+    — but **every CPU-occupancy number that lands in prose comes from `mpstat`**, so it stays
+    comparable with the %usr/%sys/%idle framing `onboard_pipeline.md` §6 already uses. Knee only
+    (FP 12 / SHyp 24 / ResFP 6 / ResSHyp 20); the full-grid re-run (~60 runs, 2.5–3 h) is
+    **explicitly not worth it** — resolved 2026-09-01. Output → `results/date27/cpu_probe/<arch>/`.
 
 ### 4.1a Cleanup + sweep specification (validated 2026-08-31 — execute exactly, don't improvise)
 
@@ -397,7 +421,8 @@ anything. After the move: repo A owns data + code + provenance, repo B receives 
 | --- | --- | --- | --- |
 | P1.0 | Infrastructure & migration ✅ 2026-09-01 | `_figutils` + move 7 scripts (delete `system_dataflow.py` — it's the TikZ figure), repoint to `results/date27/`, every script green at its **current** design | Mechanical, zero design judgment; yields a gate-reviewable numbers table before any redesign |
 | P1.1 | Characterization | F1, F3 | One story (bottleneck migrates, `g_a` decides); shared `s0/` + `vaitrace/` data |
-| P1.2 | Mechanism | F2, F4, F5 (+ F6/F7 verdicts) | Shared `ladder/` + `lanes/` data and band/knee conventions; the section Dirk called most important |
+| P1.2 | Mechanism — **interactive with Cédric** | F2 + F5 as one merged `ladder.py` (`--throughput` / `--energy`), F4, F6 (generated, not necessarily published), F7 verdict | Shared `ladder/` + `lanes/` data and band/knee conventions; the section Dirk called most important, and the one whose design needs live iteration — book it early rather than letting it land on Sep 7 |
+| P1.OV | Overlap crop salvage | Restore 5 crops from the archive so the overlap figure is editable again | No board time, touches nothing else — run it in parallel with P1.1 |
 | P1.3 | Tables | F8 | Arithmetic-heavy, needs the ledger + `TerraSAR-X_objective.md`, not the plot palette |
 | P1.4 | Dataflow tikz | F9 | Different medium (repo B, TikZ) |
 | P1.5 | Export & captions | F10 + caption number-sync | Captions batched once instead of churning `main.tex` five times |
@@ -405,6 +430,14 @@ anything. After the move: repo A owns data + code + provenance, repo B receives 
 
 Every batch reports the caption facts that changed, so P1.5 inherits a checklist instead of a diff
 hunt. Batches P1.1–P1.3 must not edit captions or prose themselves.
+
+**P1.OV spec**: `overlap_crop.py` needs decoded tiles that P0.C archived — 1.93 GB each, untrackable.
+The archive (`benchmark_stream_overlap_work.tar.gz`, 23 GB, 61 entries) holds all five overlap
+settings for ResSHyp at both λ=20 and λ=1000. Salvage **ResSHyp λ=1000, ov ∈ {0, 2, 4, 8, 16}**, cut
+a **1024²** window from each (~4 MB each, ~20 MB total) into `results/date27/overlap/`, and repoint
+the script. 1024² rather than the rendered 340² so the window can still be moved or zoomed; five
+overlaps rather than the two the current figure shows so any pair — or a five-across strip — stays
+reachable. λ=20 not salvaged. The seam-PSNR panel's `overlap_table.csv` survived in-tree untouched.
 
 **P1.R spec** (when commissioned): a driver generated from the §4.1a campaign spec that writes
 `results/date27/…` in the recorded layout and appends MANIFEST lines, with the board's SSH alias and
@@ -417,21 +450,30 @@ that it is dry-run-verified, not re-executed.
 
 - [ ] **F1** `stacked_time.py` — drop the SD segment (warm-read baseline only); becomes *the*
   characterization figure; CPU/DPU palette.
-- [ ] **F2** `optimization_ladder.py` — single ladder, rungs r0–r7, two shaded bands
-  ("scheduling" r1–r4, "CPU kernels" r5–r7), per-arch cumulative × annotations, neutral bar colors,
-  renamed rung labels (`mt`, `dbuf`, `ent`).
+- [ ] **F2** single ladder, rungs r0–r7, two shaded bands ("scheduling" r1–r4, "CPU kernels"
+  r5–r7), per-arch cumulative × annotations, neutral bar colors, renamed rung labels (`mt`, `dbuf`,
+  `ent`). **Merged with F5 into one script** (decided 2026-09-01): `optimization_ladder.py` and
+  `energy_ladder.py` plot the same rung axis over the same `ladder/<arch>/` files and duplicated all
+  of the rung/label/band/color logic. One `ladder.py` with a `--throughput` / `--energy` switch
+  emitting **two independent figures** — *not* a two-panel figure: F2 sits in III and F5 in IV, so
+  they must stay separate floats.
 - [ ] **F3** `roofline_subgraph.py` — remove the 6.11 line; draw 1-core (solid) + 3-core (dashed)
   ceiling pairs; add aggregate dots from P0.4 (marker-distinguished from single-core dots); optional
   cited measured-BW ceiling per R2; short annotation at the weight-bound points.
 - [ ] **F4** `fanout_lane_plot.py` — drop 128 L; XRT wall out of the figure (footnote in text);
   refresh with P0.2 lane grid (entropy-on for all four archs, which also dissolves the entropy-off /
-  entropy-on mismatch flagged in the current caption). The dashed CPU series no longer comes from
-  `mpstat` (`cpu_probe/` died with P0.C) — derive it from the E2 trace CSVs' `kind=cpu` spans.
-- [ ] **F5** Energy figure for IV — J/patch per rung (or per key configs) from P0.2 power data;
-  keep it small; decide bar-ladder vs table during design.
-- [ ] **F6** `fp_cpu_stack.py` — candidate cut. Its `mpstat` %usr/%sys/%idle basis (`cpu_probe/`) no
-  longer exists; rebuild from the E2 traces or drop it. Do **not** restore the archived tree to feed
-  it — mixing pre-campaign logs into a date27 figure breaks the one-source rule.
+  entropy-on mismatch flagged in the current caption). The dashed CPU series is **trace-derived**
+  (`kind=cpu` spans; `cpu_probe/`'s mpstat basis died with P0.C) — legend reads "CPU busy", not
+  "%usr". Numbers cited in *prose* come from P0.7's knee-point mpstat instead, so the doc's
+  %usr/%sys/%idle framing survives. If the trace series looks noisy at high lane counts, suspect the
+  `--max-rows` subsampling window before suspecting the method.
+- [ ] **F5** Energy figure for IV — J/patch per rung from P0.2 power data (`j_per_patch`,
+  `avg_power_w`); keep it small. Same script as F2 (`ladder.py --energy`), separate float.
+- [ ] **F6** `fp_cpu_stack.py` — **keep generating it** even though it is a manuscript candidate
+  cut: Cédric wants to see it before deciding (2026-09-01). Its `mpstat` %usr/%sys/%idle basis
+  (`cpu_probe/`) is gone, so it is now a 2-band busy/idle stack from the E2 traces — a trace marks a
+  core busy, not *why*. Do **not** restore the archived tree to feed it: mixing pre-campaign logs
+  into a date27 figure breaks the one-source rule.
 - [ ] **F7** Occupancy checkpoint panel — only if P0.3 verdict = informative.
 - [ ] **F8** Tables: Tab. 2 (column rename + INT8 const-bytes and/or footnotes: batch 1, xdputil
   peak definition); deadline table → percentages (recompute every cell with python); cross-platform

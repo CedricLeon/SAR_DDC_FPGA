@@ -1,0 +1,30 @@
+14:00:35 [INFO ] XModelLoader: found 2 recognised subgraphs in meta.json
+14:00:35 [INFO ] [DPUSubgraphRunner] L0_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.062500
+14:00:35 [INFO ] [DPUSubgraphRunner] L1_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.062500
+14:00:35 [INFO ] [DPUSubgraphRunner] L2_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.062500
+14:00:35 [INFO ] [DPUSubgraphRunner] L3_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.062500
+14:00:35 [INFO ] [DPUSubgraphRunner] L4_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.062500
+14:00:35 [INFO ] [DPUSubgraphRunner] L5_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.062500
+14:00:35 [INFO ] [DPUSubgraphRunner] L6_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.062500
+14:00:35 [INFO ] [DPUSubgraphRunner] L7_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.062500
+14:00:35 [INFO ] [DPUSubgraphRunner] L8_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.062500
+14:00:35 [INFO ] [DPUSubgraphRunner] L9_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.062500
+14:00:35 [INFO ] [DPUSubgraphRunner] L10_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.062500
+14:00:35 [INFO ] [DPUSubgraphRunner] L11_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.062500
+stream_pipeline [p0+fanout]: 7540 patches (130 x 58) | bpp=0.1561 | 204.06 patch/s | total=36.9 s
+  [fanout/pinned] threads=12 ; read=11432.3 write=62.9 ms (compute stages overlapped)
+  [lane 0] patches=641 | g_a=42.58 ms/patch (21.29/call) h_a=0.000 h_s=0.000 norm=6.27 entropy=6.78 (ms/patch)
+  [lane 1] patches=646 | g_a=42.62 ms/patch (21.31/call) h_a=0.000 h_s=0.000 norm=6.13 entropy=6.56 (ms/patch)
+  [lane 2] patches=612 | g_a=45.84 ms/patch (22.92/call) h_a=0.000 h_s=0.000 norm=6.23 entropy=6.54 (ms/patch)
+  [lane 3] patches=643 | g_a=42.75 ms/patch (21.38/call) h_a=0.000 h_s=0.000 norm=6.16 entropy=6.62 (ms/patch)
+  [lane 4] patches=636 | g_a=43.26 ms/patch (21.63/call) h_a=0.000 h_s=0.000 norm=6.15 entropy=6.74 (ms/patch)
+  [lane 5] patches=592 | g_a=47.71 ms/patch (23.86/call) h_a=0.000 h_s=0.000 norm=6.17 entropy=6.46 (ms/patch)
+  [lane 6] patches=637 | g_a=42.78 ms/patch (21.39/call) h_a=0.000 h_s=0.000 norm=6.04 entropy=7.11 (ms/patch)
+  [lane 7] patches=646 | g_a=42.18 ms/patch (21.09/call) h_a=0.000 h_s=0.000 norm=6.42 entropy=6.78 (ms/patch)
+  [lane 8] patches=596 | g_a=47.74 ms/patch (23.87/call) h_a=0.000 h_s=0.000 norm=5.80 entropy=6.45 (ms/patch)
+  [lane 9] patches=640 | g_a=42.73 ms/patch (21.37/call) h_a=0.000 h_s=0.000 norm=6.31 entropy=6.76 (ms/patch)
+  [lane 10] patches=643 | g_a=42.70 ms/patch (21.35/call) h_a=0.000 h_s=0.000 norm=6.12 entropy=6.79 (ms/patch)
+  [lane 11] patches=608 | g_a=46.21 ms/patch (23.10/call) h_a=0.000 h_s=0.000 norm=6.09 entropy=6.57 (ms/patch)
+  [prefetch] row-block N+1 read overlapped with compress of N
+  [power] 16.53 W (MPSoC) | 605.6 J | 0.0803 J/patch
+  [power-groups] DPU_fabric=13.272 FMC=0.000 MGT=0.112 MPSoC=16.525 PL=13.672 PS=2.854 PS_compute=2.266 peripherals=3.059

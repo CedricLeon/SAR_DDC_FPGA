@@ -169,3 +169,10 @@ dmypy.json
 
 # Aim logging
 .aim
+
+# DATE'27 campaign data — see `results/*` + `!results/date27/` near the top. That
+# negation lets git descend into the tree, but later generic rules above (`*.log`,
+# `*.zip`, `*.tar.gz`, …) re-exclude some campaign records (e.g. the P0.7
+# `cpu_probe/*_mpstat.log` samplers). Re-include everything under the dir so it
+# stays fully tracked and byte-exact for figure reproducibility.
+!results/date27/**

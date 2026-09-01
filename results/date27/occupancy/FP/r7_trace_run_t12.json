@@ -1,0 +1,193 @@
+{
+  "model_name": "FP-relu_s0_L20_pt",
+  "label": "p0_t12_fo_pf_neon_ent_warm",
+  "schedule": "p0",
+  "s1": false,
+  "fanout": true,
+  "lane_major": false,
+  "threads": 12,
+  "lanes": [
+    {
+      "lane": 0,
+      "patches": 658,
+      "ga_ms_patch": 41.2,
+      "ga_ms_call": 20.6,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 5.18,
+      "entropy_ms_patch": 6.28
+    },
+    {
+      "lane": 1,
+      "patches": 654,
+      "ga_ms_patch": 41.41,
+      "ga_ms_call": 20.71,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 5.31,
+      "entropy_ms_patch": 6.21
+    },
+    {
+      "lane": 2,
+      "patches": 600,
+      "ga_ms_patch": 46.84,
+      "ga_ms_call": 23.42,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 5.13,
+      "entropy_ms_patch": 5.89
+    },
+    {
+      "lane": 3,
+      "patches": 635,
+      "ga_ms_patch": 43.27,
+      "ga_ms_call": 21.63,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 5.27,
+      "entropy_ms_patch": 6.09
+    },
+    {
+      "lane": 4,
+      "patches": 630,
+      "ga_ms_patch": 44.28,
+      "ga_ms_call": 22.14,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 4.88,
+      "entropy_ms_patch": 5.91
+    },
+    {
+      "lane": 5,
+      "patches": 606,
+      "ga_ms_patch": 46.4,
+      "ga_ms_call": 23.2,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 4.9,
+      "entropy_ms_patch": 6.08
+    },
+    {
+      "lane": 6,
+      "patches": 648,
+      "ga_ms_patch": 42.49,
+      "ga_ms_call": 21.24,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 5.09,
+      "entropy_ms_patch": 5.98
+    },
+    {
+      "lane": 7,
+      "patches": 642,
+      "ga_ms_patch": 42.61,
+      "ga_ms_call": 21.31,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 5.14,
+      "entropy_ms_patch": 6.26
+    },
+    {
+      "lane": 8,
+      "patches": 599,
+      "ga_ms_patch": 46.79,
+      "ga_ms_call": 23.39,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 5.18,
+      "entropy_ms_patch": 5.97
+    },
+    {
+      "lane": 9,
+      "patches": 651,
+      "ga_ms_patch": 41.88,
+      "ga_ms_call": 20.94,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 5.21,
+      "entropy_ms_patch": 6.16
+    },
+    {
+      "lane": 10,
+      "patches": 629,
+      "ga_ms_patch": 43.93,
+      "ga_ms_call": 21.96,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 5.0,
+      "entropy_ms_patch": 6.17
+    },
+    {
+      "lane": 11,
+      "patches": 588,
+      "ga_ms_patch": 48.12,
+      "ga_ms_call": 24.06,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 4.95,
+      "entropy_ms_patch": 5.94
+    }
+  ],
+  "prefetch": true,
+  "neon": true,
+  "entropy": true,
+  "windowed": true,
+  "cold": false,
+  "tile": "data/full_scene_i16.npy",
+  "max_rows": -1,
+  "n_patches": 7540,
+  "grid": [
+    130,
+    58
+  ],
+  "bpp": 0.1561,
+  "iters": 1,
+  "totals_s": [
+    35.8
+  ],
+  "median_total_s": 35.8,
+  "median_patch_s": 210.72,
+  "scene_bytes": 1932736344,
+  "slc_mb_s": 53.9870487150838,
+  "read_ms": 9629.8,
+  "avg_power_w": null,
+  "energy_j": null,
+  "j_per_patch": null,
+  "power_groups": {},
+  "overlap": 2,
+  "provenance": {
+    "git_sha": "7856483",
+    "git_dirty": false,
+    "run_utc": "2026-09-01T13:58:47+00:00"
+  },
+  "thermal": {
+    "baseline": {
+      "die_c": 57.2,
+      "ps_c": 56.6,
+      "pl_c": 57.2,
+      "a53_mhz": 1199,
+      "a53_throttled": false
+    },
+    "cooldowns": [
+      {
+        "wait_s": 15.7,
+        "target_c": 58.0,
+        "start_die_c": 64.0,
+        "end_die_c": 57.1,
+        "capped": false
+      }
+    ],
+    "post_iter": [
+      {
+        "die_c": 65.1,
+        "ps_c": 63.5,
+        "pl_c": 65.1,
+        "a53_mhz": 1199,
+        "a53_throttled": false
+      }
+    ],
+    "max_die_c": 65.1,
+    "min_a53_mhz": 1199,
+    "throttled": false
+  }
+}
