@@ -307,9 +307,14 @@ E3–E6 ≈ 1 h → ~5–6 h + 4 model redeploys, one serialized session.
 
 ### 4.2 Phase 0b — research (agents; parallel with 4.1)
 
-- [ ] **R1** Non-SoC-FPGA prior art: has any LIC codec been deployed on a *non-SoC* FPGA? Verify
+- [x] **R1** Non-SoC-FPGA prior art: has any LIC codec been deployed on a *non-SoC* FPGA? Verify
   which platforms Mazouz 2025 and Sun 2024 actually used (we cite them as DPU-for-LIC precedents).
   Output: 3–5 sentences + BibTeX candidates → feeds II (related work) and the SoC-FPGA framing.
+  *(2026-09-01: yes — Sun et al.'s lineage (VCIP'22/A-SSCC'22/JETCAS'24/ASPDAC'25) runs custom
+  Verilog RTL on non-SoC KU115/VCU118 boards. Correction: `sunFPGACodecSystem2024` is NOT
+  DPU-based — main.tex:137 miscites it alongside Mazouz 2025; it explicitly out-throughputs a
+  DPU competitor (FPX-NIC, new candidate). Full findings + BibTeX →
+  `LaTeX/SAR_DDC_FPGA_DATE27/references/R1_non-soc-fpga-LIC.md`.)*
 - [ ] **R2** Read the two memory papers Dirk cited — <https://dl.acm.org/doi/10.1145/3517131>
   (p. 19: 13.3 GB/s parallel read @ 300 MHz, ZCU104) and
   <https://ieeexplore.ieee.org/document/8977835> (14.4 GB/s 3 ports / 13.3 GB/s 4 ports) — decide:
