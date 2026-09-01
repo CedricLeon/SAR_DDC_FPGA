@@ -85,7 +85,8 @@ table; the full-tile extrapolation.
 | A9 | Byte-identical correctness gate across every schedule | §4 | 🟢 credibility, one sentence |
 | A10 | Cross-platform CPU/GPU energy (desktop A4000 + Xeon) | `results/benchmark_unified/` | 🟡 **spent in TGRS** — retained as *reference context* in a comparison table (informative even if published), never a contribution; rides alongside a new baseline (Jetson N2 / CCSDS N5) |
 
-**Figure code:** the DATE manuscript figures are built in `LaTeX/…/figures/scripts/`.
+**Figure code:** `DDC_FPGA/scripts/figures/` (moved out of the LaTeX repo 2026-09-01 — rationale and
+layout in §4.3). The LaTeX repo holds only rendered PDFs, the TikZ sources, and `main.tex`.
 The older `stream_gantt` / `stream_roofline` / `stream_sysplot` sketches (`scripts/fpga/benchmark/`) are superseded.
 
 ---
@@ -176,8 +177,15 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   2.2–6.0 GB/s spread at 6 lanes). Caveat in text: explains *their* efficiency drop, not the system
   bottleneck (they are a small share of wall-time).
 - **No CPU roofline in the paper** (rANS is integer/lookup-bound; FLOP-based AI indefensible).
-  Instead: measured per-kernel times + isolated speedups (neon 2.42×, entropy numbers), and "how
-  close normalize gets to the CPU compute bound" if R3 produces defensible ceilings.
+  Instead: measured per-kernel times + isolated speedups (neon 2.42–2.49×, entropy numbers).
+  **R3 closed this 2026-09-01 and killed the salvage sentence too**: `normalize` reaches ≈3.3 % of
+  the single-core NEON peak — memory-bound ruled out, limiter identified (unrolled serial dependency
+  chain the in-order A53 cannot hide). A 3 % figure needs its whole mechanism explained to not read
+  as a regression, which is disproportionate to one sentence. W4 keeps the isolated-speedup framing
+  and drops the roofline angle entirely.
+- **A53 NEON peak = 9.6 GFLOP/s per core, 38.4 GFLOP/s per chip** (LLVM `AArch64SchedA53.td` +
+  microbenchmark, R3) — this **corrects the `19.2 GFLOP/s` estimate** this doc carried, which was off
+  by exactly 2× (missing FMA fusion credit). Never quoted in `main.tex`: planning-doc correction only.
 - XRT wall: one footnote — hyperprior archs need 3 runners/lane; 64 L (192 runners) works, 128 L
   (384) fails; limit estimated ≈300 runners. 128 L point dropped from the lane figure.
 - Deadline table: plain percentages of the deadline (450 %, 15 %) instead of ×-ratios + marks.
@@ -328,8 +336,8 @@ E3–E6 ≈ 1 h → ~5–6 h + 4 model redeploys, one serialized session.
 - [x] **R3** CPU-roofline feasibility *(2026-09-01: verdict — confirms the default, NOT paper-worthy. Full memo:
   `docs/tmp_R3_cpu-roofline.md` — delete once W4 is written and has extracted what it needs, per this
   doc's own convention for `tmp_*` memos.)*
-- [ ] **R4** (optional) Skim the two most framing-relevant DATE papers (§0: hearable beamformer,
-  FAMERS) for evaluation/deadline phrasing patterns.
+- **R4 — dropped 2026-09-01** (was optional: skim the hearable beamformer + FAMERS for
+  evaluation/deadline phrasing). Revive only if W10's title/abstract pass stalls for want of a model.
 - [x] **R5** *(2026-09-01)* Checked against `docs/references/` PDFs + web. **Verdict: mixed — one solid
   input, one weak input per headline number; both headline numbers are usable but rest on an ESTIMATE.**
   - **64.5 GB worst-case orbit** = 358 MB/s × **180 s**. Rate **solid** ([Pitz p.617]-cross-checked);
@@ -342,11 +350,53 @@ E3–E6 ≈ 1 h → ~5–6 h + 4 model redeploys, one serialized session.
   - Bonus: [eoP] gives **320 Gbit BOL** SSMM (doc/Pitz say 384; EOL 256 agrees, immaterial — we size on
     EOL). Full outcome + citations folded into `TerraSAR-X_objective.md` §2/§6/§9.
 
-### 4.3 Phase 1 — figures & tables (after P0 data; scripts in `LaTeX/…/figures/scripts/`)
+### 4.3 Phase 1 — figures & tables
 
-Shared first step: define one palette/legend convention (CPU = one hue, DPU = another, *everywhere*;
-combined-throughput bars in neutral colors that clash with neither) in a small shared module the
-scripts import — this answers the figure-uniformity complaint structurally.
+**Where the code lives (decided 2026-09-01).** Figure code moves *out* of the LaTeX repo into
+`DDC_FPGA/scripts/figures/`. Today the dependency runs backwards — repo B's scripts climb
+`../../../..` into repo A's results and `sys.path`-hack into `scripts/fpga/benchmark/` for the
+occupancy math — while the LaTeX repo is a publication artifact that should not know how to compute
+anything. After the move: repo A owns data + code + provenance, repo B receives rendered PDFs only.
+
+- `scripts/figures/_figutils.py` — the shared module (leading underscore matches the `_plotkit` /
+  `_benchmark_loader` house convention). Owns: the palette (CPU one hue, DPU another, storage/read
+  neutral grey, *everywhere*; combined-throughput bars neutral against both), per-arch colors,
+  display names, rung labels, knee lanes, loaders for every `results/date27/` subdir, the per-core
+  occupancy attribution, and one save helper emitting PDF + PNG. This answers the figure-uniformity
+  complaint structurally rather than by convention.
+- Output dir resolves to `REPO_ROOT/LaTeX/SAR_DDC_FPGA_DATE27/figures/images/` with a
+  `DATE27_FIG_OUT` env override, and **hard-errors if absent** — never a silent write to cwd.
+- `results/date27/` is now **version-controlled** (`b784587`): the ignore is narrowed to `results/*`
+  with a `!results/date27/` negation, and `^results/` is excluded from pre-commit so measurement
+  records stay byte-exact. Figures are therefore reproducible from a clone of repo A alone.
+- The other stale plotters in `scripts/fpga/benchmark/` (`fanout_gantt`, `fanout_cpu_fp`,
+  `fanout_full_table`, `fanout_table`, `stream_gantt/roofline/sysplot/table`) also read the deleted
+  trees. Only `fanout_occupancy.py` is load-bearing → moves in P1.0; **the rest are P0.6's problem**
+  (repoint or delete).
+
+**Commissioning batches.** One agent session per row, reviewed before the next is issued.
+
+| # | Batch | Covers | Seam rationale |
+| --- | --- | --- | --- |
+| P1.0 | Infrastructure & migration | `_figutils` + move all 8 scripts, repoint to `results/date27/`, every script green at its **current** design | Mechanical, zero design judgment; yields a gate-reviewable numbers table before any redesign |
+| P1.1 | Characterization | F1, F3 | One story (bottleneck migrates, `g_a` decides); shared `s0/` + `vaitrace/` data |
+| P1.2 | Mechanism | F2, F4, F5 (+ F6/F7 verdicts) | Shared `ladder/` + `lanes/` data and band/knee conventions; the section Dirk called most important |
+| P1.3 | Tables | F8 | Arithmetic-heavy, needs the ledger + `TerraSAR-X_objective.md`, not the plot palette |
+| P1.4 | Dataflow tikz | F9 | Different medium (repo B, TikZ) |
+| P1.5 | Export & captions | F10 + caption number-sync | Captions batched once instead of churning `main.tex` five times |
+| P1.R | Reproducibility kit | Campaign driver + `results/date27/README.md` | Independent of the figures; **after** the Sep 8 milestone |
+
+Every batch reports the caption facts that changed, so P1.5 inherits a checklist instead of a diff
+hunt. Batches P1.1–P1.3 must not edit captions or prose themselves.
+
+**P1.R spec** (when commissioned): a driver generated from the §4.1a campaign spec that writes
+`results/date27/…` in the recorded layout and appends MANIFEST lines, with the board's SSH alias and
+paths parameterized. It cannot be validated without 5–6 h of board time, so it ships with
+`--dry-run` plus a check asserting its generated command set **equals the flag-sets MANIFEST.md
+already records** — real verification at zero board cost. The companion `README.md` states plainly
+that it is dry-run-verified, not re-executed.
+
+**Figure specs** (F-numbers are referenced from the W tasks in §4.4 — keep them stable):
 
 - [ ] **F1** `stacked_time.py` — drop the SD segment (warm-read baseline only); becomes *the*
   characterization figure; CPU/DPU palette.
@@ -357,19 +407,26 @@ scripts import — this answers the figure-uniformity complaint structurally.
   ceiling pairs; add aggregate dots from P0.4 (marker-distinguished from single-core dots); optional
   cited measured-BW ceiling per R2; short annotation at the weight-bound points.
 - [ ] **F4** `fanout_lane_plot.py` — drop 128 L; XRT wall out of the figure (footnote in text);
-  refresh with P0.2 lane grid.
+  refresh with P0.2 lane grid (entropy-on for all four archs, which also dissolves the entropy-off /
+  entropy-on mismatch flagged in the current caption). The dashed CPU series no longer comes from
+  `mpstat` (`cpu_probe/` died with P0.C) — derive it from the E2 trace CSVs' `kind=cpu` spans.
 - [ ] **F5** Energy figure for IV — J/patch per rung (or per key configs) from P0.2 power data;
   keep it small; decide bar-ladder vs table during design.
-- [ ] **F6** `fp_cpu_stack.py` — refresh with new data; keep only if III's lane-study prose needs it
-  and space allows (candidate cut).
+- [ ] **F6** `fp_cpu_stack.py` — candidate cut. Its `mpstat` %usr/%sys/%idle basis (`cpu_probe/`) no
+  longer exists; rebuild from the E2 traces or drop it. Do **not** restore the archived tree to feed
+  it — mixing pre-campaign logs into a date27 figure breaks the one-source rule.
 - [ ] **F7** Occupancy checkpoint panel — only if P0.3 verdict = informative.
 - [ ] **F8** Tables: Tab. 2 (column rename + INT8 const-bytes and/or footnotes: batch 1, xdputil
   peak definition); deadline table → percentages (recompute every cell with python); cross-platform
   table bold-best per row; Tab. 1 caption already carries tool versions.
 - [ ] **F9** Dataflow figures (`system_dataflow`, `SAR_DDC_inference_dataflow`) — annotate datatypes
-  along the path (int16 → fp32 → int8 → bitstream), align style with the palette convention. There
-  is uncommitted WIP on these in the LaTeX worktree `date27-ddc-dataflow-fig` — reconcile/finish it
-  rather than starting fresh.
+  along the path (int16 → fp32 → int8 → bitstream), align style with the palette convention.
+  *Start from LaTeX `main`, not from a worktree.* The old `date27-ddc-dataflow-fig` branch was an
+  Aug-12-based snapshot that `main` had already overtaken on every file but one; it was deleted
+  2026-09-01 after its single surviving idea was recorded here: **the `system_dataflow` legend should
+  read "Storage / ARM CPU (A53) / DPU" on row one and "factorized path / hyperprior only" on a second
+  row below it** (`main`'s .tex still says "CPU" and "main path" on one row, and its caption already
+  says *factorized* — so the .tex is the stale half). Re-centre the legend scope after widening.
 - [ ] **F10** Export all to `figures/images/*.pdf`, compile check, eyeball pass in the PDF.
 
 ### 4.4 Phase 2 — writing (full prose; reuse the existing bullet phrasing wherever it is good)
@@ -390,8 +447,8 @@ the section's bullets into prose under the new skeleton, keeping the §4.0 ledge
 - [ ] **W4** III.*CPU optimizations* — `neon` (2.42× isolated), `dbuf`, `ent` (the rANS
   flattened-CDF + reciprocal optimization, now a measured rung; isolated numbers + the
   lookup-bound diagnosis from `docs/tmp_entropy-coding_opt_opportunities.md` — **delete that tmp
-  doc once this task has extracted what it needs**); per-kernel numbers instead of a CPU roofline
-  (+ R3 salvage sentence if defensible).
+  doc once this task has extracted what it needs**); per-kernel numbers instead of a CPU roofline —
+  **no salvage sentence**, R3 ruled it out (§4.0). Also delete `docs/tmp_R3_cpu-roofline.md` here.
 - [ ] **W5** III.*Combined & rules of thumb* — ladder reading (F2), occupancy deltas (P0.3), then
   the transferable rules stated *as the conclusion*: optimizations fork by binding resource;
   topology predicts the binding resource before any run; placement + lane rules.
