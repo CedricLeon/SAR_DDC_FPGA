@@ -162,7 +162,7 @@ would fight for the same 3 cores), and is byte-identical to `seq` (§4 gate). Pl
 ```bash
 python scripts/fpga/benchmark/stream_fanout_sweep.py --archs FP,SHyp,ResFP,ResSHyp --lambdas 20 \
     --lanes 1,2,3,4,5,6,7,8,9,10,12,14,16,20,24,32,48,68,96,128     # full lane sweep (iters=1 suffices — see below)
-python LaTeX/SAR_DDC_FPGA_DATE27/figures/scripts/fanout_lane_plot.py    # -> LaTeX/SAR_DDC_FPGA_DATE27/figures/images/lane_scaling.png
+python scripts/figures/fanout_lane_plot.py    # -> LaTeX/SAR_DDC_FPGA_DATE27/figures/images/lane_scaling.{pdf,png}
 ```
 
 **Lane scaling.** Warm throughput / DPU + CPU occupancy / energy vs lane count (λ=20) are the three
@@ -307,7 +307,7 @@ is 97–99 % of their total DDR traffic (vs 16 % for residual `g_a`, which is fe
 `LdFM`+`StFM` ≫ `LdWB` there); the two runs above (SHyp, ResSHyp) measure the same `h_a`/`h_s` weights
 and agree to <0.2 %.
 
-The roofline figure (`LaTeX/SAR_DDC_FPGA_DATE27/figures/scripts/roofline_subgraph.py`) plots this as a
+The roofline figure (`scripts/figures/roofline_subgraph.py`) plots this as a
 third ceiling, **measured DPU weight-load bandwidth = 6.11 GB/s** — `achieved GOP/s ÷ AI` for `h_a`/`h_s`,
 i.e. the same static xmodel byte-basis the figure's x-axis already uses (not vaitrace's raw `AvgBw` of
 5.7–6.0 GB/s above, which uses a different, dynamic byte count and would put the points slightly above
@@ -615,28 +615,41 @@ with thermal). The full per-rail-group breakdown is in each result JSON.*
 
 ## 11. Figures
 
-Manuscript figures live in the LaTeX repo (`LaTeX/SAR_DDC_FPGA_DATE27/figures/scripts/`: system
-dataflow, stacked time-per-patch, overlap, optimization ladder, fan-out lane scaling, FP CPU-time stack).
-`fanout_lane_plot.py` (lane-scaling figure `lane_scaling.png`: throughput / occupancy / energy vs lanes;
-occupancy panel: **solid = DPU busy, dashed = CPU %usr** ★ = operating point) lives there too, but still
-depends on this repo's `fanout_occupancy.py` (below) for its DPU/CPU occupancy series — reached via an
-explicit `sys.path` insert rather than a package install, since the two repos aren't otherwise linked.
+The DATE'27 figure code lives in **`scripts/figures/`** (this repo) — moved out of the LaTeX repo in
+P1.0 so data + code + provenance all sit together and the figures are reproducible from a clone.
+`scripts/figures/_figutils.py` is the shared module: palette (CPU / DPU / storage), per-arch colors,
+display names, rung labels, knee lanes, the `results/date27/` loaders, the occupancy re-exports, and
+`save_figure()` (writes `.pdf` + `.png` into `LaTeX/SAR_DDC_FPGA_DATE27/figures/images/`, env override
+`DATE27_FIG_OUT`, hard-errors if that dir is absent). Every script reads from `results/date27/` only.
+Run each under `conda activate DDC_FPGA`.
 
+- **`stacked_time.py`** → s0 per-patch stacked bars (the bottleneck-migration figure); reads
+  `results/date27/s0/<arch>/s0_compress_entoff.json`.
+- **`optimization_ladder.py`** / **`energy_ladder.py`** → the cumulative ladder r0–r7 (throughput /
+  J-per-patch), all four archs, one panel; reads `results/date27/ladder/<arch>/r{0..7}_*_warm.json`.
+- **`roofline_subgraph.py`** → per-subgraph Williams roofline; reads
+  `results/date27/s0/<arch>/*_xmodel_info.json` + hard-coded vaitrace HW_RT (§6).
+- **`fanout_lane_plot.py`** → the lane-scaling figure `lane_scaling.{pdf,png}` (throughput / occupancy /
+  energy vs lanes; occupancy panel: **solid = mean per-core DPU busy, dashed = mean 4-core CPU busy**,
+  ★ = knee). Occupancy series come from `fanout_occupancy.py` in the same directory (via `_figutils`) —
+  no more cross-repo `sys.path` insert.
+- **`fp_cpu_stack.py`** → FP A53 occupancy stack (%busy / %idle) vs lanes, from the trace CSVs' `kind=cpu`
+  spans. Candidate cut (F6).
+- **`overlap_crop.py`** → the seam figure. The two reconstruction-crop panels need
+  `results/benchmark_stream_overlap/_work/*.npy`, archived out of the tree on 2026-08-31 — the script
+  hard-errors with the regeneration path and the last rendered `overlap_crop.{pdf,png}` is kept as-is.
+  The seam-PSNR panel's `overlap_table.csv` is still in the tree.
 - **`fanout_occupancy.py`** → per-core DPU occupancy from the `--trace` CSVs (§6 method + the
-  `[t1 − e, t1]` reconstruction); `__main__` prints the per-core table. Also used directly (same repo)
-  by `fanout_cpu_fp.py`.
-- **`fanout_cpu_fp.py`** → the FP CPU-binding figure `fp_cpu_binding.png` (throughput / CPU-vs-DPU
-  occupancy / user-CPU-per-patch vs lanes); reads `results/benchmark_stream/cpu_probe/{mpL,spL}_*.log`
-  (`mpstat`/`pidstat`, §6 + §10).
-- **`fanout_full_table.py`** (`--lam 20`) → the per-lane cell table `fanout_full_table.md` (patch/s |
-  J/patch across lanes — the tabulated data behind the §5 figure); reads
-  `results/benchmark_stream/<model>/p0_t{1..4}_fo_*.json`.
-- **`fanout_gantt.py`** → per-lane execution Gantt from a `--trace` CSV (§6); reads
-  `results/benchmark_stream/traces/*.csv`.
-- **`fanout_lane_diagram.py`** → per-lane stage-time bars across lane counts.
+  `[t1 − e, t1]` reconstruction) and mean 4-core CPU occupancy from the `kind=cpu` spans; `__main__`
+  prints the per-core table. `_figutils` re-exports its public functions.
 
-The older `stream_gantt` / `stream_roofline` / `stream_sysplot` sketches (`scripts/fpga/benchmark/`) are
-first-pass feel-only plots, superseded by the manuscript figures.
+`system_dataflow.py` was deleted in P1.0 — `main.tex` renders that figure from
+`figures/tikz/system_dataflow` via `\includestandalone`.
+
+**Stale, pending P0.6** (still read the deleted `results/benchmark_stream/` tree):
+`scripts/fpga/benchmark/fanout_cpu_fp.py` (also imports the moved `fanout_occupancy`),
+`fanout_full_table.py`, `fanout_gantt.py`, `fanout_lane_diagram.py`, and the older
+`stream_gantt` / `stream_roofline` / `stream_sysplot` sketches — P0.6 repoints or deletes them.
 
 ---
 

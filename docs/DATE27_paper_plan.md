@@ -274,6 +274,15 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   docs that quote streaming numbers (`FPGA_benchmark.md`, `GPU_benchmark.md`), and a grep of
   code/scripts for hardcoded stale values (knee lanes, throughputs in defaults/comments). The
   minimal N7-resolution note is already folded (2026-09-01); this is the full pass.
+  - **`scripts/fpga/benchmark/fanout_cpu_fp.py`** (P1.0, 2026-09-01): repoint or delete. It reads the
+    deleted `results/benchmark_stream/cpu_probe/` mpstat logs **and** imports `fanout_occupancy`, which
+    P1.0 moved to `scripts/figures/` — so it now fails at import. Its figure (`fp_cpu_binding.png`) is
+    superseded by `scripts/figures/fp_cpu_stack.py` + the `fanout_lane_plot.py` occupancy panel, both
+    of which now derive CPU occupancy from the trace CSVs' `kind=cpu` spans. `onboard_pipeline.md` §6
+    (waterfall 331→253→199, `fp_cpu_binding.png`, "~79 % %usr / ~17 % idle") rests on that mpstat
+    source and needs re-grounding on the trace-derived numbers (FP 4-core CPU busy plateaus ≈ 63–68 %
+    at the knee, vs DPU ≈ 70 %). Other stale plotters same as before: `fanout_full_table.py`,
+    `fanout_gantt.py`, `fanout_lane_diagram.py`, `stream_gantt/roofline/sysplot`.
 
 ### 4.1a Cleanup + sweep specification (validated 2026-08-31 — execute exactly, don't improvise)
 
@@ -373,12 +382,20 @@ anything. After the move: repo A owns data + code + provenance, repo B receives 
   `fanout_full_table`, `fanout_table`, `stream_gantt/roofline/sysplot/table`) also read the deleted
   trees. Only `fanout_occupancy.py` is load-bearing → moves in P1.0; **the rest are P0.6's problem**
   (repoint or delete).
+- **P1.0 done (2026-09-01).** `scripts/figures/{_figutils,fanout_occupancy}.py` + the 7 figure scripts;
+  6 run green, `overlap_crop.py` hard-errors by design (its `_work/` crops were archived — the last
+  render is kept). `fanout_occupancy` now also derives CPU occupancy from the trace CSVs' `kind=cpu`
+  spans (`mean min(active,4)/4` over the steady window) since `cpu_probe/` is gone. **One forced
+  deviation from "current design":** `optimization_ladder.py` / `energy_ladder.py` were two panels with
+  *arch-specific* rung sets; the campaign only measured the single cumulative r0–r7 sequence §4.0
+  defines, so both are now one panel, all 4 archs — the F2/F5 redesign target minus the bands. All
+  §4.0 self-check numbers reproduce (r7 tput, ×5.5/5.0/3.8/3.7, 2.15× placement, 40/82/79 % DPU share).
 
 **Commissioning batches.** One agent session per row, reviewed before the next is issued.
 
 | # | Batch | Covers | Seam rationale |
 | --- | --- | --- | --- |
-| P1.0 | Infrastructure & migration | `_figutils` + move all 8 scripts, repoint to `results/date27/`, every script green at its **current** design | Mechanical, zero design judgment; yields a gate-reviewable numbers table before any redesign |
+| P1.0 | Infrastructure & migration ✅ 2026-09-01 | `_figutils` + move 7 scripts (delete `system_dataflow.py` — it's the TikZ figure), repoint to `results/date27/`, every script green at its **current** design | Mechanical, zero design judgment; yields a gate-reviewable numbers table before any redesign |
 | P1.1 | Characterization | F1, F3 | One story (bottleneck migrates, `g_a` decides); shared `s0/` + `vaitrace/` data |
 | P1.2 | Mechanism | F2, F4, F5 (+ F6/F7 verdicts) | Shared `ladder/` + `lanes/` data and band/knee conventions; the section Dirk called most important |
 | P1.3 | Tables | F8 | Arithmetic-heavy, needs the ledger + `TerraSAR-X_objective.md`, not the plot palette |
