@@ -54,6 +54,15 @@ Last updated 2026-09-01.
 - **PS DDR4 peak bandwidth = 17.06 GB/s** — 4 GB DDR4-2133 SODIMM (Kingston KVR21SE15S8/4), 64-bit
   (2133 MT/s × 8 B) [UG1182 + SODIMM part]. Sustained DDR traffic (SD read + DPU DMA + memcpy) sits
   ≈20× below this → DDR is **not** a bottleneck (vaitrace-measured; §10).
+- **Achievable PS-DDR4 read ceiling (literature) ≈ 13.7 GB/s** — microbenchmarks reach ~75–81 % of
+  the theoretical peak: **Lu 2022** measures **13.7 GB/s @ 300 MHz** on a ZCU104 whose controller
+  runs the DIMM at DDR4-2133 — the same config as our SODIMM [TRETS, p.19 / §5.3.4 / Fig. 17(b)];
+  **Manev 2019** measures 14.4 GB/s on a ZCU102 carrying a **DDR4-2400** SODIMM, best with 3
+  concurrent HP ports (4 ports is slower) [ICFPT, Table I + §IV] — their 19.2 GB/s peak is correct
+  *for that SODIMM revision*, ours is 2133 → 17.06. Paper use: cite-only (the roofline draws the
+  theoretical 9.6 / 17.06 ceilings; the ~13.7 GB/s is quoted in text — it implies `h_a`/`h_s` hit
+  DDR even sooner than the drawn line). BibTeX: `luDemystifyingSoftHardened2022`,
+  `manevUnexpectedDiversityQuantitative2019`.
 - **DPU = 3× DPUCZDX8G B4096 @ 300 MHz → 1229 GOP/s per core** (4096 ops/cycle × 0.30 GHz; the guide
   lists 1400 @ 350 MHz) [PG338, *DPUCZDX8G Peak Performance*; clock from `xdputil query`]. Roofline
   ridge vs DDR = 1229 ÷ 17.06 = 72 OP/byte.

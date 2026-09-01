@@ -79,7 +79,7 @@ table; the full-tile extrapolation.
 | A3 | Overlap study (U5): ov{0,2,4,8,16}, seam-band vs interior quality, cost | `results/benchmark_stream_overlap/`, §8 | 🟢 the cleanest co-design result |
 | A4 | Memory/storage: 3.87 GB f32 tile vs ~3.0 GB DDR (whole-load OOMs), 0.3 GB windowed, SD read ~24 MB/s | §2, §10 | 🟢 |
 | A5 | DPU fan-out lane scaling (4 archs × lanes 1–4) + pinned-vs-naive placement ablation; DPU-kernel roofline (OPs/bytes) | `results/benchmark_stream/` (fan-out), `onboard_pipeline.md` §5–§6; roofline `results/benchmark_hardware/_roofline/` | 🟢 |
-| A6 | Mission objective (TerraSAR-X): three deadlines, page-cited | `docs/TerraSAR-X_objective.md` | 🟢 except take/contact numbers (objective §6/§9) |
+| A6 | Mission objective (TerraSAR-X): three deadlines, page-cited | `docs/TerraSAR-X_objective.md` | 🟢 — R5-verified: rates solid, take/contact *durations* are flagged ESTIMATEs (→ footnote in deadline table); "9.9 GB" is really GiB → restate 10.1 GB |
 | A7 | `.ddc` container + trailer offset table (O(1) access, prioritised downlink) | `src/utils/ddc_format.py`, §9 | 🟢 as artifact, **not** a contribution |
 | A8 | INT8 `g_s` output cap at 2100.1 clips brightest ~0.7 % (point scatterers) | §8 | 🟡 prose-only unless a metric is built |
 | A9 | Byte-identical correctness gate across every schedule | §4 | 🟢 credibility, one sentence |
@@ -315,11 +315,14 @@ E3–E6 ≈ 1 h → ~5–6 h + 4 model redeploys, one serialized session.
   DPU-based — main.tex:137 miscites it alongside Mazouz 2025; it explicitly out-throughputs a
   DPU competitor (FPX-NIC, new candidate). Full findings + BibTeX →
   `LaTeX/SAR_DDC_FPGA_DATE27/references/R1_non-soc-fpga-LIC.md`.)*
-- [ ] **R2** Read the two memory papers Dirk cited — <https://dl.acm.org/doi/10.1145/3517131>
-  (p. 19: 13.3 GB/s parallel read @ 300 MHz, ZCU104) and
-  <https://ieeexplore.ieee.org/document/8977835> (14.4 GB/s 3 ports / 13.3 GB/s 4 ports) — decide:
-  draw a measured ~13–14 GB/s ceiling on the 3-core roofline or cite-only (default: cite-only, keep
-  the figure clean). Record numbers + page refs per the sourced-numbers convention.
+- [x] **R2** *(2026-09-01: both papers read — **verdict: cite-only**; F3 keeps the two theoretical
+  ceilings, the measured ceiling is cited in text. Lu 2022 (TRETS, ZCU104 run at DDR4-2133 — *our*
+  config): peak read **13.7 GB/s @ 300 MHz** (80.6 %; Dirk's "13.3" is 13.7). Manev 2019 (ICFPT,
+  ZCU102 with a **DDR4-2400** SODIMM): 14.4 GB/s; 3 HP ports beat 4; their 19.2 GB/s peak is
+  correct *for their board revision*, not an error. Details + page refs → `onboard_pipeline.md`
+  §2. ⚠ BibTeX for `luDemystifyingSoftHardened2022` / `manevUnexpectedDiversityQuantitative2019`
+  still needs pasting into `references.bib` (W7/W11) — recreate from the DOIs if the agent's
+  entries are lost.)*
 - [ ] **R3** (exploratory, low priority — small agent) CPU-roofline feasibility: A53 NEON peak
   GFLOP/s (spec + microbenchmark; the 19.2 GFLOP/s = 4 × 1.2 GHz × 4 FLOP/cyc estimate is
   UNVERIFIED), STREAM-triad DDR bandwidth from the A53s (board experiment), FLOP/byte count for
@@ -327,9 +330,17 @@ E3–E6 ≈ 1 h → ~5–6 h + 4 model redeploys, one serialized session.
   Default remains: not in the paper; salvage "normalize reaches X % of CPU peak" as a sentence.
 - [ ] **R4** (optional) Skim the two most framing-relevant DATE papers (§0: hearable beamformer,
   FAMERS) for evaluation/deadline phrasing patterns.
-- [ ] **R5** Verify the TerraSAR-X take/contact numbers used by the deadline table (9.9 GB contact
-  budget, 64.5 GB worst-case orbit — `docs/TerraSAR-X_objective.md` §6/§9 flags them) before the
-  percentage rework bakes them in.
+- [x] **R5** *(2026-09-01)* Checked against `docs/references/` PDFs + web. **Verdict: mixed — one solid
+  input, one weak input per headline number; both headline numbers are usable but rest on an ESTIMATE.**
+  - **64.5 GB worst-case orbit** = 358 MB/s × **180 s**. Rate **solid** ([Pitz p.617]-cross-checked);
+    **180 s take budget is an uncited ESTIMATE** (no primary source; [eoP]'s "<180 s" is a roll-slew
+    time, not imaging — *do not cite it*).
+  - **9.9 GB single-contact** = 33.75 MB/s × **5 min**. Downlink rate **solid** (net 270 Mb/s verbatim
+    [Pitz p.617]); **5 min contact plausible but uncited**. ⚠️ Arithmetic: 33.75 × 300 s = **10.1 GB
+    (decimal) = 9.9 GiB** — the deadline table's "9.9 GB" is really GiB; restate as **10.1 GB** or label
+    GiB for consistency with the decimal 64.5 GB.
+  - Bonus: [eoP] gives **320 Gbit BOL** SSMM (doc/Pitz say 384; EOL 256 agrees, immaterial — we size on
+    EOL). Full outcome + citations folded into `TerraSAR-X_objective.md` §2/§6/§9.
 
 ### 4.3 Phase 1 — figures & tables (after P0 data; scripts in `LaTeX/…/figures/scripts/`)
 
@@ -387,7 +398,9 @@ the section's bullets into prose under the new skeleton, keeping the §4.0 ledge
   @user: "Based on our subgraph-to-core experiment and the number of lanes studies, we can say that <rule-of-thumb_explanations>. It should be noted that given that our observations rely on a small numbers of architectures this holds more from a rule-of-thumb than a predictive rule."
 - [ ] **W6** IV — *Relaxations* (symmetrization table + overlap study, condensed from old Sec. V,
   framed as "hardware-forced relaxations, priced"); *Cross-platform baseline* (prominent, bolded
-  table, FP32-Orin caveat); *TerraSAR-X deadlines* (percentage framing); *Energy* (F5 + short
+  table, FP32-Orin caveat); *TerraSAR-X deadlines* (percentage framing; fix 9.9 GB → 10.1 GB and
+  footnote that take/contact durations are operator-reported estimates while rates are page-cited —
+  R5); *Energy* (F5 + short
   discussion: PL dominates draw; more optimization ⇒ less J/patch despite higher W).
 - [ ] **W7** II — background blocks from the current draft + new: condensed CCSDS/BAQ baseline ¶
   (from old §Eval, trimmed), architecture-selection ¶ (the two binary choices, what *residual*
