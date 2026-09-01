@@ -185,6 +185,8 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   Orin-runs-FP32-unoptimized caveat.
 - Table 1 (PL util) stays; falls back to text only if space runs out.
 - Energy lives in IV.Evaluation for now (flexible → Discussion if flow prefers).
+- **Citation keys — Zotero is canonical.** Keys come from Cédric's Zotero Better-BibTeX export into
+  `references.bib`; agents never invent keys.
 
 **Post-sweep ledger updates (gate review, 2026-09-01 — these numbers override anything older):**
 
@@ -323,11 +325,9 @@ E3–E6 ≈ 1 h → ~5–6 h + 4 model redeploys, one serialized session.
   §2. ⚠ BibTeX for `luDemystifyingSoftHardened2022` / `manevUnexpectedDiversityQuantitative2019`
   still needs pasting into `references.bib` (W7/W11) — recreate from the DOIs if the agent's
   entries are lost.)*
-- [ ] **R3** (exploratory, low priority — small agent) CPU-roofline feasibility: A53 NEON peak
-  GFLOP/s (spec + microbenchmark; the 19.2 GFLOP/s = 4 × 1.2 GHz × 4 FLOP/cyc estimate is
-  UNVERIFIED), STREAM-triad DDR bandwidth from the A53s (board experiment), FLOP/byte count for
-  normalize. Deliverable: a short memo — can a defensible normalize-only roofline point be built?
-  Default remains: not in the paper; salvage "normalize reaches X % of CPU peak" as a sentence.
+- [x] **R3** CPU-roofline feasibility *(2026-09-01: verdict — confirms the default, NOT paper-worthy. Full memo:
+  `docs/tmp_R3_cpu-roofline.md` — delete once W4 is written and has extracted what it needs, per this
+  doc's own convention for `tmp_*` memos.)*
 - [ ] **R4** (optional) Skim the two most framing-relevant DATE papers (§0: hearable beamformer,
   FAMERS) for evaluation/deadline phrasing patterns.
 - [x] **R5** *(2026-09-01)* Checked against `docs/references/` PDFs + web. **Verdict: mixed — one solid
