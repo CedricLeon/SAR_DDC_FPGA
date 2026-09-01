@@ -239,6 +239,24 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   E3 ran `--no-entropy-opt` on all four archs by design (`entropy_opt: false` in every s0 JSON).*
 - Stacked-time (F1) is now **λ=20 throughout**. The pre-migration figure mixed λ=1000 stage means
   with a λ=20 SD read; P1.0's repoint onto `results/date27/s0/` removed that mix.
+- **CPU occupancy at the knee — mpstat, P0.7** (reduced 2026-09-01 from
+  `results/date27/cpu_probe/<arch>/knee_<L>_mpstat.log`, `all`-CPU rows, first/last 10 % of samples
+  trimmed as ramp/drain). **These are the numbers prose cites:**
+
+  | arch | knee | %usr | %sys | %idle | busy |
+  | --- | --- | --- | --- | --- | --- |
+  | FP | 12 L | 67.4 | 8.3 | 24.3 | 75.7 |
+  | SHyp | 24 L | 77.0 | 8.3 | 14.7 | 85.3 |
+  | ResFP | 6 L | 13.2 | 4.2 | 82.6 | 17.4 |
+  | ResSHyp | 20 L | 18.2 | 4.5 | 77.4 | 22.6 |
+
+  The CPU-bound / DPU-bound split is stark and quotable: **67–77 % %usr for FP/SHyp against
+  13–18 % for ResFP/ResSHyp**. *This validates the trace method rather than contradicting it*:
+  trace-derived CPU busy for FP is 63–68 %, against mpstat's 67.4 % **%usr** — near-identical — and
+  the gap to mpstat's 75.7 % total busy is the 8.3 % kernel time the trace cannot see (it only marks
+  explicit pipeline stages: normalize, entropy, `g_a_cpu`). So "trace busy ≈ %usr" is the honest
+  mapping. §6's old "~79 % %usr / ~17 % idle" is not wrong, it is **stale**: it described FP at the
+  old 32 L knee, not the 12 L one (P0.6 re-grounding).
 
 ### 4.1 Phase 0 — measurement campaign & story-risk retirement (board; all 🔄)
 
@@ -293,7 +311,7 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
     source and needs re-grounding on the trace-derived numbers (FP 4-core CPU busy plateaus ≈ 63–68 %
     at the knee, vs DPU ≈ 70 %). Other stale plotters same as before: `fanout_full_table.py`,
     `fanout_gantt.py`, `fanout_lane_diagram.py`, `stream_gantt/roofline/sysplot`.
-- [ ] **P0.7 The last board session** (~30 min; added 2026-09-01 after the P1.0 review). Two
+- [x] **P0.7 The last board session** (~30 min; added 2026-09-01 after the P1.0 review). Two
   unrelated gaps, bundled so the board is touched once more rather than twice. Same discipline as
   the campaign: campaign SHA, `make clean` rebuild, outputs into `results/date27/`, one MANIFEST
   line per run, λ=20/seed 0/overlap 2/snap grid/full scene/warm/power-on/batch 1.
