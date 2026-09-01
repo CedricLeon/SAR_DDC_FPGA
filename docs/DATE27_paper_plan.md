@@ -139,7 +139,7 @@ text/figures gets computed by a `python3` command first (repo convention).
 | r1 `mt` | 4 CPU workers, shared serialized DPU (old `pool`) | obvious first step; big for CPU-bound archs |
 | r2 `fo3` | fan-out, 3 lanes (1/core), default round-robin placement | the *structure* change, isolated from oversubscription (3 L not 4 L — 4 on 3 cores is the imbalance case the lane study explains later) |
 | r3 `fo3p` | + pinned subgraph-to-core placement | the core fix |
-| r4 `knee` | fan-out at per-arch knee lanes (FP 32*/SH 24/ResFP 6/ResSH 20), pinned—*FP's measured knee is now 12 L (gate review, §4.0); r4–r7 ran at 32 L, still on the flat roof | lane-count selection |
+| r4 `knee` | fan-out at per-arch knee lanes (FP 12/SH 24/ResFP 6/ResSH 20), pinned | lane-count selection |
 | r5 `+neon` | + NEON log-approx normalization | CPU kernel opt |
 | r6 `+dbuf` | + double-buffered row-block read | CPU kernel opt |
 | r7 `+ent` | + optimized rANS (flattened CDF + reciprocal, `4ddbcc8`) | CPU kernel opt |
@@ -188,7 +188,8 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
 
 **Post-sweep ledger updates (gate review, 2026-09-01 — these numbers override anything older):**
 
-- Roof throughput (r7, patch/s): FP **203.7** · SHyp **146.8** · ResFP **41.1** · ResSHyp **38.2**.
+- Roof throughput (r7, patch/s): FP **204.4** (12 L) · SHyp **146.8** · ResFP **41.1** ·
+  ResSHyp **38.2**.
   Seq baselines reproduce old within ~2.7 %; deadline margins and the "≈2× Orin" claim unchanged
   (FP ≈ 52 MB/s ⇒ ~4.5× before-contact headroom, ~6.9× short of real-time).
 - Cumulative ladder speedups: FP **×5.5** · SHyp **×5.0** · ResFP **×3.8** · ResSHyp **×3.7**.
@@ -196,10 +197,18 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   ~0) — replaces the old "2.8×" everywhere. Prose hook: naive round-robin leaves ResSHyp fan-out
   (13.7) barely above plain `mt` (12.4).
 - **Knee lanes (E2, all CPU opts on): FP 12 L** (was 32; peak 206.7 @ 48 L, 12 L within 1 %) ·
-  SHyp 24 · ResFP 6 · ResSHyp 20 unchanged. FP's ladder r4–r7 ran at 32 L (still on the flat roof,
-  r7 203.7 ≈ E2 t32) — ⚠ decision: re-run FP r4/r5/r6 at 12 L (~10 min board) for full coherence,
-  or footnote the 32 L. Rule-of-thumb prose: FP knee = 4× #cores — the old "3–4×" guess now has a
-  measured anchor (SHyp stays higher, 8×, GC entropy).
+  SHyp 24 · ResFP 6 · ResSHyp 20 unchanged. **Resolved 2026-09-01: FP r4–r7 re-run at 12 L**
+  (`results/date27/ladder/FP/r{4,5,6,7}_fo_t12_*_warm.json`; the 32 L files are kept, not deleted). r4→r7 @ 12 L: 144.0 → 172.5 → 189.8 → 204.4 patch/s
+  (non-decreasing). r7@12 L agrees with the independent E2 lane-grid point at 12 L (205.3) to
+  −0.41 %, confirming the knee. **Caveat, not a data problem**: r4–r6 @ 12 L are *not* all within 1 %
+  of their 32 L counterparts (r4 −1.5 %, r5 +2.9 %, r6 −4.0 %; only r7 is, at +0.35 %) — because E2's
+  grid runs the *full* stack (fanout+neon+prefetch+entropy) at every lane count, where 12 L and 32 L
+  both sit within ~1 % of peak, but r4–r6 test fewer optimizations layered on, and an under-optimized
+  pipeline's own saturation lane-count isn't necessarily the fully-optimized one's. The ladder
+  deliberately pins one lane count across all cumulative rungs for a clean single progression; only
+  the final (r7, full-stack) rung is guaranteed by construction to sit at the measured knee. Rule-of-
+  thumb prose: FP knee = 4× #cores — the old "3–4×" guess now has a measured anchor (SHyp stays
+  higher, 8×, GC entropy).
 - **Sequential CPU share (FP/SHyp) = ~60/61 %** (FP: CPU 15.5 ms vs DPU 10.4 ms; DPU share 40 %) —
   replaces "~73 %", which included the now-dropped SD read. Story intact: DPU is 40–82 % of
   per-patch time across archs. ResFP/ResSHyp: DPU 82/79 %.
@@ -248,10 +257,13 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   from E1 r2→r3.)*
 - [x] **P0.5 Delta report** 🔄 — *(2026-09-01 gate review done: 740/740 checks passed; story-level
   changes — FP knee 32→12 L, placement 2.8×→2.15×@3 L, CPU share 73→60 % — written into the §4.0
-  gate-review block, which overrides older numbers. One open ⚠: FP r4–r6 re-run at 12 L vs
-  footnote.)*
-- [ ] **P0.6** Fold results into `onboard_pipeline.md` (N7 progress note; any new insight into its
-  section).
+  gate-review block, which overrides older numbers.
+- [ ] **P0.6 Docs & code number-consistency pass** — **deferred to end of Phase 1** (so any
+  experiment/bug surfacing during figure work lands in the same pass). Scope: reconcile the
+  `results/date27/` numbers across `onboard_pipeline.md` (§5–§6, §10 tables and prose), the other
+  docs that quote streaming numbers (`FPGA_benchmark.md`, `GPU_benchmark.md`), and a grep of
+  code/scripts for hardcoded stale values (knee lanes, throughputs in defaults/comments). The
+  minimal N7-resolution note is already folded (2026-09-01); this is the full pass.
 
 ### 4.1a Cleanup + sweep specification (validated 2026-08-31 — execute exactly, don't improvise)
 
