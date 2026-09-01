@@ -9,19 +9,21 @@ Panels:
 Same scene window in both crops (ResSHyp lambda1000, biggest seam), so every patch
 boundary (red ticks, both axes) is at the identical spot. Display = log-intensity.
 
-Data sources (the overlap study A3 is frozen — not part of the date27 campaign):
-  seam PSNR  <- results/benchmark_stream_overlap/overlap_table.csv        (in tree)
-  crops      <- results/benchmark_stream_overlap/_work/<STEM>_ov{0,2}_warm_tile.npy
+Data sources (the overlap study A3 is frozen -- not part of the date27 campaign):
+  seam PSNR  <- results/benchmark_stream_overlap/overlap_table.csv   (in tree, survived P0.C)
+  crops      <- results/date27/overlap/ResSHyp_L1000_ov{N}_crop1024.npy
 
-**P1.0 note — this script does not run green.** The `_work/` decoded tiles were
-archived out of the tree on 2026-08-31 to
+**Crop provenance (P1.OV, 2026-09-01).** The decoded reconstruction tiles the two
+image panels need are 1.93 GB each (full tile 32901x14686 float32) and were archived
+out of the tree on 2026-08-31 to
 `/mnt/vitisAI/DDC_results_archive/2026-08-31/benchmark_stream_overlap_work.tar.gz`
-(~23 GB) and must NOT be pulled back for a date27 figure (one-source rule). The
-last good render, `figures/images/overlap_crop.{pdf,png}` (3 panels), is kept
-as-is in the manuscript repo. To regenerate: restore
-`ResSHyp-relu_s0_L1000_pt_ov{0,2}_warm_tile.npy` into
-`results/benchmark_stream_overlap/_work/` and re-run. The seam-PSNR panel's data
-(`overlap_table.csv`) is still in the tree, so only the two image panels are blocked.
+(members `_work/ResSHyp-relu_s0_L1000_pt_ov{0,2,4,8,16}_warm_tile.npy`). P1.OV
+salvaged a 1024x1024 window from each of the five overlap settings -- origin
+(row 7788, col 6144) in the full tile, centred on the hand-pinned textured block
+below -- into `results/date27/overlap/` (~20 MB total, tracked). The figure renders
+only ov0 and ov2; the other three (and the extra margin beyond the 340px render
+window) are kept so the window can be moved, zoomed, or shown as a five-across
+strip without touching the 23 GB archive again. See results/date27/MANIFEST.md.
 
 Run:  conda activate DDC_FPGA && python scripts/figures/overlap_crop.py
 Out:  LaTeX/SAR_DDC_FPGA_DATE27/figures/images/overlap_crop.{pdf,png}
@@ -33,38 +35,51 @@ import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from _figutils import ARCH_COLORS, DISPLAY, REPO_ROOT, save_figure
+from _figutils import ARCH_COLORS, DATE27, DISPLAY, REPO_ROOT, save_figure
 
 OVERLAP = REPO_ROOT / "results" / "benchmark_stream_overlap"
-WORK = OVERLAP / "_work"
 TABLE = OVERLAP / "overlap_table.csv"
-STEM = "ResSHyp-relu_s0_L1000_pt"
-OV0 = WORK / f"{STEM}_ov0_warm_tile.npy"
-OV2 = WORK / f"{STEM}_ov2_warm_tile.npy"
+CROPS = DATE27 / "overlap"
+CROP_STEM = "ResSHyp_L1000_ov{ov}_crop1024"
 
-ROW_C, COL_B, HALF = 8300, 6656, 170  # hand-pinned textured block (Hamburg)
+# Geometry of the salvaged crops, in full-tile pixel coordinates (P1.OV). The 1024x1024
+# window each crop file holds starts here; every crop uses the identical origin so the
+# same scene appears in all five.
+CROP_ROW0, CROP_COL0, CROP_SIZE = 7788, 6144, 1024
+
+ROW_C, COL_B, HALF = 8300, 6656, 170  # hand-pinned textured block (Hamburg), full-tile coords
 PATCH = 256
 
 
-def _require_tiles():
-    """Hard-error (with the archive path + regen steps) if the crop tiles are not in the tree."""
-    missing = [p for p in (OV0, OV2) if not p.is_file()]
-    if missing:
+def load_crop(ov):
+    """The 1024x1024 salvaged crop for overlap ``ov`` (hard-error + regen steps if absent)."""
+    p = CROPS / f"{CROP_STEM.format(ov=ov)}.npy"
+    if not p.is_file():
         raise FileNotFoundError(
-            "overlap reconstruction tiles are not in the tree:\n  "
-            + "\n  ".join(str(p) for p in missing)
-            + "\n\nThey were archived on 2026-08-31 to /mnt/vitisAI/DDC_results_archive/"
-            "2026-08-31/benchmark_stream_overlap_work.tar.gz (~23 GB) and must not be "
-            "restored for a date27 figure (one-source rule, DATE27_paper_plan.md §P1.0). "
-            "The rendered figures/images/overlap_crop.{pdf,png} are the last good render "
-            "and are kept as-is. To regenerate, restore the two .npy tiles into "
-            f"{WORK}/ and re-run."
+            f"overlap crop is missing: {p}\n"
+            "The 1024x1024 crops are salvaged (P1.OV) from the archived reconstruction tiles\n"
+            "  archive: /mnt/vitisAI/DDC_results_archive/2026-08-31/"
+            "benchmark_stream_overlap_work.tar.gz\n"
+            "  member:  _work/ResSHyp-relu_s0_L1000_pt_ov<N>_warm_tile.npy\n"
+            f"  window:  rows [{CROP_ROW0}:{CROP_ROW0 + CROP_SIZE}], "
+            f"cols [{CROP_COL0}:{CROP_COL0 + CROP_SIZE}] (float32)\n"
+            "Regenerate: extract the member, slice that window, save float32 .npy\n"
+            "  (full procedure in results/date27/MANIFEST.md, P1.OV block)."
         )
+    a = np.load(p)
+    if a.shape != (CROP_SIZE, CROP_SIZE):
+        raise ValueError(f"{p}: expected {(CROP_SIZE, CROP_SIZE)} crop, got {a.shape}")
+    return a
 
 
 def logimg(x):
     """Log10 intensity of ``x``, clipped at 1.0 (the display transform)."""
     return np.log10(np.clip(np.asarray(x, np.float32), 1.0, None))
+
+
+def patch_boundaries(lo, hi):
+    """Window-local offsets of PATCH-grid lines strictly inside the render window ``[lo, hi)``."""
+    return [x - lo for x in range(0, hi, PATCH) if lo < x < hi]
 
 
 def edge_ticks(ax, verticals, horizontals, H, W, L=16, c="#D62728", lw=1.9):
@@ -77,18 +92,17 @@ def edge_ticks(ax, verticals, horizontals, H, W, L=16, c="#D62728", lw=1.9):
         ax.plot([W - 0.5, W - 0.5 - L], [yc, yc], color=c, lw=lw, clip_on=False)
 
 
-_require_tiles()
-
-# --- crops ---
-a0 = np.load(OV0, mmap_mode="r")
-a2 = np.load(OV2, mmap_mode="r")
-r0, r1, c0, c1 = ROW_C - HALF, ROW_C + HALF, COL_B - HALF, COL_B + HALF
-crop0, crop2 = logimg(a0[r0:r1, c0:c1]), logimg(a2[r0:r1, c0:c1])
+# --- crops: pull the rendered 340x340 sub-window out of the 1024x1024 salvaged crop ---
+# Sub-window position inside the crop = its full-tile position minus the crop origin.
+lr0, lr1 = ROW_C - HALF - CROP_ROW0, ROW_C + HALF - CROP_ROW0
+lc0, lc1 = COL_B - HALF - CROP_COL0, COL_B + HALF - CROP_COL0
+crop0 = logimg(load_crop(0)[lr0:lr1, lc0:lc1])
+crop2 = logimg(load_crop(2)[lr0:lr1, lc0:lc1])
 Hc, Wc = crop0.shape
 vmin, vmax = np.percentile(crop0, [2, 98])
-# patch boundaries inside the window (local coords), both axes
-verts = [x - c0 for x in range(0, a0.shape[1], PATCH) if c0 < x < c1]
-horis = [y - r0 for y in range(0, a0.shape[0], PATCH) if r0 < y < r1]
+# patch boundaries inside the render window (window-local coords), both axes
+verts = patch_boundaries(COL_B - HALF, COL_B + HALF)
+horis = patch_boundaries(ROW_C - HALF, ROW_C + HALF)
 
 # --- seam PSNR vs overlap (dedupe: prefer warm; quality is mode-independent) ---
 series = {}

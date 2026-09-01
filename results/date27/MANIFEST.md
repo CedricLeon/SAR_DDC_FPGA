@@ -227,3 +227,25 @@ overlap 2, snap grid, full scene, warm read, power on, batch 1). Model redeploye
 | results/date27/cpu_probe/SHyp/knee_24_mpstat.log | `mpstat -P ALL 1` + `pidstat …` during `stream_pipeline --p0 --threads 24 --fanout --windowed --prefetch --neon --entropy --power --overlap 2` (warm; 1 warmup; cooled <58 °C; companions `knee_24_pidstat.log`, `knee_24_stream.log`) | 7856483 | e4ea783 (binary unchanged) | SHyp-relu_s0_L20_pt | 2026-09-01 | no — board binary unchanged since e4ea783 |
 | results/date27/cpu_probe/ResFP/knee_6_mpstat.log | `mpstat -P ALL 1` + `pidstat …` during `stream_pipeline --p0 --threads 6 --fanout --windowed --prefetch --neon --entropy --power --overlap 2` (warm; 1 warmup; cooled <58 °C; companions `knee_6_pidstat.log`, `knee_6_stream.log`) | 7856483 | e4ea783 (binary unchanged) | ResFP-relu_s0_L20_pt | 2026-09-01 | no — board binary unchanged since e4ea783 |
 | results/date27/cpu_probe/ResSHyp/knee_20_mpstat.log | `mpstat -P ALL 1` + `pidstat …` during `stream_pipeline --p0 --threads 20 --fanout --windowed --prefetch --neon --entropy --power --overlap 2` (warm; 1 warmup; cooled <58 °C; companions `knee_20_pidstat.log`, `knee_20_stream.log`) | 7856483 | e4ea783 (binary unchanged) | ResSHyp-relu_s0_L20_pt | 2026-09-01 | no — board binary unchanged since e4ea783 |
+
+**P1.OV — salvaged overlap-figure crops (2026-09-01, `DATE27_paper_plan.md` §4.3 P1.OV).** The only
+entries here not produced on the board: they are host-side crops of decoded tiles that P0.C archived
+on 2026-08-31 (full tile 32901×14686 float32, 1.93 GB each — untrackable), so the "board SHA" and
+"make clean" columns read *n/a* rather than being left blank. Re-rendering `overlap_crop.py` from
+these crops reproduces the previous `figures/images/overlap_crop.png` **pixel-for-pixel** (the PDF
+differs only in its embedded `/CreationDate`).
+
+Regeneration, should the crops ever be lost: extract the five members below from
+`/mnt/vitisAI/DDC_results_archive/2026-08-31/benchmark_stream_overlap_work.tar.gz` (23 GB gzip, 61
+entries) in a single decompression pass, then slice `tile[7788:8812, 6144:7168]` from each and save
+as float32 `.npy`. That window is centred on the (row 8300, col 6656) textured block
+`overlap_crop.py` renders, with 512 px of margin on every side so the 340 px render window can still
+be moved or zoomed. The one-shot script that did it originally was scratch and is not kept.
+
+| Output file | CLI flags | Host SHA | Board SHA | Model | Date | make clean |
+| --- | --- | --- | --- | --- | --- | --- |
+| results/date27/overlap/ResSHyp_L1000_ov0_crop1024.npy | `(host-side crop of _work/ResSHyp-relu_s0_L1000_pt_ov0_warm_tile.npy: rows [7788:8812], cols [6144:7168], 1024×1024 float32)` | 553ab52 | n/a — no board run | ResSHyp-relu_s0_L1000_pt | 2026-09-01 | n/a — derived from the 2026-08-31 archive |
+| results/date27/overlap/ResSHyp_L1000_ov2_crop1024.npy | `(host-side crop of _work/ResSHyp-relu_s0_L1000_pt_ov2_warm_tile.npy: rows [7788:8812], cols [6144:7168], 1024×1024 float32)` | 553ab52 | n/a — no board run | ResSHyp-relu_s0_L1000_pt | 2026-09-01 | n/a — derived from the 2026-08-31 archive |
+| results/date27/overlap/ResSHyp_L1000_ov4_crop1024.npy | `(host-side crop of _work/ResSHyp-relu_s0_L1000_pt_ov4_warm_tile.npy: rows [7788:8812], cols [6144:7168], 1024×1024 float32)` | 553ab52 | n/a — no board run | ResSHyp-relu_s0_L1000_pt | 2026-09-01 | n/a — derived from the 2026-08-31 archive |
+| results/date27/overlap/ResSHyp_L1000_ov8_crop1024.npy | `(host-side crop of _work/ResSHyp-relu_s0_L1000_pt_ov8_warm_tile.npy: rows [7788:8812], cols [6144:7168], 1024×1024 float32)` | 553ab52 | n/a — no board run | ResSHyp-relu_s0_L1000_pt | 2026-09-01 | n/a — derived from the 2026-08-31 archive |
+| results/date27/overlap/ResSHyp_L1000_ov16_crop1024.npy | `(host-side crop of _work/ResSHyp-relu_s0_L1000_pt_ov16_warm_tile.npy: rows [7788:8812], cols [6144:7168], 1024×1024 float32)` | 553ab52 | n/a — no board run | ResSHyp-relu_s0_L1000_pt | 2026-09-01 | n/a — derived from the 2026-08-31 archive |
