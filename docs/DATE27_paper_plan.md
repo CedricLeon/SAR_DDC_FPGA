@@ -458,8 +458,10 @@ that it is dry-run-verified, not re-executed.
   emitting **two independent figures** — *not* a two-panel figure: F2 sits in III and F5 in IV, so
   they must stay separate floats.
 - [ ] **F3** `roofline_subgraph.py` — remove the 6.11 line; draw 1-core (solid) + 3-core (dashed)
-  ceiling pairs; add aggregate dots from P0.4 (marker-distinguished from single-core dots); optional
-  cited measured-BW ceiling per R2; short annotation at the weight-bound points.
+  ceiling pairs; add aggregate dots from P0.4 (marker-distinguished from single-core dots); short
+  annotation at the weight-bound points. **The ~13.7 GB/s measured ceiling is NOT drawn** — R2's
+  verdict (§4.2) is cite-only in text; the figure keeps the two theoretical ceilings. (This line
+  used to say "optional"; R2 settled it.)
 - [ ] **F4** `fanout_lane_plot.py` — drop 128 L; XRT wall out of the figure (footnote in text);
   refresh with P0.2 lane grid (entropy-on for all four archs, which also dissolves the entropy-off /
   entropy-on mismatch flagged in the current caption). The dashed CPU series is **trace-derived**
