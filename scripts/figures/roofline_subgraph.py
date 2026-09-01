@@ -1,52 +1,42 @@
 #!/usr/bin/env python3
-"""Per-subgraph roofline (DATE'27) — why topology predicts the binding resource.
+"""F3 — per-subgraph roofline (DATE'27): topology predicts the binding resource.
 
-The characterization's *prediction* evidence: on the fixed-overlay B4096 DPU, the
-decider is the main encoder g_a. Its plain (4.51 GOP) vs residual (39.76 GOP) form
-differ ~9x in work while both run compute-bound near the peak, so the residual archs
-(ResFP/ResSHyp) roof ~9x lower than the plain ones (FP/SHyp) — readable off the roofline,
-before any streaming run. The tiny hyperprior kernels h_a/h_s sit low and are
-weight-load-bound, not DDR-bound: LdWB is 97-99% of their DDR traffic (vs 16% for
-residual g_a, which is feature-map-dominated), and their measured DDR bandwidth
-(~5.7-6.0 GB/s, vaitrace AvgBw) is only ~34% of the raw DDR peak below -- the second,
-dashed ceiling makes that gap explicit. g_s is excluded: it never runs in this
-(compression-only) pipeline (onboard_pipeline.md: "the never-run g_s is dropped").
+The characterization's *prediction* evidence. On the fixed-overlay B4096 DPU the
+decider is the main encoder g_a: its plain (4.51 GOP) and residual (39.76 GOP)
+forms differ ~9x in work while both run compute-bound near the peak, so the
+residual archs roof ~9x lower than the plain ones -- readable off the roofline
+before any streaming run. The hyperprior kernels h_a/h_s carry ~0.18-0.28 GOP,
+sit at arithmetic intensity ~55 OP/byte (left of every ridge), and are
+weight-load-bound: LdWB is 97-99 % of their DDR traffic. g_s is excluded -- it
+never runs in this compression-only pipeline.
 
-Williams roofline for one B4096 core:
-  - horizontal ceiling  = 1229 GOP/s  (4096 MACs*2 ops/cycle x 0.30 GHz; PG338 + xdputil clock)
-  - solid diagonal (DDR)= 17.06 GB/s PS-DDR4 peak, whole-chip  (UG1182); knee at 72 OP/byte
-  - solid diagonal (AXI)= 9.6 GB/s per-core AXI interface peak: 2x 128-bit M_AXI_DATA ports per
-    DPUCZDX8G core (PG338) x 300 MHz DPU clock / 8. This is the tighter, arguably more correct
-    bound for a SINGLE core (this figure's scope) -- a single core cannot exceed its own
-    interface width regardless of how much more the shared DDR controller could supply. Shown
-    alongside the DDR line rather than replacing it, pending co-author decision on which to use
-    in the final figure. Knee at 1229/9.6 = 128 OP/byte.
-  - dashed diagonal      = 6.11 GB/s measured DPU weight-load bandwidth ceiling.
-    IMPORTANT byte-accounting note: this is NOT vaitrace's raw AvgBw field (5.74/6.01 GB/s
-    for h_a/h_s -- that uses vaitrace's own DYNAMIC byte count, LdWB+LdFM+StFM). The x-axis
-    (arithmetic intensity) instead uses the STATIC xmodel_info.json byte estimate
-    (const+input+output, no workspace) -- a *different* bytes denominator that disagrees
-    with vaitrace's by 3-5% for h_a/h_s. Mixing the two would put each point 2.6-5.5% ABOVE
-    a line drawn at vaitrace's own AvgBw, which looks like a violated ceiling. Fixed here by
-    using achieved_GOPs/AI (h_a: 6.02, h_s: 6.20 GB/s, mean 6.11) -- i.e., the SAME static
-    bytes-basis as the x-axis, so the line is self-consistent with where the points are
-    actually plotted, and both sit at/below it as a ceiling should.
-    Provenance of the underlying measurement is still vaitrace HW_RT + AvgBw-dominance
-    (LdWB >=97% of DDR traffic for h_a/h_s) -- docs/onboard_pipeline.md Sec.6 -- only the
-    bandwidth NUMBER used for the line differs from the raw AvgBw column, for consistency.
-  - each subgraph plotted at (arithmetic intensity, achieved GOP/s):
-      AI  = workload_ops / (const + input + output bytes)   [DDR traffic per inference]
-      GOP/s = workload_ops / HW_RT                          [vaitrace hardware counter]
+Ceilings (design F3, P1.1 -- Dirk's caption feedback):
+  * 1 core, SOLID:  compute 1229 GOP/s (4096 MAC x 2 op/cy x 0.30 GHz, PG338);
+    memory 9.6 GB/s = 2 x 128-bit M_AXI_DATA ports @ 300 MHz (PG338) -- a single
+    core cannot exceed its own interface width. Ridge 1229/9.6 = 128 OP/byte.
+  * 3 cores, DASHED: compute 3 x 1229 = 3687 GOP/s; memory capped at the whole-chip
+    PS-DDR4 peak 17.06 GB/s (DDR4-2133 x 64-bit, UG1182), because 3 x 9.6 = 28.8
+    exceeds it -- the three cores share one DDR controller. Ridge 3687/17.06 = 216.
+  The old 6.11 GB/s "measured weight-load" line is removed (a measured point, not a
+  ceiling). The ~13.7 GB/s achievable-DDR figure (R2) is cite-only in the text, not
+  drawn.
 
-Data (provenance in-line):
-  ops / bytes <- results/date27/s0/<arch>/<arch>-relu_s0_L20_pt_xmodel_info.json  (via _figutils)
-  HW_RT (ms), LdWB, AvgBw  <- docs/onboard_pipeline.md Sec.6 (vaitrace), canonical DPU-time table
-Both are architecture properties (lambda-independent); the xmodel_info JSONs are the L20
-export but the shapes/ops are identical across lambda.
+Points:
+  * single core (x marker): (arithmetic intensity, achieved GOP/s) at 1 lane, from
+    results/date27/vaitrace/<arch>/vaitrace_1lane.txt (HW_RT hardware counter).
+  * 3-core aggregate (o marker): sum of the three cores' achieved GOP/s at the
+    per-arch fan-out knee, from results/date27/vaitrace/<arch>/vaitrace_knee{K}.txt
+    -- the operating point when all three cores run that subgraph concurrently. FP's
+    resolve to the 12 L knee (vaitrace_knee12.txt, P0.7 re-trace); the 32 L capture
+    is provenance only. The g_a-residual and h_a/h_s aggregates are read from the
+    ResSHyp knee-20 trace (E4), where all three subgraphs run in one condition.
+  arithmetic intensity uses the static xmodel_info byte estimate (const+input+output),
+  the same denominator for the x-axis and any bandwidth read off the plot.
 
-P1.0 migration: repointed to results/date27/ only; the visual design is unchanged.
-The redesign (F3, batch P1.2) removes the 6.11 GB/s weight-load line and adds 3-core
-ceiling pairs + aggregate dots from results/date27/vaitrace/ — not done here.
+Data:
+  ops / bytes  <- results/date27/s0/<arch>/<arch>-relu_s0_L20_pt_xmodel_info.json  (via _figutils)
+  HW_RT / eff / AvgBw  <- results/date27/vaitrace/<arch>/vaitrace_{1lane,knee<K>}.txt
+Both are architecture properties (lambda-independent).
 
 Run:  conda activate DDC_FPGA && python scripts/figures/roofline_subgraph.py
 Out:  LaTeX/SAR_DDC_FPGA_DATE27/figures/images/roofline_subgraph.{pdf,png}
@@ -57,191 +47,323 @@ import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from _figutils import load_xmodel_subgraphs, save_figure
+from _figutils import DATE27, KNEE, PALETTE, load_xmodel_subgraphs, save_figure
+from matplotlib.lines import Line2D
 
-PEAK_GOPS = 1229.0  # B4096 @ 300 MHz, one core          (PG338)
-DDR_GBPS = 17.06  # PS DDR4-2133, 64-bit, raw peak      (UG1182)
-WEIGHT_BW_GBPS = 6.11  # DPU effective (weight-load) bandwidth ceiling -- mean of
-# achieved_GOPs/AI for h_a (6.02) and h_s (6.20), i.e. computed on
-# the SAME static bytes-basis as the x-axis (see docstring above for
-# why this differs from vaitrace's raw AvgBw of 5.74/6.01 GB/s)
-AXI_GBPS = 9.6  # per-core AXI interface peak: 2x 128-bit M_AXI_DATA ports (PG338)
-# x 300 MHz DPU clock / 8 -- the tighter, single-core-correct bound
-RIDGE = PEAK_GOPS / DDR_GBPS  # = 72.0 OP/byte  (DDR knee)
-RIDGE_AXI = PEAK_GOPS / AXI_GBPS  # = 128.0 OP/byte (AXI knee)
-RIDGE_W = PEAK_GOPS / WEIGHT_BW_GBPS  # = 201.1 OP/byte (weight-load knee)
+PEAK_GOPS = 1229.0  # one B4096 core @ 300 MHz                             (PG338)
+AXI_GBPS = 9.6  # per-core: 2 x 128-bit M_AXI_DATA @ 300 MHz / 8          (PG338)
+DDR_GBPS = 17.06  # whole-chip PS-DDR4-2133 x 64-bit peak                  (UG1182)
+NCORE = 3  # usable B4096 cores on this ZCU102
 
-ANN_COLOR = "#333333"  # single color/font/size for all three ceiling-line annotations
-ANN_SIZE = 7.8
-POINT_COLOR = "black"  # crosses + their name/efficiency labels
+PEAK_3 = NCORE * PEAK_GOPS  # 3-core compute ceiling
+MEM_3 = DDR_GBPS  # 3-core memory ceiling: shared DDR, NOT 3 x AXI
+RIDGE_1 = PEAK_GOPS / AXI_GBPS  # 1-core ridge  [OP/byte]
+RIDGE_3 = PEAK_3 / MEM_3  # 3-core ridge  [OP/byte]
 
-# vaitrace HW_RT (ms), per-subgraph — docs/onboard_pipeline.md Sec.6 (canonical DPU time)
-HW_RT_MS = {"g_a_plain": 4.10, "g_a_res": 33.51, "h_a": 0.83, "h_s": 0.52}
+CEIL_COLOR = PALETTE["ceiling"]
+SC_COLOR = "#1a1a1a"  # single-core markers
+AGG_COLOR = PALETTE["dpu"]  # 3-core aggregate markers (DPU work, under fan-out)
+ANN_SIZE = 7.6
 
 
-def ai(ops, const, ib, ob):
-    """Arithmetic intensity [OP/byte] = ops / (const + input + output bytes)."""
-    return ops / (const + ib + ob)
+def ai(sg):
+    """Arithmetic intensity [OP/byte] = workload_ops / (const + input + output bytes)."""
+    return sg["workload_ops"] / (sg["const_bytes"] + sg["input_bytes"] + sg["output_bytes"])
 
 
-def load_sub(arch, sg):
-    """(workload_ops, const_bytes, input_bytes, output_bytes) for subgraph ``sg`` of ``arch``."""
-    d = load_xmodel_subgraphs(arch)[sg]
-    return d["workload_ops"], d["const_bytes"], d["input_bytes"], d["output_bytes"]
+def _num(tok):
+    """Parse one vaitrace numeric cell; the tool prints '~0' for sub-0.001 values."""
+    tok = tok.strip()
+    return 0.0 if tok in ("~0", "") else float(tok)
 
 
-# plain g_a from FP, residual g_a from ResFP, hyper kernels from ResSHyp
-o, c, i, ob = load_sub("FP", "g_a")
-ai_gap = ai(o, c, i, ob)
-gops_gap = o / (HW_RT_MS["g_a_plain"] * 1e6)
-o, c, i, ob = load_sub("ResFP", "g_a")
-ai_gar = ai(o, c, i, ob)
-gops_gar = o / (HW_RT_MS["g_a_res"] * 1e6)
-o, c, i, ob = load_sub("ResSHyp", "h_a")
-ai_ha = ai(o, c, i, ob)
-gops_ha = o / (HW_RT_MS["h_a"] * 1e6)
-o, c, i, ob = load_sub("ResSHyp", "h_s")
-ai_hs = ai(o, c, i, ob)
-gops_hs = o / (HW_RT_MS["h_s"] * 1e6)
+def vaitrace_rows(path):
+    """Per-core DPU rows of a vaitrace txt dump -> list of dicts (subgraph classified)."""
+    rows = []
+    for line in open(path):
+        if not line.startswith("DPUCZDX8G_"):
+            continue
+        p = [c.strip() for c in line.split("|")]
+        sg = p[2]
+        name = "h_a" if "h_a" in sg else "h_s" if "h_s" in sg else "g_a" if "g_a" in sg else sg
+        rows.append(
+            dict(
+                core=int(p[0].split("_")[1]),
+                name=name,
+                wl=_num(p[3]),
+                hw=_num(p[5]),
+                eff=_num(p[6]),
+                avgbw=_num(p[10]),
+            )
+        )
+    return rows
 
-# subgraph point: (short label, AI, achieved GOP/s, label placement)
-# placement: "below" (g_a variants) or "right" (h_a/h_s); h_s sits slightly ABOVE h_a
-# (338.9 vs 331.7 GOP/s) so h_s's label offsets up and h_a's offsets down -- keeps the
-# label order matching the data order instead of crossing over it.
-POINTS = [
-    (r"$g_a$ residual", ai_gar, gops_gar, "below", (0, -9)),
-    (r"$g_a$", ai_gap, gops_gap, "below", (0, -9)),
-    (r"$h_a$", ai_ha, gops_ha, "right", (8, -5)),
-    (r"$h_s$", ai_hs, gops_hs, "right", (8, 5)),
-]
 
-fig, ax = plt.subplots(figsize=(5.4, 3.7))
-xlo, xhi = 20.0, 2.5e4
+def vt(arch, which):
+    """Vaitrace rows for ``arch``; ``which`` = 'vaitrace_1lane' or 'vaitrace_knee<K>'."""
+    return vaitrace_rows(DATE27 / "vaitrace" / arch / f"{which}.txt")
+
+
+def gops(wl_gop, hw_ms):
+    """Achieved GOP/s from a vaitrace workload (GOP) and hardware runtime (ms)."""
+    return wl_gop / (hw_ms * 1e-3)
+
+
+# --- single-core points: (label, AI, GOP/s, 1-core efficiency %) -----------------------
+SUB = {a: load_xmodel_subgraphs(a) for a in ("FP", "ResFP", "ResSHyp")}
+one = {a: vt(a, "vaitrace_1lane") for a in ("FP", "ResFP", "ResSHyp")}
+
+
+def sc_point(arch, name):
+    """(AI, achieved GOP/s, vaitrace Effic %) for subgraph ``name`` of ``arch`` at 1 lane."""
+    r = [x for x in one[arch] if x["name"] == name][0]
+    return ai(SUB[arch][name]), gops(r["wl"], r["hw"]), r["eff"]
+
+
+SC = {
+    "g_a": (r"$g_a$", *sc_point("FP", "g_a")),
+    "g_a_res": (r"$g_a$+Res", *sc_point("ResFP", "g_a")),
+    "h_a": (r"$h_a$", *sc_point("ResSHyp", "h_a")),
+    "h_s": (r"$h_s$", *sc_point("ResSHyp", "h_s")),
+}
+
+# --- 3-core aggregate points: sum of per-core GOP/s at the fan-out knee -----------------
+knee_fp = vt("FP", f"vaitrace_knee{KNEE['FP']}")
+knee_rsh = vt("ResSHyp", f"vaitrace_knee{KNEE['ResSHyp']}")
+
+
+def agg(rows, name):
+    """3-core aggregate for ``name``: (sum GOP/s, per-core eff %-range, per-core GB/s-range)."""
+    rs = [x for x in rows if x["name"] == name]
+    per = [gops(x["wl"], x["hw"]) for x in rs]
+    effs = [x["eff"] for x in rs]
+    bws = [x["avgbw"] / 1000 for x in rs]  # MB/s -> GB/s
+    return sum(per), (min(effs), max(effs)), (min(bws), max(bws))
+
+
+AGG = {
+    "g_a": agg(knee_fp, "g_a"),  # FP plain g_a, 3 cores @ 12 L knee
+    "g_a_res": agg(knee_rsh, "g_a"),  # ResSHyp residual g_a, 3 cores @ 20 L knee
+    "h_a": agg(knee_rsh, "h_a"),
+    "h_s": agg(knee_rsh, "h_s"),
+}
+
+# ======================================================================================
+fig, ax = plt.subplots(figsize=(5.6, 4.2))
+xlo, xhi = 20.0, 2.6e4
+ylo, yhi = 80.0, 5200.0
 xs = np.geomspace(xlo, xhi, 400)
 
-roof = np.minimum(PEAK_GOPS, DDR_GBPS * xs)
-ax.plot(xs, roof, color="#333333", lw=1.6, zorder=3)
-ax.fill_between(xs, roof, 1, color="#333333", alpha=0.04, zorder=0)
 
-roof_axi = np.minimum(PEAK_GOPS, AXI_GBPS * xs)
-ax.plot(xs, roof_axi, color="#333333", lw=1.6, zorder=3)
+def roofline(mem_bw, peak, **kw):
+    """Draw one roof: horizontal at ``peak`` GOP/s, diagonal at ``mem_bw`` GB/s below the ridge."""
+    ax.plot(xs, np.minimum(peak, mem_bw * xs), **kw)
 
-# weight-load ceiling: truncated past its own knee -- beyond that it's redundant with the
-# solid DPU-peak ceiling and would just overdraw it for the rest of the x-range
-xs_w = np.geomspace(xlo, RIDGE_W * 1.15, 200)
-roof_w = np.minimum(PEAK_GOPS, WEIGHT_BW_GBPS * xs_w)
-ax.plot(xs_w, roof_w, color="#333333", lw=1.4, ls="--", zorder=3)
 
-for lab, x, y, *_ in POINTS:
-    ax.scatter([x], [y], s=45, color=POINT_COLOR, marker="x", linewidth=1.3, zorder=5)
+roofline(AXI_GBPS, PEAK_GOPS, color=CEIL_COLOR, lw=1.7, zorder=3)  # 1 core, solid
+roofline(MEM_3, PEAK_3, color=CEIL_COLOR, lw=1.7, ls=(0, (5, 2)), zorder=3)  # 3 cores, dashed
+ax.fill_between(
+    xs, np.minimum(PEAK_GOPS, AXI_GBPS * xs), ylo, color=CEIL_COLOR, alpha=0.05, zorder=0
+)
+
+# --- markers: single-core x, its 3-core aggregate o, a dotted connector between -------
+for k, (_, x, y_sc, _) in SC.items():
+    y_agg = AGG[k][0]
+    ax.plot([x, x], [y_sc, y_agg], color=AGG_COLOR, lw=0.8, ls=":", zorder=4)
+    ax.scatter([x], [y_sc], s=52, color=SC_COLOR, marker="x", linewidth=1.5, zorder=6)
+    ax.scatter(
+        [x],
+        [y_agg],
+        s=44,
+        facecolor="none",
+        edgecolor=AGG_COLOR,
+        linewidth=1.6,
+        marker="o",
+        zorder=6,
+    )
 
 ax.set_xscale("log")
 ax.set_yscale("log")
 ax.set_xlim(xlo, xhi)
-ax.set_ylim(80, 2100)
-ax.set_xlabel("arithmetic intensity [OP/byte]")
-ax.set_ylabel("throughput [GOP/s]")
+ax.set_ylim(ylo, yhi)
+ax.set_xlabel("arithmetic intensity  [OP/byte]")
+ax.set_ylabel("throughput  [GOP/s]")
 ax.spines[["top", "right"]].set_visible(False)
 ax.grid(True, which="both", ls="-", lw=0.3, color="#EEEEEE", zorder=0)
-
 fig.tight_layout()
-fig.canvas.draw()  # finalize layout so transData below reflects the real axes position
+fig.canvas.draw()
 
 
-def visual_angle_deg(ax, x0, y0, x1, y1):
-    """True on-screen angle (deg) of the segment (x0,y0)-(x1,y1), given the current (possibly log-
-    scaled, non-square) axes -- so rotated text can visually align with a plotted line regardless
-    of axes aspect ratio."""
-    p0 = ax.transData.transform((x0, y0))
-    p1 = ax.transData.transform((x1, y1))
+def angle(x0, y0, x1, y1):
+    """On-screen angle (deg) of a data segment, for text rotated to lie along a plotted line."""
+    p0, p1 = ax.transData.transform((x0, y0)), ax.transData.transform((x1, y1))
     return np.degrees(np.arctan2(p1[1] - p0[1], p1[0] - p0[0]))
 
 
-# both diagonals have log-log slope 1 (y = B*x) -> identical visual angle on these axes
-theta = visual_angle_deg(ax, 10, DDR_GBPS * 10, 1000, DDR_GBPS * 1000)
+th_axi = angle(25, AXI_GBPS * 25, 90, AXI_GBPS * 90)
+th_ddr = angle(25, DDR_GBPS * 25, 90, DDR_GBPS * 90)
 
-# --- DPU peak: horizontal, centered (log-space) between the DDR knee and g_a plain ---
-x_peak_lab = np.sqrt(RIDGE * ai_gar)
+# --- ceiling labels: flat labels on the left arm of each horizontal, diagonal labels
+#     riding each sloped arm in the empty lower-left --------------------------------
 ax.text(
-    x_peak_lab,
-    PEAK_GOPS * 1.03,
-    f"DPU peak {PEAK_GOPS:.0f} GOP/s",
-    rotation=0,
+    360,
+    PEAK_GOPS * 1.07,
+    f"1 core  ·  {PEAK_GOPS:.0f} GOP/s",
+    ha="left",
+    va="bottom",
     fontsize=ANN_SIZE,
-    color=ANN_COLOR,
+    color=CEIL_COLOR,
+)
+ax.text(
+    360,
+    PEAK_3 * 1.07,
+    f"3 cores  ·  {PEAK_3:.0f} GOP/s",
+    ha="left",
+    va="bottom",
+    fontsize=ANN_SIZE,
+    color=CEIL_COLOR,
+)
+ax.text(
+    23,
+    AXI_GBPS * 23 * 1.14,
+    f"AXI {AXI_GBPS:.1f} GB/s (1 core)",
+    rotation=th_axi,
+    rotation_mode="anchor",
+    ha="left",
+    va="bottom",
+    fontsize=ANN_SIZE,
+    color=CEIL_COLOR,
+)
+ax.text(
+    23,
+    DDR_GBPS * 23 * 1.14,
+    f"DDR {DDR_GBPS:.2f} GB/s (3 cores, shared)",
+    rotation=th_ddr,
+    rotation_mode="anchor",
+    ha="left",
+    va="bottom",
+    fontsize=ANN_SIZE,
+    color=CEIL_COLOR,
+)
+
+# --- single-core point labels: name + 1-core efficiency (vaitrace Effic column) ------
+ax.annotate(
+    f"{SC['g_a'][0]}  {SC['g_a'][3]:.1f}%",
+    (SC["g_a"][1], SC["g_a"][2]),
+    xytext=(-4, -13),
+    textcoords="offset points",
     ha="center",
-    va="bottom",
+    va="top",
+    fontsize=7.8,
+    color=SC_COLOR,
+    zorder=7,
+)
+ax.annotate(
+    f"{SC['g_a_res'][0]}  {SC['g_a_res'][3]:.1f}%",
+    (SC["g_a_res"][1], SC["g_a_res"][2]),
+    xytext=(0, -13),
+    textcoords="offset points",
+    ha="center",
+    va="top",
+    fontsize=7.8,
+    color=SC_COLOR,
+    zorder=7,
+)
+ax.annotate(
+    f"{SC['h_a'][0]} {SC['h_a'][3]:.1f}%",
+    (SC["h_a"][1], SC["h_a"][2]),
+    xytext=(11, 2),
+    textcoords="offset points",
+    ha="left",
+    va="center",
+    fontsize=7.8,
+    color=SC_COLOR,
+    zorder=7,
+)
+ax.annotate(
+    f"{SC['h_s'][0]} {SC['h_s'][3]:.1f}%",
+    (SC["h_s"][1], SC["h_s"][2]),
+    xytext=(-11, -2),
+    textcoords="offset points",
+    ha="right",
+    va="center",
+    fontsize=7.8,
+    color=SC_COLOR,
+    zorder=7,
 )
 
-# --- DDR peak: along the solid diagonal, close above it ---
-x0 = 21.5
+# --- story annotation 1: g_a is compute-bound and scales ~3x to the 3-core roof -----
+#   sits in the gap between the single-core row and the aggregate row, spanning both g_a
+gar = AGG["g_a_res"][1]
+gap = AGG["g_a"][1]
 ax.text(
-    x0,
-    DDR_GBPS * x0 * 1.16,
-    f"DDR peak {DDR_GBPS:.1f} GB/s",
-    rotation=theta,
+    5200,
+    1950,
+    f"$g_a$: compute-bound, 3 cores $\\approx$ 3×\n"
+    f"residual {gar[0]:.0f}–{gar[1]:.0f}% / core, plain {gap[0]:.0f}–{gap[1]:.0f}%",
     fontsize=ANN_SIZE,
-    color=ANN_COLOR,
+    color=AGG_COLOR,
+    ha="center",
+    va="center",
+)
+
+# --- story annotation 2: the hyperprior kernels, weight-load-bound ------------------
+#   (the LdWB 97-99% and the "small wall-time share, not the system bottleneck" caveat
+#    live in the caption -- P1.5)
+ha_eff, ha_bw = AGG["h_a"][1], AGG["h_a"][2]
+ax.annotate(
+    r"$h_a,h_s$: weight-load-bound."
+    "\n"
+    f"1 core {SC['h_s'][3]:.0f}–{SC['h_a'][3]:.0f}% eff → "
+    f"{ha_eff[0]:.0f}–{ha_eff[1]:.0f}% / core under fan-out\n"
+    f"at {ha_bw[0]:.1f}–{ha_bw[1]:.1f} GB/s — shared-DDR contention",
+    xy=(SC["h_a"][1], (SC["h_s"][2] * AGG["h_a"][0]) ** 0.5),
+    xytext=(120, 112),
+    textcoords="data",
+    fontsize=ANN_SIZE,
+    color=SC_COLOR,
     ha="left",
     va="bottom",
+    arrowprops=dict(arrowstyle="-", color=SC_COLOR, lw=0.7),
 )
 
-# --- DPU AXI peak: along its own solid diagonal, close above it ---
-x2 = 23.0
-ax.text(
-    x2,
-    AXI_GBPS * x2 * 1.16,
-    f"DPU AXI peak {AXI_GBPS:.1f} GB/s",
-    rotation=theta,
+# --- legend: marker meaning (upper-left, above the dashed diagonal) -----------------
+ax.legend(
+    handles=[
+        Line2D([], [], color=SC_COLOR, marker="x", ls="none", ms=7, mew=1.5, label="1 lane"),
+        Line2D(
+            [],
+            [],
+            color=AGG_COLOR,
+            marker="o",
+            ls="none",
+            ms=7,
+            mfc="none",
+            mew=1.6,
+            label="3-core knee (aggregate)",
+        ),
+    ],
+    loc="upper left",
+    bbox_to_anchor=(0.005, 0.995),
     fontsize=ANN_SIZE,
-    color=ANN_COLOR,
-    ha="left",
-    va="bottom",
+    frameon=False,
+    handletextpad=0.4,
+    labelspacing=0.5,
+    borderpad=0.2,
 )
-
-# --- DPU weight-load: along the dashed diagonal, close above it ---
-x1 = 22.5
-ax.text(
-    x1,
-    WEIGHT_BW_GBPS * x1 * 1.17,
-    f"measured DPU weight-load {WEIGHT_BW_GBPS:.2f} GB/s",
-    rotation=theta,
-    fontsize=ANN_SIZE,
-    color=ANN_COLOR,
-    ha="left",
-    va="bottom",
-)
-
-# --- per-point labels: subgraph name + efficiency, placed below (g_a) or right (h_a/h_s) ---
-for lab, x, y, where, (dx, dy) in POINTS:
-    eff = y / PEAK_GOPS * 100
-    va = "top" if where == "below" else "center"
-    ha = "center" if where == "below" else "left"
-    ax.annotate(
-        f"{lab} ({eff:.0f}%)",
-        (x, y),
-        xytext=(dx, dy),
-        textcoords="offset points",
-        fontsize=7.4,
-        color=POINT_COLOR,
-        ha=ha,
-        va=va,
-        zorder=6,
-    )
 
 save_figure(fig, "roofline_subgraph")
-print(f"  visual angle of diagonals: {theta:.2f} deg")
-for lab, x, y, *_ in POINTS:
-    eff = y / PEAK_GOPS * 100
-    line_y = min(PEAK_GOPS, WEIGHT_BW_GBPS * x) if "h_" in lab else min(PEAK_GOPS, DDR_GBPS * x)
-    print(f"  AI={x:8.1f} OP/byte  {y:7.1f} GOP/s  eff={eff:4.1f}%   {lab}")
+
 print(
-    f"  DDR knee={RIDGE:.1f} OP/byte   AXI knee={RIDGE_AXI:.1f} OP/byte   weight-load knee={RIDGE_W:.1f} OP/byte"
+    f"  ridge: 1-core {RIDGE_1:.1f} OP/byte   3-core {RIDGE_3:.1f} OP/byte"
+    f"   (3*AXI={NCORE * AXI_GBPS:.1f} > DDR {DDR_GBPS})"
 )
-print(f"  DPU-peak label x={x_peak_lab:.1f}")
-print(
-    f"  weight-load line at h_a AI: {WEIGHT_BW_GBPS * ai_ha:.1f} GOP/s (actual {gops_ha:.1f}, {'OK sits below' if gops_ha <= WEIGHT_BW_GBPS * ai_ha else 'STILL ABOVE by %.1f%%' % ((gops_ha / (WEIGHT_BW_GBPS * ai_ha) - 1) * 100)})"
-)
-print(
-    f"  weight-load line at h_s AI: {WEIGHT_BW_GBPS * ai_hs:.1f} GOP/s (actual {gops_hs:.1f}, {'OK sits below' if gops_hs <= WEIGHT_BW_GBPS * ai_hs else 'STILL ABOVE by %.1f%%' % ((gops_hs / (WEIGHT_BW_GBPS * ai_hs) - 1) * 100)})"
-)
+print("  single core (1 lane):")
+for lab, x, y, eff in SC.values():
+    print(f"    AI={x:9.1f}  {y:8.1f} GOP/s  eff={eff:5.1f}%   {lab}")
+print("  3-core aggregate (knee):")
+for k, (s, effr, bwr) in AGG.items():
+    print(
+        f"    {k:8s} sum={s:8.1f} GOP/s  per-core eff {effr[0]:.1f}-{effr[1]:.1f}%"
+        f"  AvgBw {bwr[0]:.2f}-{bwr[1]:.2f} GB/s"
+    )

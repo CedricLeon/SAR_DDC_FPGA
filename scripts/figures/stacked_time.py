@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
-"""Stacked time-per-patch figure (DATE'27) — makes the bottleneck migration visible.
+"""F1 — per-patch sequential breakdown (DATE'27): the bottleneck migrates with topology.
 
-s0 serial per-patch decomposition, absolute ms, for ALL FOUR architectures
-(FP, SHyp, ResFP, ResSHyp) so the two independent axes are disentangled:
+s0 serial per-patch decomposition, absolute ms, all four architectures. Two
+independent topology axes are on display:
   - residual axis  : g_a 10 -> 73 ms  (FP->ResFP, SHyp->ResSHyp)
-  - hyperprior axis: adds h_a/h_s (DPU) + a heavier Gaussian-conditional entropy
-                     (SHyp/ResSHyp use gc_compress ~11 ms vs FP/ResFP eb ~6.6 ms)
+  - hyperprior axis : adds the h_a/h_s side-network (DPU) + a heavier Gaussian-
+                      conditional entropy stage (gc_compress ~11 ms vs eb ~6.6 ms)
 
-Slices are coloured by compute resource (blue = ARM CPU, orange = DPU); the DPU
-block is split g_a vs hyperprior side-network. Message: FP/SHyp bars are balanced
-(normalize + entropy roughly match a small g_a) -> CPU-bound; ResFP/ResSHyp are
-dominated by the residual g_a block -> DPU-bound. The binding resource migrates
-with topology; the roofline (separate figure) then shows g_a is the decider.
+Design (F1, P1.1): slices are coloured strictly by the compute resource that runs
+them -- CPU (blue) vs DPU (orange), the palette every DATE'27 figure shares
+(_figutils.PALETTE). The stack is resource-grouped, not temporal: both CPU stages
+(normalize, entropy) at the bottom, both DPU stages (g_a, the h_a/h_s side-network)
+on top, so the blue/orange boundary in each bar *is* the CPU/DPU split and the
+orange fraction is the DPU share -- printed on every bar. FP/SH read blue-dominant
+(CPU-bound), ResFP/ResSH orange-dominant (DPU-bound); the two pairs are set apart
+on the x-axis and bracket-labelled. The reader should reach "the binding resource
+follows the topology" from the picture alone.
 
-Numbers are read from the repo so the figure is reproducible:
-  stages  <- results/date27/s0/<arch>/s0_compress_entoff.json  (E3, entropy OFF — the
-             true sequential baseline; L20; per-stage compute is lambda-independent)
-
-P1.0 migration: repointed to results/date27/; the SD-read segment is dropped
-(F1 — the warm-read basis is the only one now, and s0/ carries no read stage).
-Visual design otherwise unchanged.
+Numbers (lambda=20, entropy-opt OFF -- the true sequential baseline; the ladder's
+r7 is where the entropy optimisation's payoff shows). Per-stage compute is
+lambda-independent.
+  stages  <- results/date27/s0/<arch>/s0_compress_entoff.json   (E3, via _figutils)
 
 Run:  conda activate DDC_FPGA && python scripts/figures/stacked_time.py
 Out:  LaTeX/SAR_DDC_FPGA_DATE27/figures/images/stacked_time.{pdf,png}
@@ -30,6 +31,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from _figutils import (
     ARCHS,
+    CPU_BOUND,
     DISPLAY,
     PALETTE,
     PALETTE_FILL,
@@ -37,49 +39,63 @@ from _figutils import (
     load_s0_stages,
     save_figure,
 )
+from matplotlib.patches import Patch
 
-# stage (category) -> which s0 stage keys sum into it; compress scenario only
-CAT_STAGES = {
-    "normalize": ["normalize"],
-    "g_a": ["g_a"],  # DPU main encoder, run x2 (re,im)
-    "hyperprior": ["h_a", "h_s"],  # DPU side-network (0 for FP/ResFP)
-    "entropy": ["eb_compress", "gc_compress"],  # CPU entropy (factorized EB / Gaussian GC)
-}
-
-# draw order bottom->top (temporal), colour, legend label. normalize/g_a are their
-# loc_cpu/loc_dpu fill blended toward the edge; entropy/hyperprior use the edge directly.
-# (Same fill/edge pairs as fig:system_dataflow — see _figutils.PALETTE / .PALETTE_FILL.)
-ORDER = [
-    ("normalize", blend(PALETTE_FILL["cpu"], PALETTE["cpu"]), "normalize (CPU)"),
-    ("g_a", blend(PALETTE_FILL["dpu"], PALETTE["dpu"]), r"$g_a$(real), $g_a$(imag) (DPU)"),
-    ("hyperprior", PALETTE["dpu"], r"$h_a, h_s$ (DPU)"),
-    ("entropy", PALETTE["cpu"], "entropy rANS (CPU)"),
+# category -> (s0 stage keys summed into it, resource, legend label). compress scenario only.
+# Draw order is the list order, bottom -> top: CPU stages first, then DPU stages, so the
+# blue|orange seam in every bar is exactly the CPU/DPU boundary.
+CATS = [
+    ("normalize", ["normalize"], "cpu", "normalize (CPU)"),
+    ("entropy", ["eb_compress", "gc_compress"], "cpu", "entropy rANS (CPU)"),
+    ("g_a", ["g_a"], "dpu", r"$g_a$(real)$+g_a$(imag) (DPU)"),
+    ("hyperprior", ["h_a", "h_s"], "dpu", r"$h_a{+}h_s$ side-network (DPU)"),
 ]
+RES = {c: res for c, _, res, _ in CATS}
+# within a resource the primary stage takes the saturated tone, the secondary a lighter
+# tint of the SAME hue (fill blended a third of the way back to the saturated tone -- the
+# bare fill is too near white to read) -- so each bar still shows one CPU + one DPU region.
+FACE = {
+    "normalize": PALETTE["cpu"],
+    "entropy": blend(PALETTE_FILL["cpu"], PALETTE["cpu"], 0.33),
+    "g_a": PALETTE["dpu"],
+    "hyperprior": blend(PALETTE_FILL["dpu"], PALETTE["dpu"], 0.33),
+}
 
 
 def load_arch(arch):
-    """Per-category ms/patch for ``arch`` (each CAT_STAGES group summed over its s0 stages)."""
+    """(per-category ms/patch, DPU fraction of the per-patch total, total ms) for ``arch``."""
     st = load_s0_stages(arch)
-    return {
-        cat: sum(st[k]["mean_ms"] for k in keys if k in st) for cat, keys in CAT_STAGES.items()
-    }
+    vals = {c: sum(st[k]["mean_ms"] for k in keys if k in st) for c, keys, _, _ in CATS}
+    total = sum(vals.values())
+    dpu = sum(v for c, v in vals.items() if RES[c] == "dpu")
+    return vals, dpu / total, total
 
 
 data = {a: load_arch(a) for a in ARCHS}
 
-fig, ax = plt.subplots(figsize=(6.4, 3.6))
-xpos = {a: i for i, a in enumerate(ARCHS)}
-BW = 0.66
+# two visually separated pairs on x: FP,SH | ResFP,ResSH
+xpos = {a: (i if a in CPU_BOUND else i + 0.6) for i, a in enumerate(ARCHS)}
+BW = 0.62
+
+fig, ax = plt.subplots(figsize=(6.6, 4.0))
 for a in ARCHS:
+    vals, dpu_share, total = data[a]
     bottom = 0.0
-    for cat, color, _ in ORDER:
-        v = data[a][cat]
+    for cat, _, _, _ in CATS:
+        v = vals[cat]
         if v <= 0:
             continue
         ax.bar(
-            xpos[a], v, BW, bottom=bottom, color=color, edgecolor="white", linewidth=0.8, zorder=2
+            xpos[a],
+            v,
+            BW,
+            bottom=bottom,
+            color=FACE[cat],
+            edgecolor="white",
+            linewidth=1.0,
+            zorder=2,
         )
-        if v >= 5.0:  # label only segments with room
+        if v >= 6.0:
             ax.text(
                 xpos[a],
                 bottom + v / 2,
@@ -91,33 +107,74 @@ for a in ARCHS:
                 zorder=3,
             )
         bottom += v
-    ax.text(xpos[a], bottom + 2.0, f"{bottom:.0f} ms", ha="center", va="bottom", fontsize=9.5)
+    # CPU|DPU seam = sum of the CPU stages: solid tick across the bar so the DPU-share
+    # headline has an unambiguous referent.
+    cpu_ms = sum(vals[c] for c in vals if RES[c] == "cpu")
+    ax.plot(
+        [xpos[a] - BW / 2, xpos[a] + BW / 2], [cpu_ms, cpu_ms], color="#1a1a1a", lw=1.2, zorder=4
+    )
+    # headline per bar: DPU share (bold, DPU colour) over the absolute total (small, grey)
+    ax.text(
+        xpos[a],
+        total + 6.0,
+        f"DPU {dpu_share * 100:.0f}%",
+        ha="center",
+        va="bottom",
+        fontsize=10.5,
+        fontweight="bold",
+        color=PALETTE["dpu"],
+    )
+    ax.text(
+        xpos[a],
+        total + 1.5,
+        f"{total:.0f} ms",
+        ha="center",
+        va="bottom",
+        fontsize=8.5,
+        color="#666666",
+    )
 
-ax.set_xticks(list(xpos.values()))
-ax.set_xticklabels([DISPLAY[a] for a in ARCHS], fontsize=9.5)
-ax.set_ylabel("latency [ms]")
-ax.set_ylim(0, 105)  # hand-tuned headroom above the tallest bar (ResSHyp ~95 ms, no read)
-ax.spines[["top", "right"]].set_visible(False)
+# bracket + label under each pair
+ax.set_ylim(0, 116)
+DPU_BOUND = [a for a in ARCHS if a not in CPU_BOUND]
+for members, label in ((CPU_BOUND, "CPU-bound"), (DPU_BOUND, "DPU-bound")):
+    x0, x1 = xpos[members[0]], xpos[members[-1]]
+    ax.plot([x0, x1], [-13, -13], color="#555555", lw=1.2, clip_on=False)
+    for xe in (x0, x1):
+        ax.plot([xe, xe], [-13, -10.5], color="#555555", lw=1.2, clip_on=False)
+    ax.text(
+        (x0 + x1) / 2,
+        -17,
+        label,
+        ha="center",
+        va="top",
+        fontsize=9.5,
+        color="#333333",
+        clip_on=False,
+    )
 
-# legend top->bottom of stack
-handles = [
-    plt.Rectangle((0, 0), 1, 1, facecolor=c, edgecolor="white") for _, c, _ in reversed(ORDER)
-]
-labels = [lab for _, _, lab in reversed(ORDER)]
+ax.set_xticks([xpos[a] for a in ARCHS])
+ax.set_xticklabels([DISPLAY[a] for a in ARCHS], fontsize=10)
+ax.set_ylabel("per-patch latency [ms]")
+ax.spines[["top", "right", "bottom"]].set_visible(False)
+ax.tick_params(axis="x", length=0)
+
+handles = [Patch(facecolor=FACE[c], edgecolor="white", label=lab) for c, _, _, lab in CATS]
 ax.legend(
-    handles,
-    labels,
+    handles=handles,
     fontsize=8.5,
     frameon=False,
     loc="upper left",
     bbox_to_anchor=(0.0, 1.0),
-    handlelength=1.1,
+    handlelength=1.2,
+    labelspacing=0.35,
 )
 
 save_figure(fig, "stacked_time")
 for a in ARCHS:
+    vals, dpu_share, total = data[a]
     print(
         f"  {a:8s}: "
-        + ", ".join(f"{k}={v:.1f}" for k, v in data[a].items())
-        + f"  total={sum(data[a].values()):.1f} ms"
+        + ", ".join(f"{k}={v:.1f}" for k, v in vals.items())
+        + f"  total={total:.1f} ms  DPU={dpu_share * 100:.1f}%"
     )
