@@ -15,8 +15,9 @@ throughput/latency/energy sweep (§10) are done and board-verified at the cohere
 across the full 4-arch × 4-power-mode matrix; a per-arch quality sweep and Thor both remain (§12). The
 classical SAR baseline (N5, §10) is resolved paper-only — no CCSDS standard targets SAR, so the paper
 cites the closest literature instead of reimplementing.
-Remaining (§13): the pre-submission re-verification sweep (N7), folded into the DATE'27 plan's Phase 0
-(`DATE27_paper_plan.md` §4.1, which also carries the figure/writing work). Last updated 2026-08-31.
+The N7 re-verification sweep is done (§13) — canonical numbers now live in `results/date27/`
+(`MANIFEST.md`); remaining work is the DATE'27 figure/writing plan (`DATE27_paper_plan.md` §4).
+Last updated 2026-09-01.
 
 ---
 
@@ -704,12 +705,15 @@ narrative, and be ready for any experiment to resolve *against* the story. Each 
 manuscript slot it *would* unblock (**→ main.tex …**) purely as navigation, never as a hole that must be
 filled.
 
-**N7 — Full result re-verification pass (pre-submission).** Every number that goes in the paper gets
-recomputed from a clean, current-`HEAD` sweep before submission — development happened too
-unsequentially (interleaved commits, stashes, branch swaps) to trust that today's `results/` trees are
-all mutually consistent with each other or with the current codebase. **Folded into the DATE'27
-plan's Phase-0 measurement campaign** (`DATE27_paper_plan.md` §4.1): the ladder re-measurement in the
-new rung order doubles as this re-verification for the streaming numbers.
+**N7 — Full result re-verification pass — done (2026-09-01).** Every streaming number was recomputed
+from a clean, current-`HEAD` sweep (E1–E6, 4 archs) into the canonical tree
+**`results/date27/`** (per-run provenance in its `MANIFEST.md`; sweep spec in
+`DATE27_paper_plan.md` §4.1a). Old numbers reproduce within ~2.7 % (seq) / +0.2–3.5 % (roofs,
+CPU-bound archs gained from the N6 entropy optimization). Three story-level values moved and are
+canonical in the plan's §4.0 gate-review block: FP knee 32→**12 lanes** (all-CPU-opts context),
+placement recovery 2.8×→**2.15×** (ResSHyp, 3 L), sequential CPU share 73→**~60 %** (SD read no
+longer counted). The pre-N7 trees are archived at `/mnt/vitisAI/DDC_results_archive/2026-08-31/`;
+this doc's older tables reflect that archived campaign.
 
 ### Deferred / optional
 

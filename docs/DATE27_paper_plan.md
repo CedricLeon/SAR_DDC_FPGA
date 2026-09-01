@@ -139,15 +139,15 @@ text/figures gets computed by a `python3` command first (repo convention).
 | r1 `mt` | 4 CPU workers, shared serialized DPU (old `pool`) | obvious first step; big for CPU-bound archs |
 | r2 `fo3` | fan-out, 3 lanes (1/core), default round-robin placement | the *structure* change, isolated from oversubscription (3 L not 4 L — 4 on 3 cores is the imbalance case the lane study explains later) |
 | r3 `fo3p` | + pinned subgraph-to-core placement | the core fix |
-| r4 `knee` | fan-out at per-arch knee lanes (FP 32/SH 24/ResFP 6/ResSH 20), pinned | lane-count selection |
+| r4 `knee` | fan-out at per-arch knee lanes (FP 32*/SH 24/ResFP 6/ResSH 20), pinned—*FP's measured knee is now 12 L (gate review, §4.0); r4–r7 ran at 32 L, still on the flat roof | lane-count selection |
 | r5 `+neon` | + NEON log-approx normalization | CPU kernel opt |
 | r6 `+dbuf` | + double-buffered row-block read | CPU kernel opt |
 | r7 `+ent` | + optimized rANS (flattened CDF + reciprocal, `4ddbcc8`) | CPU kernel opt |
 
-Fallback decision inside P0.2: if the r2→r3 delta is negligible at 3 lanes (placement pathology may
-only bite at higher lane counts), swap r3/r4 — show naive-vs-pinned *at the knee* (where the 2.8×
-was seen). Two shaded bands on the figure: rungs r1–r4 = "scheduling", r5–r7 = "CPU kernels"; each
-paper subsection points into its band.
+~~Fallback decision inside P0.2~~ **resolved 2026-09-01: not triggered** — the placement pathology
+is fully visible at 3 lanes (ResSHyp r2→r3 = 2.15×; naive round-robin leaves fan-out barely above
+`mt`), so the rung order stands. Two shaded bands on the figure: rungs r1–r4 = "scheduling",
+r5–r7 = "CPU kernels"; each paper subsection points into its band.
 
 **Entropy micro-opt**: no further algorithm work (N6's `4ddbcc8` optimization is final), but it gets
 a **runtime flag** (`--entropy`, task P0.0) like every other optimization, so entropy-off configs
@@ -186,6 +186,31 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
 - Table 1 (PL util) stays; falls back to text only if space runs out.
 - Energy lives in IV.Evaluation for now (flexible → Discussion if flow prefers).
 
+**Post-sweep ledger updates (gate review, 2026-09-01 — these numbers override anything older):**
+
+- Roof throughput (r7, patch/s): FP **203.7** · SHyp **146.8** · ResFP **41.1** · ResSHyp **38.2**.
+  Seq baselines reproduce old within ~2.7 %; deadline margins and the "≈2× Orin" claim unchanged
+  (FP ≈ 52 MB/s ⇒ ~4.5× before-contact headroom, ~6.9× short of real-time).
+- Cumulative ladder speedups: FP **×5.5** · SHyp **×5.0** · ResFP **×3.8** · ResSHyp **×3.7**.
+- **Placement fix = 2.15× on ResSHyp at 3 L** (r2 13.7 → r3 29.5 patch/s; SHyp +8.6 %, FP/ResFP
+  ~0) — replaces the old "2.8×" everywhere. Prose hook: naive round-robin leaves ResSHyp fan-out
+  (13.7) barely above plain `mt` (12.4).
+- **Knee lanes (E2, all CPU opts on): FP 12 L** (was 32; peak 206.7 @ 48 L, 12 L within 1 %) ·
+  SHyp 24 · ResFP 6 · ResSHyp 20 unchanged. FP's ladder r4–r7 ran at 32 L (still on the flat roof,
+  r7 203.7 ≈ E2 t32) — ⚠ decision: re-run FP r4/r5/r6 at 12 L (~10 min board) for full coherence,
+  or footnote the 32 L. Rule-of-thumb prose: FP knee = 4× #cores — the old "3–4×" guess now has a
+  measured anchor (SHyp stays higher, 8×, GC entropy).
+- **Sequential CPU share (FP/SHyp) = ~60/61 %** (FP: CPU 15.5 ms vs DPU 10.4 ms; DPU share 40 %) —
+  replaces "~73 %", which included the now-dropped SD read. Story intact: DPU is 40–82 % of
+  per-patch time across archs. ResFP/ResSHyp: DPU 82/79 %.
+- 3-core roofline (E4, ResSHyp knee): residual g_a **95–96 % efficiency on all three cores**
+  (compute-bound scales cleanly); h_a/h_s crash to **10–26 %** with per-core bandwidth 2.2–5.5 GB/s
+  — the DDR-collision reading is supported and F3's aggregate dots are computable from
+  `results/date27/vaitrace/`.
+- Occupancy caveat for F7/W5: raw trace spans include DPU queue-wait — summing them exceeds 100 %
+  busy; **always go through `fanout_occupancy.py`'s per-core attribution**, never raw span sums.
+  r0 has no trace (tracer is fanout-only) → use E3 s0 shares for r0, as planned.
+
 ### 4.1 Phase 0 — measurement campaign & story-risk retirement (board; all 🔄)
 
 - [x] **P0.0 `--entropy` runtime flag** (N6's remainder; blocks P0.2) — wrap the `4ddbcc8` rANS
@@ -211,23 +236,20 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   snap grid, warm read, power sampling on. Outputs → `results/date27/` only, one `MANIFEST.md` line
   per run. *(Done 2026-09-01: all 4 archs × E1–E6, 740/740 independent validation checks passed —
   zero anomalies, byte-identity gate holds on every arch, E1 ladder non-decreasing r0→r7 on every
-  arch, E2 knee within ~1% of peak everywhere. One methodology bug caught in manual review after
-  the automated pass: E6's peak-RSS/CMA sampler matched the wrong PID (`pgrep -f` self-matched the
-  polling shell's own command line, not `stream_pipeline`) — VmHWM read ~2.5 MiB instead of the real
-  ~570–755 MiB; fixed via `/proc/*/exe` symlink match and re-measured for all 4 archs (CMA figures
-  were unaffected, being system-wide not PID-scoped). Delta vs the old committed numbers: seq baselines
+  arch, E2 knee within ~1% of peak everywhere. Delta vs the old committed numbers: seq baselines
   reproduce within ~2.7%; roof/peak throughput +0.2–3.5% (CPU-bound FP/SHyp gained from N6's entropy
   optimization, DPU-bound ResFP/ResSHyp ~unchanged, as expected).)*
-- [ ] **P0.3 Occupancy checkpoints** 🔄 — CPU-busy% / DPU-busy% at r0, r4, r7 per arch
-  (`fanout_occupancy.py` tracing; check it runs on non-fanout configs — if not, stacked-time shares
-  for r0 + traces for r4/r7). Decide: occupancy panel under the ladder vs numbers in text.
-- [ ] **P0.4 3-core roofline data** 🔄 — vaitrace at each arch's knee operating point (per-core
-  counters → aggregate achieved GOP/s per subgraph) + keep the 1-lane uncontended reference.
-  Verify the h_a/h_s DDR-collision reading and *where the 2.8× placement number actually comes
-  from* (needed for r3 prose).
-- [ ] **P0.5 Delta report** 🔄 — one table: every paper number, old value → new value. Changed
-  story-level numbers (bottleneck shares ~73 %, cumulative ×5.6/×5.0/×3.7, knee lanes, 2.8×,
-  0.54 dB, ~1 %, deadline margins) ⇒ **stop, update §4.0 + affected tasks, then continue**.
+- [x] **P0.3 Occupancy checkpoints** 🔄 — *(2026-09-01: traces collected for r4/r7; tracer is
+  fanout-only so r0 uses E3 s0 shares. Proper busy% requires `fanout_occupancy.py` per-core
+  attribution — raw span sums include queue-wait and exceed 100 %. Default = numbers in text; F7
+  panel only if the proper computation yields a clean visual.)*
+- [x] **P0.4 3-core roofline data** 🔄 — *(2026-09-01: confirmed — see gate-review block in §4.0;
+  data in `results/date27/vaitrace/`. The old "2.8×" is superseded by the measured 2.15× at 3 L
+  from E1 r2→r3.)*
+- [x] **P0.5 Delta report** 🔄 — *(2026-09-01 gate review done: 740/740 checks passed; story-level
+  changes — FP knee 32→12 L, placement 2.8×→2.15×@3 L, CPU share 73→60 % — written into the §4.0
+  gate-review block, which overrides older numbers. One open ⚠: FP r4–r6 re-run at 12 L vs
+  footnote.)*
 - [ ] **P0.6** Fold results into `onboard_pipeline.md` (N7 progress note; any new insight into its
   section).
 
@@ -256,7 +278,7 @@ Figure scripts will read from this tree only.
 
 **Sweep table.** Global setup for every run: λ=20, seed 0, overlap 2, snap grid, full scene, warm
 read, power sampling on, batch 1; `make clean` rebuild once at campaign start; knee lanes = FP 32 /
-SH 24 / ResFP 6 / ResSH 20.
+SH 24 / ResFP 6 / ResSH 20 *(as run; FP's measured knee moved to 12 L — gate review, §4.0)*.
 
 | ID | Experiment | Configs | Per arch | Feeds |
 | --- | --- | --- | --- | --- |
@@ -334,7 +356,7 @@ the section's bullets into prose under the new skeleton, keeping the §4.0 ledge
   roofline (F3) including the 3-core story + caveat; conclusion: the bottleneck migrates with
   topology and is predictable from it. h_a/h_s "cheap in absolute time" can shrink to one line.
 - [ ] **W3** III.*DPU/scheduling optimizations* — the mechanism, as four named components in rung
-  order: `mt` → fan-out structure → pinned placement (with the verified 2.8× context) → lane-count
+  order: `mt` → fan-out structure → pinned placement (measured 2.15× on ResSHyp at 3 L) → lane-count
   rule (knee; multiples of #cores for DPU-bound, ≥2/core to hide CPU work; many more for CPU-bound).
   XRT footnote here. This is the section Dirk called the most important — spend the words here.
 - [ ] **W4** III.*CPU optimizations* — `neon` (2.42× isolated), `dbuf`, `ent` (the rANS
@@ -345,6 +367,7 @@ the section's bullets into prose under the new skeleton, keeping the §4.0 ledge
 - [ ] **W5** III.*Combined & rules of thumb* — ladder reading (F2), occupancy deltas (P0.3), then
   the transferable rules stated *as the conclusion*: optimizations fork by binding resource;
   topology predicts the binding resource before any run; placement + lane rules.
+  @user: "Based on our subgraph-to-core experiment and the number of lanes studies, we can say that <rule-of-thumb_explanations>. It should be noted that given that our observations rely on a small numbers of architectures this holds more from a rule-of-thumb than a predictive rule."
 - [ ] **W6** IV — *Relaxations* (symmetrization table + overlap study, condensed from old Sec. V,
   framed as "hardware-forced relaxations, priced"); *Cross-platform baseline* (prominent, bolded
   table, FP32-Orin caveat); *TerraSAR-X deadlines* (percentage framing); *Energy* (F5 + short
