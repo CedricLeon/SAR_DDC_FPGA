@@ -267,6 +267,36 @@ def checks_dir(arch: str) -> Path:
     return DATE27 / "checks" / arch
 
 
+def cpu_probe_mpstat(arch: str) -> dict[str, float]:
+    """Steady-state mean ``{usr, sys, idle}`` % of the 4 A53 cores at ``arch``'s knee lane (P0.7
+    probe, ``cpu_probe/<arch>/knee_<K>_mpstat.log``).
+
+    Only the knee was probed —
+    there is no lane sweep (§4.0). ``all``-row samples, first/last 10 % trimmed as
+    ramp/drain; reproduces the §4.0 gate-review table.
+    """
+    hits = sorted((DATE27 / "cpu_probe" / arch).glob("knee_*_mpstat.log"))
+    if not hits:
+        raise FileNotFoundError(f"no knee_*_mpstat.log in {DATE27 / 'cpu_probe' / arch}")
+    rows = []
+    with open(hits[0]) as fh:
+        for line in fh:
+            p = line.split()
+            # "HH:MM:SS all %usr %nice %sys %iowait %irq %soft %steal %guest %gnice %idle"
+            if len(p) >= 12 and p[1] == "all" and p[0][2] == ":":
+                rows.append((float(p[2]), float(p[4]), float(p[11])))
+    if len(rows) < 5:
+        raise ValueError(f"{hits[0]}: only {len(rows)} mpstat 'all' rows — cannot trim")
+    k = max(1, len(rows) // 10)
+    win = rows[k:-k]
+    n = len(win)
+    return {
+        "usr": sum(r[0] for r in win) / n,
+        "sys": sum(r[1] for r in win) / n,
+        "idle": sum(r[2] for r in win) / n,
+    }
+
+
 # ======================================================================================
 # Occupancy attribution — re-exported from the moved fanout_occupancy module
 # ======================================================================================

@@ -48,7 +48,7 @@ from _figutils import (
 from matplotlib.lines import Line2D
 
 LANES = LANE_GRID
-TICKS = [1, 2, 4, 8, 16, 32, 64]  # powers of 2 within the grid -> even log2 spacing
+TICKS = LANE_GRID  # tick + label every measured lane count (not just powers of 2)
 COLORS = ARCH_COLORS
 MARKERS = {a: "o" for a in COLORS}  # color-only per arch (uniform marker)
 OP = KNEE  # operating point = the per-arch knee (§4.0)
@@ -84,7 +84,7 @@ def _peak(ax, arch, xs, ys, fmt, dy):
         xytext=(0, dy),
         ha="center",
         va="bottom" if dy >= 0 else "top",
-        fontsize=9,
+        fontsize=9.5,
         color="black",
         zorder=7,
     )
@@ -95,12 +95,11 @@ def main():
     fig, (ax_t, ax_o, ax_e) = plt.subplots(
         3, 1, sharex=True, figsize=(9.2, 9.6), gridspec_kw={"height_ratios": [2.6, 2.0, 1.5]}
     )
-    # Per-arch label offset overrides where the default collides with a neighbor;
-    # every arch not listed keeps the default dy passed to _peak below. (Hand-tuned
-    # for the pre-migration data positions — F4 re-tunes for the date27 grid.)
+    # Per-arch knee-label offset (points) where the default (+7, above) collides with a
+    # neighbour; every arch not listed keeps +7. Hand-tuned for the date27 grid.
     ENERGY_DY = {"ResFP": -7}  # below instead of above
-    DPU_OCC_DY = {"SHyp": -7, "FP": 2.75}
-    CPU_OCC_DY = {"ResFP": -7, "FP": 10}
+    DPU_OCC_DY = {"SHyp": -7, "FP": 7}  # FP DPU busy sits just above its own CPU-busy label
+    CPU_OCC_DY = {"ResFP": -7, "FP": -8}  # FP CPU busy label goes below the FP DPU one
 
     for arch, color in COLORS.items():
         mk = MARKERS[arch]
@@ -126,7 +125,8 @@ def main():
 
     ax_t.set_xscale("log", base=2)
     ax_e.set_xticks(TICKS)
-    ax_e.set_xticklabels(TICKS, fontsize=8)
+    ax_e.set_xticklabels(TICKS, fontsize=7)
+    ax_e.xaxis.set_minor_locator(plt.NullLocator())  # no extra unlabelled log2 minor ticks
     ax_e.set_xlabel("CPU worker threads (log2 scale)", fontsize=11)
     ax_t.set_ylabel("throughput [patch/s]", fontsize=11)
     ax_o.set_ylabel("occupancy [%]", fontsize=11)
