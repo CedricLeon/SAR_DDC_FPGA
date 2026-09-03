@@ -1,5 +1,11 @@
 # DATE 2027 paper — planning scratchpad
 
+> **Writing the paper? Read §4.0 and §4.4, and nothing else here.** §4.0 is the settled-numbers
+> ledger — it overrides every number in every other doc, in `main.tex`, and in any script comment.
+> §4.4 is the writing task list. The rest of §4 is execution scaffolding for measurement and figure
+> work that is now finished: kept for provenance, not for reading. At submission this whole file is
+> deleted, once every §4.0 fact has a permanent home in `onboard_pipeline.md`.
+
 > **Temporary working doc** for the DATE'27 submission. Dissolve into
 > `LaTeX/SAR_DDC_FPGA_DATE27/` + the permanent docs once the manuscript takes shape.
 > **The story we follow is the mechanism cut; the draft is `main.tex` and this doc plans around it.**
