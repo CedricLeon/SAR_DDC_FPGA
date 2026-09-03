@@ -341,18 +341,49 @@ is a load imbalance (the round-robin stacks two heavy `g_a` on one core when lan
 ### CPU occupancy & memory footprint
 
 **What binds the light archs — measured on-board.** `mpstat -P ALL` + `pidstat` (kernel scheduler
-accounting, no `perf` needed) at each arch's operating point resolve the CPU side that the DPU occupancy
-leaves open. The split is direct in the occupancy panel (dashed CPU %usr vs solid DPU busy): **FP/SHyp are
-CPU-bound** (CPU ~79/82 % user-space > DPU ~66/63 %), **ResFP/ResSHyp are DPU-bound** (DPU ~100/96 % > CPU
-~14/19 %). For the CPU-bound archs the entropy rANS (~6.4 ms/patch) + normalize (~3.7 ms) dominate; kernel
-time is only ~5 %.
+accounting, no `perf` needed) at **each arch's knee** resolve the CPU side that the DPU occupancy leaves
+open (P0.7; `results/date27/cpu_probe/<arch>/knee_<L>_mpstat.log`). Against per-core DPU busy from the
+trace attribution at the same operating point:
 
-**Why FP roofs at ~60 % of the naïve 4-core ceiling** — two measured effects, not a thread shortage:
-per-patch compute **inflates ~30 %** under 64-thread load (12.1 → 15.8 ms, cache/DDR contention), and
-**~17 % core idle persists** at every lane count from 16L on — a *balanced* CPU↔DPU pipeline where neither
-side fully saturates, so extra threads cannot fill the idle and cost more than they add (128L < 64L).
-Waterfall: ideal 331 → after inflation 253 → actual 199 patch/s. Figure: `fp_cpu_binding.png` (§11);
-per-arch CPU %usr via `fanout_occupancy.cpu_occupancy_series`.
+| arch | knee | CPU %usr | %sys | %idle | DPU busy (mean of 3 cores) | binding side |
+| --- | --- | --- | --- | --- | --- | --- |
+| FP | 12 L | 67.4 | 8.3 | 24.3 | 70.1 | CPU (balanced) |
+| SHyp | 24 L | 77.0 | 8.3 | 14.7 | 62.5 | **CPU** |
+| ResFP | 6 L | 13.2 | 4.2 | 82.6 | 99.6 | **DPU** |
+| ResSHyp | 20 L | 18.2 | 4.5 | 77.4 | 95.8 | **DPU** |
+
+Kernel time stays 4–8 % throughout. For the CPU-bound archs the entropy coder dominates: uncontended
+(1 lane) FP spends **4.72 ms/patch in `eb_enc` + 3.71 ms in `normalize`** (8.95 ms total), SHyp **9.65 ms
+in `gc` + 3.72 ms normalize** (14.11 ms total) — the Gaussian-conditional coder is what makes the
+hyperprior arch the more CPU-hungry of the two.
+
+**Why FP roofs at ~46 % of the naïve 4-core ceiling** — two measured effects, not a thread shortage.
+Per-patch CPU work **inflates with lane count** (cache/DDR contention under oversubscription), measured
+from the `kind=cpu` spans of the E2 lane traces:
+
+| FP lanes | 1 | 4 | 8 | **12 (knee)** | 32 | 64 |
+| --- | --- | --- | --- | --- | --- | --- |
+| CPU ms/patch | 8.95 | 9.78 | 12.16 | **12.23** | 14.75 | 14.94 |
+| vs 1 lane | 1.00× | 1.09× | 1.36× | **1.37×** | 1.65× | 1.67× |
+| throughput (patch/s) | 51.2 | 168.4 | 200.7 | **205.3** | 205.9 | 205.4 |
+
+Waterfall at the knee: 4 cores at the *uncontended* cost would give **447 patch/s**; at the inflated
+12 L cost, **327**; measured, **205**. The remaining gap is idle — 24.3 % of the four cores — a
+*balanced* CPU↔DPU pipeline (CPU 67 % usr against DPU 70 % busy) where neither side saturates, so extra
+threads cannot fill the idle. Accounting from %usr alone predicts 220 patch/s against 205 measured
+(~7 %), the residual being user-space work the stage tracer does not instrument (patchify, record
+write, queueing).
+
+**This is what the knee *is*, measured.** Past 12 lanes the inflation keeps climbing while throughput
+does not: 12 L → 64 L costs **22 % more CPU work per patch (12.23 → 14.94 ms) for 0 % more throughput**
+(205.3 → 205.4). SHyp shows the same shape more sharply (14.11 ms at 1 L → 28.72 at its 24 L knee,
+2.04×). Choosing the knee over the peak is therefore not a tie-break on noise — it is refusing to pay
+contention for nothing.
+
+*(Numbers recomputed 2026-09-03 from `results/date27/`; the earlier 331 → 253 → 199 waterfall described
+the old 64-lane operating point and the since-deleted `cpu_probe/` mpstat grid. The `fp_cpu_binding.png`
+figure it referenced is cut — its successor `scripts/figures/cpu_composition.py` is generated but not
+published.)*
 
 **Thread affinity — a considered, unmeasured lever.** That inflation is cache/DDR contention under heavy
 oversubscription (far more workers than cores), where the scheduler may migrate a worker between cores and
@@ -587,10 +618,11 @@ with thermal). The full per-rail-group breakdown is in each result JSON.*
 - **DDR is not a bottleneck.** vaitrace: the dominant DPU traffic (`g_a`/`g_s`) is ~651–660 MB/s, ~20×
   under the 17.06 GB/s DDR4 ceiling (§2). CPU-side DDR is an estimate (~100–150 MB/s; no `perf` on the
   board) — the ~20× margin holds either way.
-- **The CPU-bound archs are limited by compress *compute*, not the DPU or the OS.** At FP's roof the 4
-  A53 cores fill to ~79 % user-space (rANS + normalize) while the DPU stays ~⅓ idle and kernel time is
-  ~5 %; the roof mechanism (compute inflation + a persistent balanced-pipeline idle, waterfall
-  331→253→199 patch/s) is **§6**. See `fp_cpu_binding.png` (§11).
+- **The CPU-bound archs are limited by compress *compute*, not the DPU or the OS.** At FP's 12-lane knee
+  the 4 A53 cores fill to **67 % user-space** (rANS + normalize) against **70 % DPU busy** — a balanced
+  pipeline with 24 % idle left over — and kernel time is 8 %. SHyp leans further: 77 % usr against 62 %
+  DPU. The roof mechanism (per-patch CPU work inflating 1.37× by the knee, plus a persistent
+  balanced-pipeline idle) is **§6**.
 - **Compression** (byte-identical across every config; **λ=20, the chosen operating point**): FP bpp
   0.156 → **~202× vs raw int16** (9.6 MB `.ddc`); ResSHyp bpp 0.133 → **~237×**. A deliberate rate
   point: λ=1000 buys ~+1.8 dB (FP) / +3.0 dB (ResSHyp) PSNR (§7) at roughly **10× less compression**
