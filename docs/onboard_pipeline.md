@@ -380,10 +380,9 @@ does not: 12 L → 64 L costs **22 % more CPU work per patch (12.23 → 14.94 ms
 2.04×). Choosing the knee over the peak is therefore not a tie-break on noise — it is refusing to pay
 contention for nothing.
 
-*(Numbers recomputed 2026-09-03 from `results/date27/`; the earlier 331 → 253 → 199 waterfall described
-the old 64-lane operating point and the since-deleted `cpu_probe/` mpstat grid. The `fp_cpu_binding.png`
-figure it referenced is cut — its successor `scripts/figures/cpu_composition.py` is generated but not
-published.)*
+*(Sources: `results/date27/cpu_probe/` for %usr/%sys/%idle, the E2 lane traces for per-patch CPU work
+and DPU attribution. The CPU-composition view is `scripts/figures/cpu_composition.py` — generated for
+inspection, not published as a float.)*
 
 **Thread affinity — a considered, unmeasured lever.** That inflation is cache/DDR contention under heavy
 oversubscription (far more workers than cores), where the scheduler may migrate a worker between cores and
