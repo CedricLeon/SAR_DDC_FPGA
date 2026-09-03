@@ -68,9 +68,10 @@ wide 256-channel kernels. **Per-patch DPU calls: 6** (g_a×2, h_a, h_s, g_s×2) 
 h_a 4.70 MB / 20 KB; h_s 3.01 MB / 20 KB. Total weights ~14.4 MB — negligible vs 4 GB DDR4.
 
 **Collection:** `scripts/fpga/benchmark/collect_roofline.py` (board) runs `xdputil benchmark` + parses
-`xdputil xmodel -l` per subgraph → `results/benchmark_hardware/_roofline/<model>_xmodel_info.json`
-(`peak_fps`, `workload_ops`, `const/workspace/input/output_bytes`, `fixpos_*`, totals). Consumed by
-`benchmark_hardware_analysis.ipynb` for the Williams roofline (arithmetic intensity × throughput vs
+`xdputil xmodel -l` per subgraph → a `<model>_xmodel_info.json` (`peak_fps`, `workload_ops`,
+`const/workspace/input/output_bytes`, `fixpos_*`, totals). The DATE'27 campaign's copies are
+`results/date27/s0/<arch>/<arch>-relu_s0_L20_pt_xmodel_info.json`, consumed by
+`scripts/figures/roofline_subgraph.py` for the Williams roofline (arithmetic intensity × throughput vs
 the 1.2288 TOPS compute ceiling and DDR-bandwidth memory ceiling).
 
 ---
@@ -214,9 +215,10 @@ and far more on h_a/h_s (fixed overhead dominates their sub-ms compute).
   Each pipeline thread needs its **own `BenchPipeline`** (runners/entropy hold mutable state).
 - **M5 — P2 multi-entropy + sweeps:** K entropy consumers; run `--dpu-cores`/`--entropy-threads` sweeps.
 - **P3 (superseded by `onboard_pipeline.md` §5–§6):** the streaming DPU fan-out (`--fanout`, K
-  independent lanes) recovers the third core end-to-end (ResSHyp ~2.9× at 3 lanes; current numbers in
-  `onboard_pipeline.md` §5) — so the planned `DPUCoreAllocator` was unnecessary; deterministic
-  subgraph-major placement pins the 3 lanes cleanly and the only trap is oversubscribing to 4 lanes.
+  independent lanes) recovers the third core end-to-end (ResSHyp placement fix = 2.15× at 3 lanes;
+  current numbers in `onboard_pipeline.md` §5–§6) — so the planned `DPUCoreAllocator` was unnecessary;
+  deterministic subgraph-major placement pins the 3 lanes cleanly and the only trap is oversubscribing
+  to 4 lanes.
 
 **Other:**
 

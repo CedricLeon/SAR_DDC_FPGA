@@ -110,7 +110,8 @@ build_cpp/inference_hybrid --xmodel active_model/*.xmodel \
 
 ### Benchmark run commands
 
-**Canonical results**: `results/benchmark_hardware/<model_name>/<config>_<scenario>[_dpuN][_entN].json`.
+**Canonical results**: `results/date27/` (provenance in `MANIFEST.md`). Older `results/benchmark_hardware/`
+and `results/benchmark_stream/` archived to `/mnt/vitisAI/DDC_results_archive/2026-08-31/`.
 Arch is auto-detected from `active_model/manifest.json` (errors if absent/malformed).
 
 ```bash
@@ -167,6 +168,7 @@ The Python→C++ migration is done; **C++ is the only inference path** (no Pytho
 - **`benchmark_hardware`** — M1–M3 board-verified: S0 per-stage baseline, native INA226/PMBus power
   sampler, S1 channel-parallel (g_a 1.95× / g_s 1.96×, byte-identical to S0), data-parallel ceilings
   (nn_only/entropy_only ~1.97× at N=2). Hardware, methodology, results → `docs/FPGA_benchmark.md`.
+  The DATE'27 campaign re-measured the per-stage S0 baseline (entropy-off) into `results/date27/s0/`.
 - Python legacy removed; `scripts/` reorganised into `dataset/ training/ evaluation/ fpga/{deploy,benchmark}/ vitis_ai/`.
 
 **Scope closed at M3.** The unified GPU/CPU/FPGA runner **is implemented**
@@ -174,12 +176,11 @@ The Python→C++ migration is done; **C++ is the only inference path** (no Pytho
 `docs/GPU_benchmark.md`).
 
 **Onboard streaming pipeline — implemented + board-verified.** The "SLC tile → despeckle + compress →
-`.ddc`" compressor is built and measured (`inference_cpp/src/stream/`, binary `stream_pipeline`; design
-+ results → `docs/onboard_pipeline.md`). Composable, byte-identical optimizations
+`.ddc`" compressor is built and measured (`inference_cpp/src/stream/`, binary `stream_pipeline`; design +
+results → `docs/onboard_pipeline.md`). Composable, byte-identical optimizations
 (`--s1`/`--p0`/`--fanout`/`--prefetch`/`--neon`); studies done — symmetrization (E1), overlap (U5), DPU
 fan-out core-/lane-scaling, full-scene throughput/energy sweep at the coherent setup (λ=20, overlap 2,
-snap grid, 4 archs). **Currently: results analysis + figures** for the DATE'27 paper; remaining =
-Jetson (N2) / CCSDS (N5) baselines. Further schedule changes → discuss in `docs/onboard_pipeline.md` first.
+snap grid, 4 archs). The measurement campaign done, **currently: manuscript draft**.
 
 ---
 

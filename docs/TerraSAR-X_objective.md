@@ -285,13 +285,13 @@ measured single-ZCU102 for both archs (FP, ResSHyp) on a **warm** basis (compute
 seed s0, λ=20 (throughput is λ-independent).
 We state **both models explicitly**, as these numbers evolve with the design (see §5/§10):
 
-- **FP** (factorized-prior, CPU-bound; `s0, λ=20, fan-out 64L`): **51.1 MB/s warm** (22.0 cold), ~202× compression
-- **ResSHyp** (residual scale-hyperprior, DPU-bound; `s0, λ=20, fan-out 24L`): **9.9 MB/s** (SD read fully hidden → warm ≈ cold), ~237× compression
+- **FP** (factorized-prior, CPU-bound; `s0, λ=20, knee 12 L`): **52.4 MB/s warm** (23.5 cold), ~202× compression
+- **ResSHyp** (residual scale-hyperprior, DPU-bound; `s0, λ=20, knee 20 L`): **9.8 MB/s** (SD read fully hidden → warm ≈ cold), ~237× compression
 
-- **(a) Real-time** — compress as fast as acquired (**needs 358 MB/s**): FP → **7.0× short warm**
-  (16.3× cold); ResSHyp → **36× short**.
+- **(a) Real-time** — compress as fast as acquired (**needs 358 MB/s**): FP → **6.9× short warm**
+  (15.2× cold); ResSHyp → **37× short**.
 - **(b) Before next contact** — finish the 64.5 GB take before the next pass ~92 min away (**needs
-  11.7 MB/s**): FP → **met, 4.4× headroom warm** (1.9× cold — met on every basis) ✅; ResSHyp →
+  11.7 MB/s**): FP → **met, 4.5× headroom warm** (2.0× cold — met on every basis) ✅; ResSHyp →
   **1.2× short**.
 - **(c) Downlink-fit** — compressed output must fit the 33.75 MB/s net link: FP → **1.8 MB/s, fits
   19×** ✅; ResSHyp → **1.5 MB/s, fits 22×** ✅ (set by compression ratio, not throughput).
@@ -320,16 +320,16 @@ Platform constants: downlink **270 Mb/s net / 300 gross**; SSMM **384 Gbit BOL /
 ground swath **30 km**; SLC **int16 4 B/px**.
 
 **Table B — current implementation vs. the worst-case objective** (single ZCU102, best schedule
-**fan-out** at each arch's roof — FP 64 lanes, ResSHyp 24; seed s0, λ=20; **warm** basis, **cold**
+**fan-out** at each arch's knee — FP 12 lanes, ResSHyp 20; seed s0, λ=20; **warm** basis, **cold**
 SD-testbed in parentheses; *evolves with the design*):
 
 | metric | FP (CPU-bound) | ResSHyp (DPU-bound) | requirement |
 | --- | --- | --- | --- |
-| SLC throughput | 51.1 (22.0 cold) MB/s | 9.9 MB/s (read hidden) | — |
+| SLC throughput | 52.4 (23.5 cold) MB/s | 9.8 MB/s (read hidden) | — |
 | compression ratio (λ=20) | ~202× | ~237× | — |
 | compressed worst-case take | 0.32 GB | 0.27 GB | ≤ contact budget |
-| (a) real-time | 7.0× short (16.3× cold) | 36× short | 358 MB/s |
-| (b) before-contact (92 min) | ✅ 4.4× headroom (1.9× cold) | 1.2× short | 11.7 MB/s |
+| (a) real-time | 6.9× short (15.2× cold) | 37× short | 358 MB/s |
+| (b) before-contact (92 min) | ✅ 4.5× headroom (2.0× cold) | 1.2× short | 11.7 MB/s |
 | (c) downlink-fit | ✅ fits 19× | ✅ fits 22× | ≤ 33.75 MB/s net |
 
 ---

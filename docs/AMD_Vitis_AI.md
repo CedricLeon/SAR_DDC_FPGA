@@ -24,7 +24,8 @@ Static, instant, no full run needed. We use three subcommands (see `scripts/fpga
 - **`xdputil xmodel <model>.xmodel -l`** → JSON, one entry per DPU subgraph with `workload` (ops) and
   `reg info` = the memory footprint split: **REG_0** weights+bias, **REG_1** workspace/scratch, **REG_2**
   input buffer, **REG_3** output buffer. This is the *design-time* memory requirement (the "how big is
-  this subgraph" question). Saved by us into `results/benchmark_hardware/_roofline/*_xmodel_info.json`.
+  this subgraph" question). Saved by us into `<model>_xmodel_info.json` (DATE'27 copies:
+  `results/date27/s0/<arch>/`).
 - **`xdputil benchmark <model>.xmodel -i <index> 1`** → the isolated **peak FPS** of one subgraph, single
   thread, 60 s, zero host overhead — the pure-DPU ceiling for that subgraph.
 - **`xdputil query`** → DPU arch/core inventory. **Quirk:** reports **4** cores but only **0–2** are real
@@ -158,4 +159,4 @@ also has its own native profiler via an `xrt.ini` file (kernel/AXI traces) — n
   tutorial: [Vitis-AI-Tutorials #16](https://github.com/Xilinx/Vitis-AI-Tutorials/blob/1.4/Design_Tutorials/16-profiler_introduction/README.md).
 - Same-DPU per-layer profiling write-up (Kria KV260, DPUCZDX8G): [partenit.io](https://partenit.io/measuring-what-actually-matters-per-layer-dpu-profiling-on-kria-kv260-with-mobilenet-and-resnet-50/).
 - DPU internals / cores / ports: [Vitis AI system-integration](https://xilinx.github.io/Vitis-AI/3.0/html/docs/workflow-system-integration.html).
-- In-repo: `scripts/fpga/benchmark/collect_roofline.py` (xdputil), `stream_roofline.py` (roofline from vaitrace numbers), `results/benchmark_stream/vaitrace/` (our captures).
+- In-repo: `scripts/fpga/benchmark/collect_roofline.py` (xdputil), `scripts/figures/roofline_subgraph.py` (per-subgraph Williams roofline from vaitrace + xmodel_info), `results/date27/vaitrace/<arch>/` (our captures).

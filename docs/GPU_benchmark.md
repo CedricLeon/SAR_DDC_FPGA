@@ -66,8 +66,9 @@ python scripts/benchmark/run_unified_benchmark.py --model-dir results/fpga/activ
 
 - **host backend** → `benchmark_gpu.py` per scenario → `results/benchmark_unified/`.
 - **fpga backend** → `scripts/fpga/benchmark/benchmark_sweep.py` over SSH (deploy + s0/s1 ×
-  compress/full + fetch) → `results/benchmark_hardware/`. Requires the ZCU102 reachable; `--no-fpga`
-  reuses existing FPGA results.
+  compress/full + fetch) → `results/benchmark_hardware/` (that tree was archived to
+  `/mnt/vitisAI/DDC_results_archive/2026-08-31/` after the DATE'27 campaign; the DATE'27 board numbers
+  live in `results/date27/`). Requires the ZCU102 reachable; `--no-fpga` reuses existing FPGA results.
 - Flags: `--scenarios compress,full`, `--warmup/--iters/--fpga-iters/--subset/--power/--idle-baseline`,
   `--rebuild-cpp`. A backend whose hardware is unreachable warns and is skipped (others continue).
 

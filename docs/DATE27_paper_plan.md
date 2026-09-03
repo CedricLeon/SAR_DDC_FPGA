@@ -74,11 +74,11 @@ table; the full-tile extrapolation.
 
 | # | Asset | Where | State |
 | --- | --- | --- | --- |
-| A1 | Optimization ladder seq→s1→p0→prefetch→neon, cold+warm **per rung**, **all 4 archs**, full 7,540-patch scene | `results/benchmark_stream/`, `onboard_pipeline.md` §10 | 🟢 λ=20, overlap 2, snap grid |
+| A1 | Cumulative r0–r7 optimization ladder (`seq→mt→fo3→fo3p→knee→+neon→+dbuf→+ent`), warm, **all 4 archs**, full 7,540-patch scene | `results/date27/ladder/`, `onboard_pipeline.md` §10, `scripts/figures/ladder.py` | 🟢 λ=20, overlap 2, snap grid |
 | A2 | Symmetrization granularity (E1): whole/none/patch/block × 2 archs × 3 λ, whole scene | `results/symmetrization_study/`, §7 | 🟢 |
 | A3 | Overlap study (U5): ov{0,2,4,8,16}, seam-band vs interior quality, cost | `results/benchmark_stream_overlap/`, §8 | 🟢 the cleanest co-design result |
 | A4 | Memory/storage: 3.87 GB f32 tile vs ~3.0 GB DDR (whole-load OOMs), 0.3 GB windowed, SD read ~24 MB/s | §2, §10 | 🟢 |
-| A5 | DPU fan-out lane scaling (4 archs × lanes 1–4) + pinned-vs-naive placement ablation; DPU-kernel roofline (OPs/bytes) | `results/benchmark_stream/` (fan-out), `onboard_pipeline.md` §5–§6; roofline `results/benchmark_hardware/_roofline/` | 🟢 |
+| A5 | DPU fan-out lane grid (4 archs × 15 lane counts) + pinned-vs-naive placement ablation (r2→r3); per-subgraph roofline (OPs/bytes) | `results/date27/lanes/` + `results/date27/ladder/`, `onboard_pipeline.md` §5–§6; roofline `results/date27/{vaitrace,s0}/`, `scripts/figures/roofline_subgraph.py` | 🟢 |
 | A6 | Mission objective (TerraSAR-X): three deadlines, page-cited | `docs/TerraSAR-X_objective.md` | 🟢 — R5-verified: rates solid, take/contact *durations* are flagged ESTIMATEs (→ footnote in deadline table); "9.9 GB" is really GiB → restate 10.1 GB |
 | A7 | `.ddc` container + trailer offset table (O(1) access, prioritised downlink) | `src/utils/ddc_format.py`, §9 | 🟢 as artifact, **not** a contribution |
 | A8 | INT8 `g_s` output cap at 2100.1 clips brightest ~0.7 % (point scatterers) | §8 | 🟡 prose-only unless a metric is built |
@@ -87,7 +87,7 @@ table; the full-tile extrapolation.
 
 **Figure code:** `DDC_FPGA/scripts/figures/` (moved out of the LaTeX repo 2026-09-01 — rationale and
 layout in §4.3). The LaTeX repo holds only rendered PDFs, the TikZ sources, and `main.tex`.
-The older `stream_gantt` / `stream_roofline` / `stream_sysplot` sketches (`scripts/fpga/benchmark/`) are superseded.
+The older `scripts/fpga/benchmark/` sketch plotters were deleted in P0.6 (2026-09-03), superseded by `scripts/figures/`.
 
 ---
 
@@ -296,21 +296,19 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
 - [x] **P0.5 Delta report** 🔄 — *(2026-09-01 gate review done: 740/740 checks passed; story-level
   changes — FP knee 32→12 L, placement 2.8×→2.15×@3 L, CPU share 73→60 % — written into the §4.0
   gate-review block, which overrides older numbers.
-- [ ] **P0.6 Docs & code number-consistency pass** — **deferred to end of Phase 1** (so any
-  experiment/bug surfacing during figure work lands in the same pass). Scope: reconcile the
-  `results/date27/` numbers across `onboard_pipeline.md` (§5–§6, §10 tables and prose), the other
-  docs that quote streaming numbers (`FPGA_benchmark.md`, `GPU_benchmark.md`), and a grep of
-  code/scripts for hardcoded stale values (knee lanes, throughputs in defaults/comments). The
-  minimal N7-resolution note is already folded (2026-09-01); this is the full pass.
-  - **`scripts/fpga/benchmark/fanout_cpu_fp.py`** (P1.0, 2026-09-01): repoint or delete. It reads the
-    deleted `results/benchmark_stream/cpu_probe/` mpstat logs **and** imports `fanout_occupancy`, which
-    P1.0 moved to `scripts/figures/` — so it now fails at import. Its figure (`fp_cpu_binding.png`) is
-    superseded by `scripts/figures/fp_cpu_stack.py` + the `fanout_lane_plot.py` occupancy panel, both
-    of which now derive CPU occupancy from the trace CSVs' `kind=cpu` spans. `onboard_pipeline.md` §6
-    (waterfall 331→253→199, `fp_cpu_binding.png`, "~79 % %usr / ~17 % idle") rests on that mpstat
-    source and needs re-grounding on the trace-derived numbers (FP 4-core CPU busy plateaus ≈ 63–68 %
-    at the knee, vs DPU ≈ 70 %). Other stale plotters same as before: `fanout_full_table.py`,
-    `fanout_gantt.py`, `fanout_lane_diagram.py`, `stream_gantt/roofline/sysplot`.
+- [x] **P0.6 Docs & code number-consistency pass** (done 2026-09-03). Reconciled `results/date27/`
+  numbers across `onboard_pipeline.md` (§5–§6, §10 — the §10 tables rebuilt as the r0–r7 ladder;
+  §6 vaitrace/roofline/occupancy prose refreshed), `TerraSAR-X_objective.md` (knee lanes, deadline
+  margins), `FPGA_benchmark.md`, `GPU_benchmark.md`, `AMD_Vitis_AI.md`, `Notebooks.md`, `CLAUDE.md`
+  (dead paths → `results/date27/` + archive pointer). **`h_s` "regression" resolved** — the
+  pre-campaign 0.52 ms / 27.8 % was faster than the DPU's synthetic peak (impossible); the E4
+  0.72 ms / 19.9 % is correct (folded into §6). **Stale plotters deleted** (2026-09-03):
+  `scripts/fpga/benchmark/{stream_sysplot,stream_sweep,stream_gantt,stream_roofline,stream_table,
+  fanout_full_table,fanout_cpu_fp,fanout_lane_diagram,fanout_table}.py` +
+  `scripts/evaluation/rescore_overlap_tiles.py` (all read the archived trees, superseded by
+  `scripts/figures/`); `fanout_gantt.py` → moved to `scripts/figures/` as a labelled diagnostic.
+  `scripts/benchmark/run_unified_benchmark.py` kept for TGRS-revision reproducibility (warns on the
+  archived FPGA tree).
 - [x] **P0.7 The last board session** (~30 min; added 2026-09-01 after the P1.0 review). Two
   unrelated gaps, bundled so the board is touched once more rather than twice. Same discipline as
   the campaign: campaign SHA, `make clean` rebuild, outputs into `results/date27/`, one MANIFEST
@@ -420,10 +418,10 @@ anything. After the move: repo A owns data + code + provenance, repo B receives 
 - `results/date27/` is now **version-controlled** (`b784587`): the ignore is narrowed to `results/*`
   with a `!results/date27/` negation, and `^results/` is excluded from pre-commit so measurement
   records stay byte-exact. Figures are therefore reproducible from a clone of repo A alone.
-- The other stale plotters in `scripts/fpga/benchmark/` (`fanout_gantt`, `fanout_cpu_fp`,
-  `fanout_full_table`, `fanout_table`, `stream_gantt/roofline/sysplot/table`) also read the deleted
-  trees. Only `fanout_occupancy.py` is load-bearing → moves in P1.0; **the rest are P0.6's problem**
-  (repoint or delete).
+- The other stale plotters in `scripts/fpga/benchmark/` (`fanout_cpu_fp`, `fanout_full_table`,
+  `fanout_table`, `fanout_lane_diagram`, `stream_gantt/roofline/sysplot/table`) also read the deleted
+  trees → **deleted in P0.6** (2026-09-03); `fanout_occupancy.py` was the only load-bearing one and
+  moved to `scripts/figures/` in P1.0; `fanout_gantt.py` moved there too as a diagnostic.
 - **P1.0 done (2026-09-01).** `scripts/figures/{_figutils,fanout_occupancy}.py` + the 7 figure scripts;
   6 run green, `overlap_crop.py` hard-errors by design (its `_work/` crops were archived — the last
   render is kept). `fanout_occupancy` now also derives CPU occupancy from the trace CSVs' `kind=cpu`
