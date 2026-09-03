@@ -441,9 +441,8 @@ anything. After the move: repo A owns data + code + provenance, repo B receives 
 | P1.1 | Characterization | F1, F3 | One story (bottleneck migrates, `g_a` decides); shared `s0/` + `vaitrace/` data |
 | P1.2 | Mechanism — **interactive with Cédric** ✅ | F2+F5 merged into `ladder.py`; F4 refreshed; F6 → `cpu_composition.py`, **cut as a float**, numbers → W5; F7 = **no figure**, r0/r4/r7 table → W5 (`checkpoint_occupancy.py`) | Important section (Dirk) |
 | P1.OV | Overlap crop salvage | Restore 5 crops from the archive so the overlap figure is editable again | No board time, touches nothing else — run it in parallel with P1.1 |
-| P1.3 | Tables | F8 | Arithmetic-heavy, needs the ledger + `TerraSAR-X_objective.md`, not the plot palette |
+| P1.3 + P1.5 | **Manuscript numbers & floats** (merged 2026-09-03) | F8 tables + F10 float wiring, caption sync, compile | One focus — every edit is a number or a float in `main.tex`, verified by one compile. Splitting them would touch the same file twice |
 | P1.4 | Dataflow tikz | F9 | Different medium (repo B, TikZ) |
-| P1.5 | Export & captions | F10 + caption number-sync | Captions batched once instead of churning `main.tex` five times |
 | P1.R | Reproducibility kit | Campaign driver + `results/date27/README.md` | Independent of the figures; **after** the Sep 8 milestone |
 
 Every batch reports the caption facts that changed, so P1.5 inherits a checklist instead of a diff
@@ -538,7 +537,31 @@ that it is dry-run-verified, not re-executed.
   read "Storage / ARM CPU (A53) / DPU" on row one and "factorized path / hyperprior only" on a second
   row below it** (`main`'s .tex still says "CPU" and "main path" on one row, and its caption already
   says *factorized* — so the .tex is the stale half). Re-centre the legend scope after widening.
-- [ ] **F10** Export all to `figures/images/*.pdf`, compile check, eyeball pass in the PDF.
+- [ ] **F10** Float wiring, caption number-sync, compile check, eyeball pass in the PDF.
+  **`main.tex` does not currently compile**: line ~280 still `\includegraphics`es
+  `figures/images/fp_cpu_stack.pdf`, which P1.2 renamed to `cpu_composition.*` *and* cut as a float.
+  Float changes: drop that figure block entirely; **un-comment the energy figure** (~line 351) and
+  place it in IV.
+  **Caption checklist from the P1.2 session** — every item below is a caption fact that changed:
+  - **F2 ladder**: y-axis is now **normalized speedup (× over seq)**, not absolute patch/s. Absolute
+    endpoints are labelled for **FP and ResSH only** (37→204, 10→38) so the caption must name which
+    two archs carry them; all four live in the throughput table. Bands: "scheduling" = mt→knee,
+    "CPU kernels" = +neon→+ent. Rung labels use the renames (`mt`, `dbuf`). Cumulative seq→+ent =
+    ×5.5 / ×5.0 / ×3.8 / ×3.7. **The SD cold-read ceiling line is gone** — drop it from the caption.
+  - **F5 energy**: absolute **J/patch on a log scale**. seq→+ent per arch: 0.271→0.079 ·
+    0.333→0.102 · 1.047→0.480 · 1.146→0.551 J (3.4 / 3.3 / 2.2 / 2.1×). Board power 10–12 W → 15–21 W.
+    Same bands as F2.
+  - **F4 lanes**: every lane count now runs the **full optimized stack** (fanout+neon+dbuf+entropy,
+    pinned), not `fo3p` — this **dissolves the old entropy-off/on `\CL{}` mismatch note**, delete it.
+    Knee stars 205 / 146 / 41 / 38 patch/s. Dashed series legend = "CPU busy" (trace-derived);
+    prose CPU numbers cite P0.7 mpstat instead. XRT wall leaves the figure for a footnote: *"Each
+    hyperprior lane needs 3 XRT runners; 64 lanes (192 runners) is the largest tested, 128 (384)
+    fails to initialise; ceiling estimated ≈300."*
+  - **F6**: cut as a float — remove its `\label` and `\includegraphics`. Numbers go to W5: SH 77 %usr
+    · FP 67 · ResSH 18 · ResFP 13, with %sys 4–8 % throughout. File is `cpu_composition.*` if ever
+    reinstated.
+  - **F1 / F3**: Cédric's rework notes above stay open for a final pass during writing; captions
+    should not lock in wording those notes will change.
 
 ### 4.4 Phase 2 — writing (full prose; reuse the existing bullet phrasing wherever it is good)
 
