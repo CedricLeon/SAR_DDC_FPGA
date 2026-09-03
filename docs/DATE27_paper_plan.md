@@ -192,8 +192,11 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
 - **A53 NEON peak = 9.6 GFLOP/s per core, 38.4 GFLOP/s per chip** (LLVM `AArch64SchedA53.td` +
   microbenchmark, R3) — this **corrects the `19.2 GFLOP/s` estimate** this doc carried, which was off
   by exactly 2× (missing FMA fusion credit). Never quoted in `main.tex`: planning-doc correction only.
-- XRT wall: one footnote — hyperprior archs need 3 runners/lane; 64 L (192 runners) works, 128 L
-  (384) fails; limit estimated ≈300 runners. 128 L point dropped from the lane figure.
+- XRT wall: one footnote — hyperprior archs need 3 runners/lane; 112 L (336 runners) works, 113 L
+  (339) fails — exact boundary, bisected. Not a hardware ceiling: it's the ZCU102 shell's default
+  open-file-descriptor limit (`ulimit -n`=1024), which each DPU runner consumes; raising it with
+  `prlimit --nofile` clears the wall (verified past 360 runners). 128 L point dropped from the lane
+  figure.
 - Deadline table: plain percentages of the deadline (450 %, 15 %) instead of ×-ratios + marks.
 - Cross-platform table: more prominent in the narrative; bold best board per row/metric; keep the
   Orin-runs-FP32-unoptimized caveat.
@@ -495,7 +498,10 @@ that it is dry-run-verified, not re-executed.
   "%usr". Numbers cited in *prose* come from P0.7's knee-point mpstat instead, so the doc's
   %usr/%sys/%idle framing survives. If the trace series looks noisy at high lane counts, suspect the
   `--max-rows` subsampling window before suspecting the method.
-  @TOADD to text: "Each hyperprior lane needs 3 XRT runners; 64 lanes (192 runners) is the largest configuration tested, and 128 lanes (384 runners) fails to initialise. The runner ceiling is estimated at ≈300."
+  @TOADD to text: "Each hyperprior lane needs 3 XRT runners; 112 lanes (336 runners) is the largest
+  configuration that initialises, 113 lanes (339 runners) is the first to fail. The wall is not a DPU/XRT
+  hardware ceiling but the board shell's default open-file-descriptor limit (1024), which each runner
+  consumes; raising it removes the wall."
   P1.2: kept the 3 panels (throughput / occupancy / energy); confirmed the grid is the **full
   optimized stack** at every lane count (fanout+neon+dbuf+entropy, pinned), not fo3p; x-axis now
   ticks + labels every measured lane count.
@@ -564,8 +570,9 @@ that it is dry-run-verified, not re-executed.
     pinned), not `fo3p` — this **dissolves the old entropy-off/on `\CL{}` mismatch note**, delete it.
     Knee stars 205 / 146 / 41 / 38 patch/s. Dashed series legend = "CPU busy" (trace-derived);
     prose CPU numbers cite P0.7 mpstat instead. XRT wall leaves the figure for a footnote: *"Each
-    hyperprior lane needs 3 XRT runners; 64 lanes (192 runners) is the largest tested, 128 (384)
-    fails to initialise; ceiling estimated ≈300."*
+    hyperprior lane needs 3 XRT runners; 112 lanes (336 runners) is the largest that initialises, 113
+    (339) is the first to fail — the board shell's default open-file-descriptor limit (1024), not a
+    DPU/XRT hardware ceiling."*
   - **F6**: cut as a float — remove its `\label` and `\includegraphics`. Numbers go to W5: SH 77 %usr
     · FP 67 · ResSH 18 · ResFP 13, with %sys 4–8 % throughout. File is `cpu_composition.*` if ever
     reinstated.

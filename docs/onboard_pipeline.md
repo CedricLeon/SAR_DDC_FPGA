@@ -192,10 +192,13 @@ archs (§10), well past the `--s1` ladder; the earlier "hyperprior 4-lane cliff"
 of stopping at 4 lanes — ResSHyp dips at 4L, then climbs to ~38 by ~12L.
 
 **The XRT runner wall.** The two hyperprior archs create **3 DPU runners per lane** (`g_a`, `h_a`,
-`h_s`), so the wall (`VART_XRT_NULL_PTR`) is a runner-count ceiling: 64 L (192 runners) works, 128 L
-(384) fails — limit estimated **≈300 concurrent runners**. The factorized
-single-`g_a` FP/ResFP create one runner per lane and never approach it. That XRT ceiling — not RAM — is
-the only hard wall; CMA is the softer co-factor (§6). The 128 L point is dropped from the lane figure.
+`h_s`), so the wall (`VART_XRT_NULL_PTR`) is a runner-count ceiling: 112 L (336 runners) works, 113 L
+(339) fails — the exact boundary, bisected with single-row `--fanout` probes. It is not an XRT/DPU
+hardware ceiling: it's the ZCU102 shell's default per-process open-file-descriptor limit
+(`ulimit -n` = 1024), which each DPU runner eats into; raising it with `prlimit --nofile` for the one
+process clears the wall entirely (verified past 360 runners). The factorized single-`g_a` FP/ResFP
+create one runner per lane and never approach it. CMA is the softer co-factor (§6). The 128 L point is
+dropped from the lane figure.
 
 **Operating point per arch** = the **knee**: the smallest lane count within ~1 % of the warm-throughput
 peak, clear of the XRT wall. Trading ≤1 % throughput for far less oversubscription (fewer threads, less
