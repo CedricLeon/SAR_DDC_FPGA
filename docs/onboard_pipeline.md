@@ -133,11 +133,17 @@ mis-triggers incremental builds — any A/B comparison or measurement campaign m
   for the DPU-bound archs, partially for FP (toward its read ceiling).
 - **`--neon` — vectorized normalize/denorm.** NEON log/exp (Cephes/Pommier, `neon_mathfun.h`) behind a
   runtime flag, scalar path kept for A/B. Kernel error vs libm = 7e-8 → **byte-transparent encode** (≪
-  the INT8 `g_a` step, so no quantisation flips). 2.42× faster normalize in isolation.
+  the INT8 `g_a` step, so no quantisation flips). **2.42× faster normalize in isolation**.
 - **`--entropy` — rANS reciprocal-table coder.** Flattened CDF table + a precomputed reciprocal per entry,
   replacing a per-symbol division in the flush loop. Activable with a runtime flag: the pre-optimization
   CDF-lookup + divide path is kept alongside it for A/B (both live in `entropy_models.{cpp,hpp}` /
   `rans/rans_interface_cxx.{cpp,hpp}`, selected once per `compress()` call).
+  **Table sizes, so the coder's constants don't get conflated:** the rANS probability scale is
+  `precision = 16` (`rans_interface_cxx.cpp`), i.e. frequencies sum to $2^16$ = 65 536 — that 65 k is a
+  *normalization total, not a table length*. The CDF tables themselves are per-channel and much smaller:
+  entropy bottleneck **256 × 28 = 7 168 int32 (28 KB)**, Gaussian conditional **64 × 3 133 = 200 512
+  int32 (802 KB)** (`entropy_params/{eb,gc}_quantized_cdf.npy`). The GC table being ~28× the EB one is
+  the structural reason `gc_compress` costs ~9.7 ms/patch against `eb_enc`'s ~4.7 (§6).
 - **`--power` — energy instrumentation.** `PowerSampler` (INA226 sysfs + PMBus) wraps the compress
   phase → total J, **J/patch**, and the per-rail-group breakdown (PL / PS / DPU_fabric / PS_compute /
   MGT / MPSoC mean W) — the DPU-vs-CPU energy split.
@@ -569,8 +575,16 @@ header only *references* them.
 station has the decoder + CDFs); little-endian throughout; scene bound by `tile_id`. Malformed `.ddc`
 reads **hard-error** (bounds/length guards, C++ + Python) rather than over-reading or silently
 truncating. **Verified** (self-test, ResSHyp + FP): header/body/trailer round-trip byte-exact, random
-access matches, decode(file) ≈ decode(direct) within float32 ε; container overhead ≈ header + 8·n bytes
-(negligible). The C++ streaming writer (step 7) must emit these exact bytes; the Python codec is the oracle.
+access matches, decode(file) ≈ decode(direct) within float32 ε. The C++ streaming writer (step 7) must
+emit these exact bytes; the Python codec is the oracle.
+
+**Container overhead = header + 16·n bytes, not 8·n.** Each body record carries **two u32 length
+prefixes** (`len_z`, `len_y` — both written even for FP, where `len_z` = 0) on top of its 8-byte trailer
+entry, so counting the trailer alone halves the true figure. On the full 7,540-patch tile: 117 B header
++ 16 × 7 540 = **120.8 KB**, i.e. **1.24 % (FP) · 1.25 % (ResFP) · 1.31 % (SHyp) · 1.45 % (ResSHyp)** of
+the file — quote the range as **1.2–1.5 %**. Two consequences worth stating once: the fraction *rises*
+as the payload shrinks, so the best-compressing architecture pays the most overhead; and since the cost
+is per-patch framing, it scales with patch count, not with scene size.
 
 ---
 
