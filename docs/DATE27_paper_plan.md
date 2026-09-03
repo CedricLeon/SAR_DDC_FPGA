@@ -439,7 +439,7 @@ anything. After the move: repo A owns data + code + provenance, repo B receives 
 | --- | --- | --- | --- |
 | P1.0 | Infrastructure & migration ✅ 2026-09-01 | `_figutils` + move 7 scripts (delete `system_dataflow.py` — it's the TikZ figure), repoint to `results/date27/`, every script green at its **current** design | Mechanical, zero design judgment; yields a gate-reviewable numbers table before any redesign |
 | P1.1 | Characterization | F1, F3 | One story (bottleneck migrates, `g_a` decides); shared `s0/` + `vaitrace/` data |
-| P1.2 | Mechanism — **interactive with Cédric** | F2 + F5 as one merged `ladder.py` (`--throughput` / `--energy`), F4, F6 (generated, not necessarily published), F7 verdict | Shared `ladder/` + `lanes/` data and band/knee conventions; the section Dirk called most important, and the one whose design needs live iteration — book it early rather than letting it land on Sep 7 |
+| P1.2 | Mechanism — **interactive with Cédric** ✅ | F2+F5 merged into `ladder.py`; F4 refreshed; F6 → `cpu_composition.py`, **cut as a float**, numbers → W5; F7 = **no figure**, r0/r4/r7 table → W5 (`checkpoint_occupancy.py`) | Important section (Dirk) |
 | P1.OV | Overlap crop salvage | Restore 5 crops from the archive so the overlap figure is editable again | No board time, touches nothing else — run it in parallel with P1.1 |
 | P1.3 | Tables | F8 | Arithmetic-heavy, needs the ledger + `TerraSAR-X_objective.md`, not the plot palette |
 | P1.4 | Dataflow tikz | F9 | Different medium (repo B, TikZ) |
@@ -466,35 +466,67 @@ that it is dry-run-verified, not re-executed.
 
 **Figure specs** (F-numbers are referenced from the W tasks in §4.4 — keep them stable):
 
-- [ ] **F1** `stacked_time.py` — drop the SD segment (warm-read baseline only); becomes *the*
+- [x] **F1** `stacked_time.py` — drop the SD segment (warm-read baseline only); becomes *the*
   characterization figure; CPU/DPU palette.
-- [ ] **F2** single ladder, rungs r0–r7, two shaded bands ("scheduling" r1–r4, "CPU kernels"
-  r5–r7), per-arch cumulative × annotations, neutral bar colors, renamed rung labels (`mt`, `dbuf`,
-  `ent`). **Merged with F5 into one script** (decided 2026-09-01): `optimization_ladder.py` and
-  `energy_ladder.py` plot the same rung axis over the same `ladder/<arch>/` files and duplicated all
-  of the rung/label/band/color logic. One `ladder.py` with a `--throughput` / `--energy` switch
-  emitting **two independent figures** — *not* a two-panel figure: F2 sits in III and F5 in IV, so
-  they must stay separate floats.
-- [ ] **F3** `roofline_subgraph.py` — remove the 6.11 line; draw 1-core (solid) + 3-core (dashed)
+- [x] **F2 / F5 — one `ladder.py`** (P1.2, both scripts deleted). `--throughput` / `--energy` pick
+  the figure; `--ratio` / `--absolute` pick the mode. They stay **two independent floats** (F2 in
+  III, F5 in IV), never a two-panel figure. Decisions:
+  - **F2 = per-arch normalized speedup (× over seq)**, not absolute patch/s — the linear absolute
+    scale buried the DPU-bound mechanism (placement fix reads as a ~15 patch/s bump). Absolute
+    patch/s labelled on the seq & +ent groups for FP (fastest) and ResSH (slowest) only; the full
+    four are in the throughput table.
+  - **F5 = absolute J/patch on a log axis** (default; `--ratio` gives the normalized mirror). Board
+    power shown as a per-column range (`10–12 W` → `15–21 W`), not per-arch (collides).
+  - Both: bands = mt–knee "scheduling" / +neon–+ent "CPU kernels"; unshaded gaps set off `seq` and
+    the knee→+neon boundary; arch palette (blue/orange), not neutral; SD cold-read ceiling line
+    dropped.
+- [x] **F3** `roofline_subgraph.py` — remove the 6.11 line; draw 1-core (solid) + 3-core (dashed)
   ceiling pairs; add aggregate dots from P0.4 (marker-distinguished from single-core dots); short
   annotation at the weight-bound points. **The ~13.7 GB/s measured ceiling is NOT drawn** — R2's
   verdict (§4.2) is cite-only in text; the figure keeps the two theoretical ceilings. (This line
   used to say "optional"; R2 settled it.)
-- [ ] **F4** `fanout_lane_plot.py` — drop 128 L; XRT wall out of the figure (footnote in text);
+- [x] **F4** `fanout_lane_plot.py` — drop 128 L; XRT wall out of the figure (footnote in text);
   refresh with P0.2 lane grid (entropy-on for all four archs, which also dissolves the entropy-off /
   entropy-on mismatch flagged in the current caption). The dashed CPU series is **trace-derived**
   (`kind=cpu` spans; `cpu_probe/`'s mpstat basis died with P0.C) — legend reads "CPU busy", not
   "%usr". Numbers cited in *prose* come from P0.7's knee-point mpstat instead, so the doc's
   %usr/%sys/%idle framing survives. If the trace series looks noisy at high lane counts, suspect the
   `--max-rows` subsampling window before suspecting the method.
-- [ ] **F5** Energy figure for IV — J/patch per rung from P0.2 power data (`j_per_patch`,
-  `avg_power_w`); keep it small. Same script as F2 (`ladder.py --energy`), separate float.
-- [ ] **F6** `fp_cpu_stack.py` — **keep generating it** even though it is a manuscript candidate
-  cut: Cédric wants to see it before deciding (2026-09-01). Its `mpstat` %usr/%sys/%idle basis
-  (`cpu_probe/`) is gone, so it is now a 2-band busy/idle stack from the E2 traces — a trace marks a
-  core busy, not *why*. Do **not** restore the archived tree to feed it: mixing pre-campaign logs
-  into a date27 figure breaks the one-source rule.
-- [ ] **F7** Occupancy checkpoint panel — only if P0.3 verdict = informative.
+  @TOADD to text: "Each hyperprior lane needs 3 XRT runners; 64 lanes (192 runners) is the largest configuration tested, and 128 lanes (384 runners) fails to initialise. The runner ceiling is estimated at ≈300."
+  P1.2: kept the 3 panels (throughput / occupancy / energy); confirmed the grid is the **full
+  optimized stack** at every lane count (fanout+neon+dbuf+entropy, pinned), not fo3p; x-axis now
+  ticks + labels every measured lane count.
+- [x] **F5** — see the F2 entry above (same `ladder.py`).
+- [x] **F6 → `cpu_composition.py`** (renamed from `fp_cpu_stack`; script + figure). **Not a
+  manuscript float** (decided P1.2) — the numbers go into W5's prose instead. The mpstat lane sweep
+  died with P0.C and P0.7 only re-probed the knee, so the "vs lanes" form is unrecoverable; the
+  figure is now a 4-arch `%usr/%sys/%idle` stacked bar at each knee (kept for the record, original
+  orange/red/grey colours). **W5 numbers** (steady-state, 4-core mean): SH uses the A53s hardest
+  (77 % usr / 15 % idle), then FP (67 / 24), ResSH (18 / 77), ResFP least (13 / 83); `%sys` stays a
+  manageable 4–8 % across all four. Reproduces the §4.0 mpstat table; loader
+  `_figutils.cpu_probe_mpstat()`.
+- [x] **F7 — NO figure** (P1.2 verdict). Numbers computed by
+  `scripts/figures/checkpoint_occupancy.py` (`fanout_occupancy.occupancy()` now takes an optional
+  `trace_path`, so the r4/r7 full-scene traces go through the *same* `[t1−e,t1]` reconstruction as
+  the lane grid; r0 from the E3 sequential per-stage split, reprojected onto the 3-core DPU / 4-core
+  A53 complex). **r7 reproduces F4's knee occupancy panel to <1 pt** (independent traces agree) — so
+  a 3-checkpoint panel would be 2/3 restatement of F4. For W5's prose:
+
+  | ckpt | FP | SH | ResFP | ResSH |
+  | --- | --- | --- | --- | --- |
+  | r0 seq DPU / CPU (% of complex) | 13 / 15 | 13 / 15 | 27 / 4 | 26 / 5 |
+  | r4 DPU / CPU (3-/4-core) | 51 / 81 | 45 / 72 | 93 / 16 | 84 / 20 |
+  | r7 DPU / CPU | 70 / 64 | 62 / 81 | 100 / 10 | 96 / 15 |
+
+  **The insight F4 can't show — the r4→r7 crossover.** With scheduling alone (r4) FP is *still
+  CPU-bound*: A53 cores 81 % busy vs DPU 51 %. The CPU-kernel rungs (r5–r7) rebalance it to DPU 70 /
+  CPU 64. That is *why the ladder needs both bands* — for FP/SH the scheduling band only fills the
+  DPU partway; the CPU-kernel band closes the gap. ResFP/ResSH are DPU-bound at every checkpoint
+  (CPU ≤ 20 % throughout), so their CPU-kernel rungs barely move the needle — matches the ladder.
+  Caveats: r0 is a construction (seq 1-thread duty ÷3/÷4), not a 3-core measurement; r0/r4 entropy
+  unoptimised, r7 optimised, so the r4→r7 CPU delta bundles neon+dbuf+ent; 4-core CPU-busy mildly
+  over-counts under oversubscription (direction reliable, absolutes soft — hard CPU numbers still
+  come from P0.7 mpstat).
 - [ ] **F8** Tables: Tab. 2 (column rename + INT8 const-bytes and/or footnotes: batch 1, xdputil
   peak definition); deadline table → percentages (recompute every cell with python); cross-platform
   table bold-best per row; Tab. 1 caption already carries tool versions.
@@ -556,6 +588,23 @@ the section's bullets into prose under the new skeleton, keeping the §4.0 ledge
 - [ ] **W11** Polish for the feedback round — delete resolved `\callout`/`\CL`/`\DS` markers, run
   the P0.5 delta report against every number in the text, chktex/typo pass, full compile, PDF to
   Dirk + Martin.
+
+#### Small figure adjustments while writing
+
+*User maintained*:
+
+- **F1**:
+  - Re-order the stage back in their occurring order (like before) and remove the horizontal black line separating them
+  - Y axis "latency [ms]", the info about per-patch and sequential goes in the caption + text.
+  - Scale the "DPU XX%" annotation down (maybe no bold and in black)
+  - Bring the "CPU-bound" and "DPU-bound" architectures closer together (no need to reinstaure the X axis, it's nice without)
+  - Rename "CPU-bound" and "DPU-bound", it's too overselling, all these archs are not bound by anaything for the moment, just seq.
+    We should either remove the caption entirely and leave it to the text or tone it down a bit like,
+- **F3**:
+  - There are way too many annotations, we need to remove a lot of them. A lot of the text should go in the caption (for example that there is 1 AXI per core but that the DDR is shared)
+  - We need to investigate why hs dropped from 26 to 20% after we re-ran
+  - Let's simplify the 1core to 3 core datapoint movements (maybe not colors?)
+  - Are the 3-cores datapoints for the maximally optimized configs? i.e., with prefetch/nenon/etc.? I don't know if it changes the DPU efficiency. I don't know how we collect the DPU efficiency and throughput on 3 cores actually.
 
 ### 4.5 Milestones
 

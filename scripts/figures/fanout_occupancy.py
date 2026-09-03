@@ -142,16 +142,22 @@ def _steady_window(ev: List[Tuple[int, str, float, float]]) -> Tuple[float, floa
 
 
 def occupancy(
-    arch: str, n_lanes: int, stat: str = "median"
+    arch: str, n_lanes: int, stat: str = "median", trace_path=None
 ) -> Tuple[Optional[Dict[int, float]], float, int]:
     """Per-core DPU busy fraction over the steady-state window. Returns ``(busy_by_core, window_ms,
     n_lanes)``.
+
+    ``trace_path`` overrides the default lane trace ``_trace(arch, n_lanes)`` — used for
+    the r4/r7 full-scene checkpoint traces (``occupancy/<arch>/``), which are a
+    different file set at the same fan-out geometry. ``n_lanes`` (= the knee) still
+    drives the ``lane_core`` round-robin, and ``e_table`` still comes from the arch's
+    uncontended 1-lane trace, so the reconstruction is unchanged.
 
     ``busy_by_core`` is ``None`` when the all-lanes-active window collapses (too few
     patches per lane). Raises if any core exceeds 100 % — that would mean the
     ``[t1 - e, t1]`` attribution is broken for the trace.
     """
-    ev = dpu_events(_trace(arch, n_lanes))
+    ev = dpu_events(trace_path if trace_path is not None else _trace(arch, n_lanes))
     e = e_table(arch, stat)
     w0, w1, nl = _steady_window(ev)
     wlen = w1 - w0
@@ -173,11 +179,16 @@ def occupancy(
     return busy, wlen, nl
 
 
-def _cpu_core_busy(arch: str, n_lanes: int) -> Optional[float]:
+def _cpu_core_busy(arch: str, n_lanes: int, trace_path=None) -> Optional[float]:
     """Mean % of the 4 A53 cores busy with CPU work over the steady-state window (integral of
-    ``min(active_cpu_spans, 4)`` / ``4 * window``)."""
-    spans = cpu_spans(_trace(arch, n_lanes))
-    w0, w1, _ = _steady_window(dpu_events(_trace(arch, n_lanes)))
+    ``min(active_cpu_spans, 4)`` / ``4 * window``).
+
+    ``trace_path`` overrides the default
+    lane trace (r4/r7 checkpoint traces).
+    """
+    src = trace_path if trace_path is not None else _trace(arch, n_lanes)
+    spans = cpu_spans(src)
+    w0, w1, _ = _steady_window(dpu_events(src))
     win = w1 - w0
     if win <= 0 or not spans:
         return None
