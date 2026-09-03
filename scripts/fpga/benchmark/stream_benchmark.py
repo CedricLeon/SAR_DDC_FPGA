@@ -463,7 +463,9 @@ def main():
     out = (
         Path(args.out)
         if args.out
-        else REPO_ROOT / "results" / "benchmark_stream" / model_name / f"{label(args, cold)}.json"
+        # canonical campaign runs pass --out explicitly (e.g. results/date27/lanes/<arch>/...);
+        # a bare invocation lands in an adhoc scratch dir, not the archived benchmark_stream/ tree.
+        else REPO_ROOT / "results" / "date27" / "adhoc" / model_name / f"{label(args, cold)}.json"
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2))

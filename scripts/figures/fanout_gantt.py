@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 """fanout_gantt.py — execution-timeline (Gantt) of the DPU fan-out from a --trace CSV.
 
-``stream_pipeline --fanout --trace t.csv`` writes one row per sub-step (schema v2):
+**Diagnostic, not a manuscript figure** — a per-call swim-lane view for eyeballing lane/core
+scheduling and queue-wait; the paper uses the aggregate occupancy panel of ``fanout_lane_plot.py``
+instead. Kept here because it reads the same trace CSVs and is handy when a lane-scaling number looks
+off. Reads a trace directly (no ``results/date27`` wiring); pass one of the E2 occupancy traces:
+
+    python scripts/figures/fanout_gantt.py \\
+        --csv results/date27/lanes/ResSHyp/t4_occtrace.csv \\
+        --solo-csv results/date27/lanes/ResSHyp/t1_occtrace.csv \\
+        --title "ResSHyp · 4 lanes" --patches 3
+
+The stream pipeline writes these rows via ``stream_pipeline --fanout --trace t.csv`` (schema v2):
 ``lane,patch,stage,kind,t0_ms,t1_ms`` (lane -1 = the prefetch reader). ``stage`` is per-call —
 ``g_a`` appears twice (real, imag), its CPU glue is ``g_a_cpu``, and EB compress/decompress are
 ``eb_enc`` / ``eb_dec``. ``kind`` is ``dpu`` | ``cpu`` | ``read``. This draws a swim-lane timeline,
@@ -21,9 +31,6 @@ directly measured queue time. ``e`` (the *solo* exec) is the **median** span of 
 for a contended trace pass a clean 1-lane / pinned trace (else the contended stats hide the waits).
 A DPU span also includes the in-``run()`` int8 quantize/dequantize (~0.2–0.7 ms), which cancels in the
 subtraction. CPU and read bars are drawn as their measured span.
-
-    python scripts/fpga/benchmark/fanout_gantt.py --csv rsh_t4.csv --solo-csv rsh_t3.csv \
-        --title "ResSHyp · 4 lanes" --patches 3
 """
 
 import argparse
@@ -191,10 +198,12 @@ def main():
     ax.set_yticks(list(y_of.values()))
     ax.set_yticklabels(["reader" if ln < 0 else f"lane {ln}" for ln in lanes])
     ax.invert_yaxis()
+
     # group rows by DPU core: separators prolonged left to the tags + a rotated "DPU core N" tag
     def hline(y, **kw):
-        ax.plot([-0.11, 1.0], [y, y], transform=ax.get_yaxis_transform(), clip_on=False,
-                zorder=5, **kw)
+        ax.plot(
+            [-0.11, 1.0], [y, y], transform=ax.get_yaxis_transform(), clip_on=False, zorder=5, **kw
+        )
 
     hline(0.5, color="#bbb", lw=0.8, ls=":")  # reader | cores
     for c in (0, 1, 2):
@@ -203,8 +212,18 @@ def main():
             continue
         if c and any(core_rows.get(cc) for cc in range(c)):
             hline(rows[0] - 0.5, color="#444", lw=1.1)
-        ax.text(-0.085, sum(rows) / len(rows), f"DPU core {c}", transform=ax.get_yaxis_transform(),
-                rotation=90, ha="center", va="center", fontsize=9.5, fontweight="bold", color="#333")
+        ax.text(
+            -0.085,
+            sum(rows) / len(rows),
+            f"DPU core {c}",
+            transform=ax.get_yaxis_transform(),
+            rotation=90,
+            ha="center",
+            va="center",
+            fontsize=9.5,
+            fontweight="bold",
+            color="#333",
+        )
     ax.set_xlabel("time [ms]")
     ax.grid(axis="x", color="#ececec", lw=0.8, zorder=0)
     for s in ("top", "right", "left"):
@@ -219,17 +238,35 @@ def main():
     # column-major, so this displays row-major); the inferred-wait key (with the e definition folded
     # in) on its own line just below.
     present = [s for s in STAGES if any(e["stage"] == s for e in win)]
-    stage_h = [Patch(facecolor=STAGES[s][0], edgecolor="white", label=STAGES[s][1]) for s in present]
+    stage_h = [
+        Patch(facecolor=STAGES[s][0], edgecolor="white", label=STAGES[s][1]) for s in present
+    ]
     ncol = max(1, (len(stage_h) + 1) // 2)
     flipped = [stage_h[i] for j in range(ncol) for i in range(j, len(stage_h), ncol)]
-    leg1 = ax.legend(handles=flipped, loc="upper center", bbox_to_anchor=(0.5, -0.09),
-                     ncol=ncol, fontsize=9, frameon=False)
+    leg1 = ax.legend(
+        handles=flipped,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.09),
+        ncol=ncol,
+        fontsize=9,
+        frameon=False,
+    )
     ax.add_artist(leg1)
     e_note = ", ".join(f"{st} {solo[st]['e']:.1f}" for st in ("g_a", "h_a", "h_s") if st in solo)
-    wait_h = Patch(facecolor="white", hatch="////", edgecolor="#8a8a8a",
-                   label=f"inferred wait = measured − e   (e = median 1-lane exec: {e_note} ms)")
-    ax.legend(handles=[wait_h], loc="upper center", bbox_to_anchor=(0.5, -0.17),
-              ncol=1, fontsize=9, frameon=False)
+    wait_h = Patch(
+        facecolor="white",
+        hatch="////",
+        edgecolor="#8a8a8a",
+        label=f"inferred wait = measured − e   (e = median 1-lane exec: {e_note} ms)",
+    )
+    ax.legend(
+        handles=[wait_h],
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.17),
+        ncol=1,
+        fontsize=9,
+        frameon=False,
+    )
 
     out = Path(args.out) if args.out else Path(args.csv).with_suffix(".png")
     fig.tight_layout()

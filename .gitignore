@@ -176,3 +176,5 @@ dmypy.json
 # `cpu_probe/*_mpstat.log` samplers). Re-include everything under the dir so it
 # stays fully tracked and byte-exact for figure reproducibility.
 !results/date27/**
+# ...except the scratch dir for bare `stream_benchmark.py` runs (not canonical campaign data).
+results/date27/adhoc/
