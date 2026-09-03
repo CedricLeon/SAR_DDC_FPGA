@@ -526,9 +526,12 @@ that it is dry-run-verified, not re-executed.
   unoptimised, r7 optimised, so the r4→r7 CPU delta bundles neon+dbuf+ent; 4-core CPU-busy mildly
   over-counts under oversubscription (direction reliable, absolutes soft — hard CPU numbers still
   come from P0.7 mpstat).
-- [ ] **F8** Tables: Tab. 2 (column rename + INT8 const-bytes and/or footnotes: batch 1, xdputil
-  peak definition); deadline table → percentages (recompute every cell with python); cross-platform
-  table bold-best per row; Tab. 1 caption already carries tool versions.
+- [x] **F8** Tables (done 2026-09-03, P1.3+P1.5). Tab. 2: `#Params` column dropped, `Mem` → `FP32
+  [MB]` + new `INT8 [MB]` (= `const_bytes`, ≈ #Params in M), caption footnotes (xdputil peak, batch
+  1). Deadline table: every cell recomputed from `results/date27/` with python, ×-ratios → % of
+  requirement + `\okmark`/`\failmark`, 9.9 → 10.1 GB, rate/duration sourcing sentence. Cross-platform
+  table: FPGA cols re-sourced to r7/r0 warm, best-per-row bolded (Orin numbers verified against
+  `results/benchmark_jetson/orin/power_sweep/` — see W6 note). Tab. 1 untouched.
 - [ ] **F9** Dataflow figures (`system_dataflow`, `SAR_DDC_inference_dataflow`) — annotate datatypes
   along the path (int16 → fp32 → int8 → bitstream), align style with the palette convention.
   *Start from LaTeX `main`, not from a worktree.* The old `date27-ddc-dataflow-fig` branch was an
@@ -537,11 +540,13 @@ that it is dry-run-verified, not re-executed.
   read "Storage / ARM CPU (A53) / DPU" on row one and "factorized path / hyperprior only" on a second
   row below it** (`main`'s .tex still says "CPU" and "main path" on one row, and its caption already
   says *factorized* — so the .tex is the stale half). Re-centre the legend scope after widening.
-- [ ] **F10** Float wiring, caption number-sync, compile check, eyeball pass in the PDF.
-  **`main.tex` does not currently compile**: line ~280 still `\includegraphics`es
-  `figures/images/fp_cpu_stack.pdf`, which P1.2 renamed to `cpu_composition.*` *and* cut as a float.
-  Float changes: drop that figure block entirely; **un-comment the energy figure** (~line 351) and
-  place it in IV.
+- [x] **F10** Float wiring + caption sync (done 2026-09-03, P1.3+P1.5). Compile was broken by a
+  missing `ulem.sty` (installed) and — separately — `\usepackage{ulem}` silently making every
+  `\emph` underline: fixed to `\usepackage[normalem]{ulem}`. F6 `cpu_composition` float commented
+  out (2 prose refs commented with a `[P1.3->W5]` marker; W5 folds the numbers into prose). Energy
+  figure `energy_ladder.pdf` un-commented into IV.Energy with the F5 caption + one `\ref`. F2/F4
+  captions rewritten per the checklist below; F1/F3 left conservative. Clean compile: 0 errors, 0
+  overfull boxes; only pre-existing undefined refs = the 2 CCSDS keys (→ W7b).
   **Caption checklist from the P1.2 session** — every item below is a caption fact that changed:
   - **F2 ladder**: y-axis is now **normalized speedup (× over seq)**, not absolute patch/s. Absolute
     endpoints are labelled for **FP and ResSH only** (37→204, 10→38) so the caption must name which
@@ -593,11 +598,24 @@ the section's bullets into prose under the new skeleton, keeping the §4.0 ledge
   footnote that take/contact durations are operator-reported estimates while rates are page-cited —
   R5); *Energy* (F5 + short
   discussion: PL dominates draw; more optimization ⇒ less J/patch despite higher W).
+  - **`tab:baseline` Orin numbers (verified 2026-09-03, P1.3):** all 24 cells are
+    `results/benchmark_jetson/orin/power_sweep/<arch>_<mode>.json` (4 archs × {MAXN, MODE_50W,
+    MODE_30W, MODE_15W}; the table shows MAXN + MODE_15W). Throughput = `throughput_patch_s`;
+    **W and J/patch are the compute-only rails** (`power.avg_power_w_compute_only`,
+    `energy_j_compute_only / n_patches` — VDD_GPU_SOC + VDD_CPU_CV, excluding the VIN_SYS_5V0 board
+    rail). ⚠ the FPGA columns are full-board INA226 — W6 should either state this asymmetry or
+    switch the FPGA side to a compute-equivalent. Overlap 2, λ=20, full scene, tegrastats sampling.
 - [ ] **W7** II — background blocks from the current draft + new: condensed CCSDS/BAQ baseline ¶
   (from old §Eval, trimmed), architecture-selection ¶ (the two binary choices, what *residual*
   means, "representative LIC topologies" — draft phrasing in this file's git history), platform ¶
   DPU-first with port widths + DDR4-2133 (+ check whether the DSPs run at double clock — PG338),
   Tab. 1, delta-vs-prior-work with double-blind-safe wording, R1 result if any.
+- [ ] **W7b** Recover 2 missing BibTeX entries (blocks a clean compile — currently `[?]` in the
+  SAR-compression-baseline ¶): `ccsdsLowComplexityLossless2019` (CCSDS 123.0-B Lossless Multispectral
+  & Hyperspectral, Issue 2, 2019) and `ccsdsImageDataCompression2017` (CCSDS 122.0-B Image Data
+  Compression). Found by a prior agent, never added to Zotero — re-locate the CCSDS Blue Books,
+  add to Zotero + `references.bib`. Small; do it alongside W7. If the ¶ is cut (Cédric's open
+  question), delete the two `\cite`s instead.
 - [ ] **W8** V — Discussion: restate the mechanism + rules of thumb, transferability to other
   models/applications, **gap analysis** grounded in the characterization (what closes the ~7×
   real-time gap: more DPU compute for Res archs — PL is at 85 % DSP, so bigger FPGA / Versal AIE;
