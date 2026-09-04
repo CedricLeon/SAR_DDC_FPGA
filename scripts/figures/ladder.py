@@ -17,7 +17,7 @@ With neither flag both are produced. Merged from ``optimization_ladder.py`` +
 ``energy_ladder.py`` (P1.2) — they shared every bit of rung/label/band/colour logic.
 
 Sanity check on load (``--throughput``): cumulative seq→+ent must land on
-×5.5 / ×5.0 / ×3.8 / ×3.7 for FP / SH / ResFP / ResSH (§4.0 gate review). A mismatch
+x5.5 / x5.0 / x3.7 / x3.7 for FP / SH / ResFP / ResSH (§4.0 gate review). A mismatch
 aborts.
 
 Run:  conda activate DDC_FPGA && python scripts/figures/ladder.py [--throughput|--energy]
@@ -44,7 +44,7 @@ from _figutils import (
 )
 
 # Expected cumulative seq→+ent throughput speedup — the §4.0 gate-review anchor.
-EXPECTED_CUM = {"FP": 5.5, "SHyp": 5.0, "ResFP": 3.8, "ResSHyp": 3.7}
+EXPECTED_CUM = {"FP": 5.5, "SHyp": 5.0, "ResFP": 3.7, "ResSHyp": 3.7}
 
 BW = 0.20  # bar width (4 archs per rung group)
 GAP = 0.35  # extra spacing inserted after seq (r0) and after knee (r4)

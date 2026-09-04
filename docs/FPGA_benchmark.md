@@ -227,7 +227,7 @@ and far more on h_a/h_s (fixed overhead dominates their sub-ms compute).
   schema (host `config="baseline"`, `platform` gpu/cpu, bare canonical stage names, ms units,
   normalized power). The C++ FPGA benchmark was left untouched. One orchestrator
   `scripts/benchmark/run_unified_benchmark.py` (pluggable backends: host local + FPGA over SSH) writes
-  host runs to `results/benchmark_unified/` and reuses FPGA `results/benchmark_hardware/`. One loader
+  host runs to `results/benchmark_unified/` and reuses FPGA `results/benchmark_hardware/` (archived 2026-08-31 to /mnt/vitisAI/DDC_results_archive/). One loader
   `notebooks/_benchmark_loader.py` (platform in identity key) feeds
   `notebooks/benchmark_cross_platform_analysis.ipynb`. Reconciliation calls that were made: host cycles
   the **same 20-patch real subset** (bytes/BPP comparable); `nn_only`/`entropy_only` kept FPGA-only

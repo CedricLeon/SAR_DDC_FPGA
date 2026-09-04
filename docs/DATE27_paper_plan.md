@@ -183,7 +183,7 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   2.2–6.0 GB/s spread at 6 lanes). Caveat in text: explains *their* efficiency drop, not the system
   bottleneck (they are a small share of wall-time).
 - **No CPU roofline in the paper** (rANS is integer/lookup-bound; FLOP-based AI indefensible).
-  Instead: measured per-kernel times + isolated speedups (neon 2.42–2.49×, entropy numbers).
+  Instead: measured per-kernel times + isolated speedups (neon **2.42×** — the canonical single figure; R3's independent re-measurement gave 2.486×, never quote the range — plus the entropy numbers).
   **R3 closed this 2026-09-01 and killed the salvage sentence too**: `normalize` reaches ≈3.3 % of
   the single-core NEON peak — memory-bound ruled out, limiter identified (unrolled serial dependency
   chain the in-order A53 cannot hide). A 3 % figure needs its whole mechanism explained to not read
@@ -211,7 +211,11 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   ResSHyp **38.2**.
   Seq baselines reproduce old within ~2.7 %; deadline margins and the "≈2× Orin" claim unchanged
   (FP ≈ 52 MB/s ⇒ ~4.5× before-contact headroom, ~6.9× short of real-time).
-- Cumulative ladder speedups: FP **×5.5** · SHyp **×5.0** · ResFP **×3.8** · ResSHyp **×3.7**.
+- Cumulative ladder speedups: FP **×5.5** · SHyp **×5.0** · ResFP **×3.7** · ResSHyp **×3.7**
+  (r7 ÷ r0). *ResFP was ×3.8 until 2026-09-04*: P0.8 re-ran r0 with full-stage instrumentation and
+  its throughput came out 10.90 → 11.15 patch/s (+2.3 %, inside the ±2.7 % seq run-to-run band),
+  which is enough to move the printed digit. Byte-identity re-passed, so this is run variance, not
+  a code effect.
 - **Placement fix = 2.15× on ResSHyp at 3 L** (r2 13.7 → r3 29.5 patch/s; SHyp +8.6 %, FP/ResFP
   ~0) — replaces the old "2.8×" everywhere. Prose hook: naive round-robin leaves ResSHyp fan-out
   (13.7) barely above plain `mt` (12.4).
@@ -228,9 +232,26 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   the final (r7, full-stack) rung is guaranteed by construction to sit at the measured knee. Rule-of-
   thumb prose: FP knee = 4× #cores — the old "3–4×" guess now has a measured anchor (SHyp stays
   higher, 8×, GC entropy).
-- **Sequential CPU share (FP/SHyp) = ~60/61 %** (FP: CPU 15.5 ms vs DPU 10.4 ms; DPU share 40 %) —
-  replaces "~73 %", which included the now-dropped SD read. Story intact: DPU is 40–82 % of
-  per-patch time across archs. ResFP/ResSHyp: DPU 82/79 %.
+- **Sequential per-patch accounting — complete since P0.8 (2026-09-04).** `r0_seq_warm.json` now
+  carries every stage on one instrument over the full scene, and they close on the measured total
+  to within 0.2 %. **This is the canonical sequential breakdown** (`_figutils.load_seq_stages`);
+  the `s0/` E3 file is a 20-patch subset of another binary, retained only for per-subgraph DPU
+  detail and as a cross-check (agrees within −2.0…+2.4 %).
+
+  | arch | total ms | DPU | CPU | I/O (read+patchify+write) |
+  | --- | --- | --- | --- | --- |
+  | FP | 27.11 | 10.48 (38.6 %) | 15.66 (57.8 %) | 0.93 (3.4 %) |
+  | SHyp | 34.02 | 12.66 (37.2 %) | 20.36 (59.9 %) | 0.94 (2.8 %) |
+  | ResFP | 89.69 | 73.20 (81.6 %) | 15.53 (17.3 %) | 0.92 (1.0 %) |
+  | ResSHyp | 96.68 | 75.41 (78.0 %) | 20.27 (21.0 %) | 0.93 (1.0 %) |
+
+  **DPU is 37–82 % of per-patch time across archs** (was quoted as 40–82 % on the compute-only
+  basis; the denominator now includes I/O, so the shares shift by ~1–1.5 pt — nothing about the
+  story changes). **I/O is near-constant in absolute terms at 0.92–0.94 ms/patch**, which is why it
+  is 3.4 % of FP's bar but 1.0 % of ResFP's — a useful sentence for W2: the fixed cost is amortised
+  by heavier topologies. Per-patch read is 0.51 ms, patchify 0.41, write 0.006 (the container is
+  written once in bulk, so writing is effectively free). The old "~73 %" CPU share, which included
+  the dropped SD read, remains superseded.
 - 3-core roofline (E4, ResSHyp knee): residual g_a **95–96 % efficiency on all three cores**
   (compute-bound scales cleanly); h_a/h_s crash to **10–26 %** with per-core bandwidth 2.2–5.5 GB/s
   — the DDR-collision reading is supported and F3's aggregate dots are computable from
@@ -562,9 +583,11 @@ that it is dry-run-verified, not re-executed.
     endpoints are labelled for **FP and ResSH only** (37→204, 10→38) so the caption must name which
     two archs carry them; all four live in the throughput table. Bands: "scheduling" = mt→knee,
     "CPU kernels" = +neon→+ent. Rung labels use the renames (`mt`, `dbuf`). Cumulative seq→+ent =
-    ×5.5 / ×5.0 / ×3.8 / ×3.7. **The SD cold-read ceiling line is gone** — drop it from the caption.
-  - **F5 energy**: absolute **J/patch on a log scale**. seq→+ent per arch: 0.271→0.079 ·
-    0.333→0.102 · 1.047→0.480 · 1.146→0.551 J (3.4 / 3.3 / 2.2 / 2.1×). Board power 10–12 W → 15–21 W.
+    ×5.5 / ×5.0 / ×3.7 / ×3.7. **The SD cold-read ceiling line is gone** — drop it from the caption.
+  - **F5 energy**: absolute **J/patch on a log scale**. seq→+ent per arch: 0.269→0.079 ·
+    0.333→0.102 · 1.034→0.480 · 1.153→0.551 J (3.4 / 3.3 / 2.2 / 2.1×). Board power 9.8–11.9 W →
+    15–21 W. *(r0 values re-based by P0.8, 2026-09-04: FP 0.271→0.269, ResFP 1.047→1.034, ResSHyp
+    1.146→1.153. **Every ratio still prints the same**, so only the absolute J endpoints move.)*
     Same bands as F2.
   - **F4 lanes**: every lane count now runs the **full optimized stack** (fanout+neon+dbuf+entropy,
     pinned), not `fo3p` — this **dissolves the old entropy-off/on `\CL{}` mismatch note**, delete it.

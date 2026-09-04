@@ -153,7 +153,7 @@ n_w = ceil((29828 − 16) / 240) = 125
 total = 88 × 125 = 11 000 patches
 ```
 
-Per-patch latency and energy are taken from `results/benchmark_hardware/` (FPGA, `s1_compress.json`, MPSoC active power × latency) and `results/benchmark_unified/` (CPU/GPU, `baseline_compress_{cpu,gpu}.json`, `active_w × latency`). MERLIN's ×2 real/imag factor is already included in the per-patch measurements.
+Per-patch latency and energy are taken from `results/benchmark_hardware/` (archived 2026-08-31 to /mnt/vitisAI/DDC_results_archive/) (FPGA, `s1_compress.json`, MPSoC active power × latency) and `results/benchmark_unified/` (CPU/GPU, `baseline_compress_{cpu,gpu}.json`, `active_w × latency`). MERLIN's ×2 real/imag factor is already included in the per-patch measurements.
 
 | Arch | Platform | lat/patch | total lat | nrg/patch | total energy |
 | --- | --- | --- | --- | --- | --- |

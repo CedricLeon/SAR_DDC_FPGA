@@ -607,7 +607,7 @@ lanes: **FP 12 / SHyp 24 / ResFP 6 / ResSHyp 20**.
 
 | rung | FP | SHyp | ResFP | ResSHyp |
 | --- | --- | --- | --- | --- |
-| r0 seq | 37.0 (26.6) | 29.4 (22.4) | 10.9 (10.0) | 10.3 (9.3) |
+| r0 seq | 36.9 (26.6) | 29.4 (22.4) | 11.2 (10.0) | 10.3 (9.3) |
 | r1 mt | 83.7 | 58.0 | 13.4 | 12.4 |
 | r2 fo3 (naive) | 99.0 | 72.7 | 31.7 | 13.7 |
 | r3 fo3p (pinned) | 99.4 | 79.0 | 31.7 | 29.5 |
@@ -619,6 +619,17 @@ lanes: **FP 12 / SHyp 24 / ResFP 6 / ResSHyp 20**.
 *SLC MB/s = patch/s × 0.256 (the 1.93 GB tile over 7 540 patches) → r7: FP 52.4, SHyp 37.6, ResFP 10.5,
 ResSHyp 9.8. On the real SD card the light archs are read-bound at ~23.5 MB/s (cold-read ceiling,
 `results/date27/ladder/*/r0_seq_cold.json`); the residual archs are compute-bound (cold ≈ warm).*
+
+Sequential per-patch time:
+
+| arch | read | patchify | normalize | g_a | h_a | h_s | entropy | write | total |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| FP | 0.51 | 0.41 | 9.03 | 10.48 | — | — | 6.63 | 0.006 | 27.11 |
+| SHyp | 0.52 | 0.41 | 9.00 | 10.46 | 1.36 | 0.84 | 11.36 | 0.006 | 34.02 |
+| ResFP | 0.51 | 0.41 | 9.02 | 73.20 | — | — | 6.51 | 0.005 | 89.70 |
+| ResSHyp | 0.51 | 0.41 | 9.06 | 73.18 | 1.39 | 0.84 | 11.22 | 0.004 | 96.68 |
+
+I/O costs 0.92–0.94 ms/patch and is near-constant in absolute terms.
 
 **Best configuration per architecture** = r7 at the knee (λ=20, seed s0, warm):
 
@@ -638,7 +649,7 @@ independent lanes past the cores, within ~1 % of peak by their 12 / 24-lane knee
 
 | rung | FP | SHyp | ResFP | ResSHyp |
 | --- | --- | --- | --- | --- |
-| r0 seq | 0.271 | 0.333 | 1.047 | 1.146 |
+| r0 seq | 0.269 | 0.333 | 1.034 | 1.153 |
 | r1 mt | 0.141 | 0.190 | 0.903 | 1.015 |
 | r2 fo3 (naive) | 0.125 | 0.161 | 0.538 | 0.944 |
 | r3 fo3p (pinned) | 0.125 | 0.151 | 0.539 | 0.613 |
@@ -655,14 +666,14 @@ with thermal). The full per-rail-group breakdown is in each result JSON.*
 - **Parallelism is arch-dependent, and fan-out is the universal best.** The DPU-bound archs
   (ResFP/ResSHyp) are unlocked by fan-out lanes (`--s1`, §4, is an early scaffold fan-out supersedes); the
   CPU-bound archs (FP/SHyp) by the thread pool + double-buffered read, and fan-out's independent
-  pipelines lift them further still. Cumulative warm, r0→r7: FP **37.0→204.4 patch/s (×5.5)**,
-  SHyp **×5.0**, ResFP **×3.8**, ResSHyp **10.3→38.2 (×3.7)**.
+  pipelines lift them further still. Cumulative warm, r0→r7: FP **36.9→204.4 patch/s (×5.5)**,
+  SHyp **×5.0**, ResFP **×3.7**, ResSHyp **10.3→38.2 (×3.7)**.
 - **Storage was hiding the CPU parallelism.** The cold SD-read ceiling is ~92 patch/s (~23.5 MB/s) for
   every arch; the CPU-bound archs' warm throughput (FP 204, SHyp 147) runs 2–6× past it, so on the real
   SD card FP/SHyp are read-bound while ResFP/ResSHyp (warm ≈ cold from r3 on) are not. The r0 cold/warm
-  gap (FP 26.6 → 37.0, SHyp 22.4 → 29.4) is the same signal at the sequential baseline.
-- **Parallelism costs power but saves energy.** FP r0→r7 **0.271→0.079 J/patch (×3.4)**;
-  ResSHyp **1.146→0.551 (×2.1)**. The draw is PL(DPU)-dominated for every arch — the residual archs
+  gap (FP 26.6 → 36.9, SHyp 22.4 → 29.4) is the same signal at the sequential baseline.
+- **Parallelism costs power but saves energy.** FP r0→r7 **0.269→0.079 J/patch (×3.4)**;
+  ResSHyp **1.153→0.551 (×2.1)**. The draw is PL(DPU)-dominated for every arch — the residual archs
   push far more of it; cross-arch ResSHyp costs **~7× the energy/patch** of FP.
 - **DDR is not a bottleneck.** vaitrace: the dominant DPU traffic (`g_a`) is ~0.65 GB/s (residual) to
   ~1.6 GB/s (plain), **~11–26×** under the 17.06 GB/s DDR4 ceiling (§2). CPU-side DDR is an estimate
@@ -812,6 +823,28 @@ timer overhead and `--power`'s own perturbation both confirmed negligible) — f
 narrative, and be ready for any experiment to resolve *against* the story. Each entry notes the
 manuscript slot it *would* unblock (**→ main.tex …**) purely as navigation, never as a hole that must be
 filled.
+
+- **Per-stage instrumentation is not homogeneous across schedules and lacks small stages.** Only the sequential path
+  (`stream_compress_tile`) times most stage: it is the sole place `read` / `patchify` / `write` are
+  measured at all. Plain `--p0` records only `read` and `write` totals and **no compute stages**;
+  `--fanout` records per-lane compute totals (`LanePerf`) but never `patchify`, and being per-lane sums
+  across concurrent workers they cannot close on wall clock by construction (the occupancy caveat,
+  §6). `benchmark_hardware` s0/s1 sit at the other extreme — full per-stage detail, but a 20-patch
+  subset of a different binary with **no I/O stage at all**. Net: the number we headline, full-scene
+  throughput at the knee, has no per-stage decomposition of its own; F1's decomposition is the
+  *sequential* one, and that gap is worth closing for its own sake rather than for a figure.
+  The fix is additive and byte-transparent — give the `p0`/fan-out worker the same per-stage
+  accumulators the seq path now has — but it forces a ladder re-measure, which re-opens numbers
+  already in the manuscript. Deferred on that basis, not because it is hard.
+  **Naming is settled**, so a later pass has nothing to decide: one bucket per
+  `BenchPipeline::stage_*` call, labelled exactly as `bench_configs.cpp`'s `StageTimer` marks
+  (`normalize`, `g_a`, `h_a`, `eb_compress`, `eb_decompress`, `h_s`, `gc_compress`, `gc_decompress`,
+  `g_s`, `denorm`), so a seq breakdown and an s0 one compare key-for-key. Aggregates (`dpu`,
+  `entropy`) are *derived* from those buckets, never measured as one — **aggregation is the plotting
+  script's decision, not the measurement's.** Two aggregations still outstanding under that rule:
+  `stream_decode_ddc` folds `denorm` into `t_normalize_ms` and `g_s` into `t_dpu_ms`, and
+  `LanePerf::entropy_ms` still lumps the three entropy calls.
+  Worth checking if other small operations like channel split and channel interleave should also be timed. (For that, first answer if adding timers bears a cost in the final reported numbers, if not there is no reason not to add them because we can simply aggregate the data at will later.)
 
 ### Deferred / optional
 

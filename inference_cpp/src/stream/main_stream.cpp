@@ -95,11 +95,24 @@ int main(int argc, char** argv) {
                 std::printf("  [%s] threads=%d ; read=%.1f write=%.1f ms (compute stages overlapped)\n",
                             o.fanout ? (o.lane_major ? "fanout/lane-major" : "fanout/pinned") : "p0",
                             o.threads, r.t_read_ms, r.t_write_ms);
-            else
+            else {
                 std::printf("  timing(ms): read=%.1f patchify=%.1f normalize=%.1f dpu=%.1f "
                             "entropy=%.1f write=%.1f\n",
                             r.t_read_ms, r.t_patchify_ms, r.t_normalize_ms, r.t_dpu_ms,
                             r.t_entropy_ms, r.t_write_ms);
+                // dpu= and entropy= above, split per stage_* call, named as benchmark_hardware's
+                // StageTimer labels. g_a+h_a+h_s = dpu; eb_compress+eb_decompress+gc_compress =
+                // entropy. h_* and the gc/eb_decompress stages are 0 for FP/ResFP. Only the
+                // sequential path measures this; stream_benchmark.py serializes it.
+                // %.3f, not the %.1f above: these are the serialized ones, and the smallest
+                // (eb_compress/eb_decompress) are ~0.1 ms/patch, so the extra digits keep the
+                // per-stage sums exact rather than merely close.
+                std::printf("  dpu-split(ms): g_a=%.3f h_a=%.3f h_s=%.3f\n", r.t_ga_ms, r.t_ha_ms,
+                            r.t_hs_ms);
+                std::printf("  entropy-split(ms): eb_compress=%.3f eb_decompress=%.3f "
+                            "gc_compress=%.3f\n",
+                            r.t_eb_compress_ms, r.t_eb_decompress_ms, r.t_gc_compress_ms);
+            }
             // Per-lane placement diagnosis: g_a ms/call vs the 1-lane solo — ~1.0x = clean (own core),
             // >~1.25x = that lane's g_a is queued behind another on a shared core. Uniform inflation is
             // NOT a DDR roof: 3 g_a on one core (--lane-major) looks the same; the absolute ratio to

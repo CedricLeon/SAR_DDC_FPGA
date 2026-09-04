@@ -13,7 +13,7 @@ agree on:
   resource palette.
 * **names** — results-tree dir names (``FP SHyp ResFP ResSHyp``) → paper display
   names (``FP SH ResFP ResSH``).
-* **rung labels** — the cumulative optimization ladder r0–r7
+* **rung labels** — the cumulative optimization ladder r0-r7
   (``docs/DATE27_paper_plan.md`` §4.0). Paper-level names only; the CLI flags they
   map to are fixed and live in ``LADDER_STEMS``.
 * **knee lanes** — per-arch fan-out operating point (§4.0 gate review, 2026-09-01).
@@ -36,7 +36,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List
 
 import rootutils
 
@@ -203,11 +202,31 @@ def lane_counts(arch: str) -> list[int]:
     return [n for n in LANE_GRID if lane_json_path(arch, n).is_file()]
 
 
+# ---- sequential per-stage timing -----------------------------------------------------
+def load_seq_stages(arch: str) -> dict[str, float]:
+    """**Canonical** per-patch sequential stage breakdown, in ms (P0.8).
+
+    ``{read, patchify, normalize, g_a, h_a, h_s, entropy, write, dpu, residual, total}``
+    from ``ladder/<arch>/r0_seq_warm.json`` — one instrument, the full 7,540-patch scene,
+    the same run that anchors the ladder, and the stages close on ``total`` to within 0.2 %.
+
+    Prefer this over ``load_s0_stages`` for anything sequential: it is the only source
+    carrying ``read``/``patchify``/``write`` (together 1.0–3.4 % of per-patch time) and so
+    the only one whose stages sum to the measured throughput.
+    """
+    return load_ladder(arch, 0)["stage_ms_per_patch"]
+
+
 # ---- s0/<arch>/ ---------------------------------------------------------------------
 def load_s0_stages(arch: str) -> dict[str, dict]:
-    """Per-stage sequential breakdown, entropy OFF (E3 — the true sequential baseline).
+    """Per-stage breakdown from ``benchmark_hardware`` s0, entropy OFF (E3).
 
     Returns the ``stages`` dict: ``{stage: {mean_ms, median_ms, …}}``.
+
+    A **20-patch, 50-iteration subset of a different binary**, kept for its per-subgraph DPU
+    detail and as an independent cross-check (it tracks ``load_seq_stages`` within
+    −2.0…+2.4 %) — not as the sequential baseline. It has no read/patchify/write stage, so
+    its stages sum to only 96–99 % of measured per-patch time.
     """
     return _load_json(DATE27 / "s0" / arch / "s0_compress_entoff.json")["stages"]
 
@@ -296,17 +315,6 @@ def cpu_probe_mpstat(arch: str) -> dict[str, float]:
         "idle": sum(r[2] for r in win) / n,
     }
 
-
-# ======================================================================================
-# Occupancy attribution — re-exported from the moved fanout_occupancy module
-# ======================================================================================
-from fanout_occupancy import (  # noqa: E402  (import after sys.path insert above)
-    cpu_occupancy_series,
-    lane_core,
-    lanes_available,
-    occupancy,
-    occupancy_series,
-)
 
 # ======================================================================================
 # Saving

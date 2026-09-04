@@ -289,15 +289,34 @@ StreamResult stream_compress_tile(const StreamOptions& opt) {
             res.t_patchify_ms += ms(tp, clk::now());
 
             res.t_normalize_ms += time_stage([&] { pipe.stage_normalize(s); });
-            res.t_dpu_ms += time_stage([&] { opt.s1 ? pipe.stage_ga_s1(s) : pipe.stage_ga(s); });
-            if (hyper) res.t_dpu_ms += time_stage([&] { pipe.stage_ha(s); });
+            // DPU stages are accumulated per subgraph *and* into t_dpu_ms (their sum), so the
+            // aggregate every downstream reader already uses is unchanged.
+            const double t_ga = time_stage([&] { opt.s1 ? pipe.stage_ga_s1(s) : pipe.stage_ga(s); });
+            res.t_ga_ms += t_ga;
+            res.t_dpu_ms += t_ga;
+            if (hyper) {
+                const double t_ha = time_stage([&] { pipe.stage_ha(s); });
+                res.t_ha_ms += t_ha;
+                res.t_dpu_ms += t_ha;
+            }
 
-            res.t_entropy_ms += time_stage([&] { pipe.stage_eb_compress(s); });
+            // Entropy stages are likewise accumulated per call *and* into t_entropy_ms (their sum).
+            // For FP/ResFP eb_compress is the only one — it codes the main (y) stream; for the
+            // hyperprior archs eb_* code the side (z) stream and gc_compress the main one.
+            const double t_eb_c = time_stage([&] { pipe.stage_eb_compress(s); });
+            res.t_eb_compress_ms += t_eb_c;
+            res.t_entropy_ms += t_eb_c;
             DdcRecord rec;
             if (hyper) {
-                res.t_entropy_ms += time_stage([&] { pipe.stage_eb_decompress(s); });
-                res.t_dpu_ms += time_stage([&] { pipe.stage_hs(s); });
-                res.t_entropy_ms += time_stage([&] { pipe.stage_gc_compress(s); });
+                const double t_eb_d = time_stage([&] { pipe.stage_eb_decompress(s); });
+                res.t_eb_decompress_ms += t_eb_d;
+                res.t_entropy_ms += t_eb_d;
+                const double t_hs = time_stage([&] { pipe.stage_hs(s); });
+                res.t_hs_ms += t_hs;
+                res.t_dpu_ms += t_hs;
+                const double t_gc_c = time_stage([&] { pipe.stage_gc_compress(s); });
+                res.t_gc_compress_ms += t_gc_c;
+                res.t_entropy_ms += t_gc_c;
                 rec.z = s.z_bits;
                 rec.y = s.y_bits;
             } else {
