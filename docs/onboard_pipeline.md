@@ -352,11 +352,33 @@ weight-load-bound off the plot. It draws two ceilings only: the **1-core AXI int
 (2× 128-bit `M_AXI_DATA` ports per DPUCZDX8G core at the 300 MHz DPU clock, PG338 — the true single-core
 bound) and the **3-core shared-DDR peak, 17.06 GB/s**.
 
-The uncontended (1-lane) rates degrade and split by core under fan-out: at the ResSHyp knee, per-core
-`h_a`/`h_s` efficiency falls to **10–26 %** with per-core bandwidth **2.2–5.5 GB/s**
-(`results/date27/vaitrace/ResSHyp/vaitrace_knee20.txt`; §4.0 gate review) — the weight-bound side
-networks colliding with the shared DDR controller. Not a fixed hardware constant — the best-case rate
-for this access pattern (many small, poorly-reused weight tensors) in isolation.
+**Efficiency is a property of the operating point, not of the kernel.** `Effic = (WL / HW_RT) / 1229`
+and `WL` is a static graph constant, so all the variation is `HW_RT` — how much DDR bandwidth a kernel
+gets while its neighbours run. Two layers therefore answer two different questions, and P0.9
+(2026-09-05) re-captured the second at the configuration the system actually ships:
+
+| | `g_a` plain | `g_a` residual | `h_a` | `h_s` |
+| --- | --- | --- | --- | --- |
+| **1 lane** (uncontended) | 89.5 % | 96.6 % | 27.1 % | 19.9 % |
+| 3 lanes, full stack | 86.3 / 86.6 % | 95.9 / 96.0 % | 20.4 / 22.9 % | 21.0 / 22.2 % |
+| **deployed** (r7 @ knee) | 82.3 % | 95.9 % | 14.1 / 20.0 % | 15.3 / 20.4 % |
+
+*(paired cells are SHyp / ResSHyp; `results/date27/vaitrace/<arch>/vaitrace_r7_knee<N>.txt`.)*
+
+**The 1-lane layer is architecture-independent** — every arch measures identically, because efficiency
+there is a property of the subgraph alone. That is the characterization the roofline exists to make.
+**Residual `g_a` holds 96 % whatever the configuration**: compute-bound work scales across the three
+cores essentially for free. Plain `g_a` gives up ~7 points, and the weight-bound side networks collapse
+to 14–20 %, colliding with the shared DDR controller.
+
+Two caveats worth keeping. **Side-network efficiency is not architecture-independent even though the
+subgraph is**: `h_a` reads 14.1 % on SHyp but 20.0 % on ResSHyp, because the side networks are 22 % of
+SHyp's per-patch DPU time against 3 % of ResSHyp's — contention tracks how *often* a kernel fires, not
+overall DPU occupancy. And **core 3 is systematically starved** in every capture (deployed `h_a`:
+27/22/10 on ResSHyp, 19/16/7 on SHyp), so a 3-core mean hides a ~2.5× spread.
+
+The superseded E4 captures (`vaitrace_knee<N>.txt`, fan-out only, CPU optimizations off) sampled a
+lower DPU duty cycle than the system ships; kept for provenance only.
 
 **Why the occupancy stays runner-span.** It uses `e` = the `run()` span (≈ SW_RT), not HW_RT. Charging
 `e` = HW_RT would count the per-call CPU glue (SW_RT−HW_RT = **8.4 %** plain `g_a`, **6.5 %** residual

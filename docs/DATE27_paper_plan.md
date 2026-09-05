@@ -252,10 +252,23 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   by heavier topologies. Per-patch read is 0.51 ms, patchify 0.41, write 0.006 (the container is
   written once in bulk, so writing is effectively free). The old "~73 %" CPU share, which included
   the dropped SD read, remains superseded.
-- 3-core roofline (E4, ResSHyp knee): residual g_a **95–96 % efficiency on all three cores**
-  (compute-bound scales cleanly); h_a/h_s crash to **10–26 %** with per-core bandwidth 2.2–5.5 GB/s
-  — the DDR-collision reading is supported and F3's aggregate dots are computable from
-  `results/date27/vaitrace/`.
+- **3-core roofline — re-captured at the deployed configuration (P0.9, 2026-09-05).** The E4 captures
+  ran fan-out *only*, CPU optimizations off, so they sampled a lower DPU duty cycle than the system
+  ships. F3's 3-core layer now uses `vaitrace_r7_knee<N>.txt` (r7 rung, `_figutils.vaitrace_path(arch,
+  "r7_knee")`); a 3-lane control (`"r7_t3"`) isolates lane count. Mean efficiency:
+
+  | | `g_a` plain | `g_a` residual | `h_a` | `h_s` |
+  | --- | --- | --- | --- | --- |
+  | 1 lane | 89.5 % | 96.6 % | 27.1 % | 19.9 % |
+  | deployed (r7 @ knee) | 82.3 % | 95.9 % | 14.1 / 20.0 % | 15.3 / 20.4 % |
+
+  (paired cells = SHyp / ResSHyp.) **The 1-lane layer is architecture-independent** — identical across
+  archs, a property of the subgraph alone — and it is the characterization the figure exists to make.
+  **Residual `g_a` holds 96 % in every configuration**; plain `g_a` loses ~7 points and the weight-bound
+  side networks fall to 14–20 %. Two things a mean hides: `h_a` differs by *arch* (14.1 SHyp vs 20.0
+  ResSHyp) because side networks are 22 % of SHyp's per-patch DPU time against 3 % of ResSHyp's —
+  contention tracks call frequency, not occupancy; and **core 3 is systematically starved** in every
+  capture (`h_a` 27/22/10 on ResSHyp), a ~2.5× spread.
 - Occupancy caveat for F7/W5: raw trace spans include DPU queue-wait — summing them exceeds 100 %
   busy; **always go through `fanout_occupancy.py`'s per-core attribution**, never raw span sums.
   r0 has no trace (tracer is fanout-only) → use E3 s0 shares for r0, as planned.

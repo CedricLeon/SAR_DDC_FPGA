@@ -1,0 +1,31 @@
+DPU Summary:
+=========================================================================================================================================================
+DPU Id      | Bat | DPU SubGraph                                                    | WL     | SW_RT  | HW_RT  | Effic | LdWB  | LdFM   | StFM  | AvgBw  
+------------+-----+-----------------------------------------------------------------+--------+--------+--------+-------+-------+--------+-------+--------
+DPUCZDX8G_1 | 1   | ...__FactorizedPriorDPUWrapper_Sequential_g_a__Conv2d_3__ret_29 | 39.755 | 36.030 | 33.561 | 96.4  | 3.520 | 10.766 | 7.531 | 650.056
+DPUCZDX8G_2 | 1   | ...__FactorizedPriorDPUWrapper_Sequential_g_a__Conv2d_3__ret_29 | 39.755 | 36.124 | 33.615 | 96.2  | 3.520 | 10.766 | 7.531 | 649.016
+DPUCZDX8G_3 | 1   | ...__FactorizedPriorDPUWrapper_Sequential_g_a__Conv2d_3__ret_29 | 39.755 | 36.484 | 34.050 | 95.0  | 3.520 | 10.766 | 7.531 | 640.721
+=========================================================================================================================================================
+
+Notes:
+"~0": Value is close to 0, Within range of (0, 0.001)
+Bat: Batch size of the DPU instance
+WL(Work Load): Computation workload (MAC indicates two operations), unit is GOP
+SW_RT(Software Run time): The execution time calculate by software in milliseconds, unit is ms
+HW_RT(Hareware Run time): The execution time from hareware operation in milliseconds, unit is ms
+Effic(Efficiency): The DPU actual performance divided by peak theoretical performance,unit is %
+Perf(Performance): The DPU performance in unit of GOP per second, unit is GOP/s
+LdFM(Load Size of Feature Map): External memory load size of feature map, unit is MB
+LdWB(Load Size of Weight and Bias): External memory load size of bias and weight, unit is MB
+StFM(Store Size of Feature Map): External memory store size of feature map, unit is MB
+AvgBw(Average bandwidth): External memory average bandwidth. unit is MB/s
+....
+
+
+CPU Functions(Not in Graph, e.g.: pre/post-processing, vai-runtime):
+===========================================================================
+Function                               | Device | Runs | AverageRunTime(ms)
+---------------------------------------+--------+------+-------------------
+vart::TensorBuffer::copy_tensor_buffer | CPU    | 3712 | 0.069             
+xir::XrtCu::run                        | CPU    | 1856 | 35.980            
+===========================================================================

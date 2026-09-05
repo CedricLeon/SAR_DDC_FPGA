@@ -25,17 +25,17 @@ Points:
   * single core (x marker): (arithmetic intensity, achieved GOP/s) at 1 lane, from
     results/date27/vaitrace/<arch>/vaitrace_1lane.txt (HW_RT hardware counter).
   * 3-core aggregate (o marker): sum of the three cores' achieved GOP/s at the
-    per-arch fan-out knee, from results/date27/vaitrace/<arch>/vaitrace_knee{K}.txt
-    -- the operating point when all three cores run that subgraph concurrently. FP's
-    resolve to the 12 L knee (vaitrace_knee12.txt, P0.7 re-trace); the 32 L capture
-    is provenance only. The g_a-residual and h_a/h_s aggregates are read from the
-    ResSHyp knee-20 trace (E4), where all three subgraphs run in one condition.
+    per-arch fan-out knee **with the full r7 CPU-optimization stack** (--fanout
+    --threads KNEE[arch] --neon --prefetch --entropy) -- the deployed configuration,
+    P0.9 -- from results/date27/vaitrace/<arch>/vaitrace_r7_knee{K}.txt. FP resolves to
+    the 12 L knee. The g_a-residual and h_a/h_s aggregates are read from the ResSHyp
+    r7 knee-20 trace, where all three subgraphs run together in one condition.
   arithmetic intensity uses the static xmodel_info byte estimate (const+input+output),
   the same denominator for the x-axis and any bandwidth read off the plot.
 
 Data:
   ops / bytes  <- results/date27/s0/<arch>/<arch>-relu_s0_L20_pt_xmodel_info.json  (via _figutils)
-  HW_RT / eff / AvgBw  <- results/date27/vaitrace/<arch>/vaitrace_{1lane,knee<K>}.txt
+  HW_RT / eff / AvgBw  <- results/date27/vaitrace/<arch>/vaitrace_{1lane,r7_knee<K>}.txt
 Both are architecture properties (lambda-independent).
 
 Run:  conda activate DDC_FPGA && python scripts/figures/roofline_subgraph.py
@@ -60,9 +60,10 @@ MEM_3 = DDR_GBPS  # 3-core memory ceiling: shared DDR, NOT 3 x AXI
 RIDGE_1 = PEAK_GOPS / AXI_GBPS  # 1-core ridge  [OP/byte]
 RIDGE_3 = PEAK_3 / MEM_3  # 3-core ridge  [OP/byte]
 
-CEIL_COLOR = PALETTE["ceiling"]
-SC_COLOR = "#1a1a1a"  # single-core markers
-AGG_COLOR = PALETTE["dpu"]  # 3-core aggregate markers (DPU work, under fan-out)
+# Two colors only: black for everything 1-core (markers, roofline, labels, annotations),
+# orange (the shared DPU tone) for everything 3-core.
+SC_COLOR = "#1a1a1a"  # 1-core: markers, roofline, labels
+AGG_COLOR = PALETTE["dpu"]  # 3-core: markers, roofline, labels
 ANN_SIZE = 7.6
 
 
@@ -100,7 +101,7 @@ def vaitrace_rows(path):
 
 
 def vt(arch, which):
-    """Vaitrace rows for ``arch``; ``which`` = 'vaitrace_1lane' or 'vaitrace_knee<K>'."""
+    """Vaitrace rows for ``arch``; ``which`` = 'vaitrace_1lane' or 'vaitrace_r7_knee<K>'."""
     return vaitrace_rows(DATE27 / "vaitrace" / arch / f"{which}.txt")
 
 
@@ -128,17 +129,18 @@ SC = {
 }
 
 # --- 3-core aggregate points: sum of per-core GOP/s at the fan-out knee -----------------
-knee_fp = vt("FP", f"vaitrace_knee{KNEE['FP']}")
-knee_rsh = vt("ResSHyp", f"vaitrace_knee{KNEE['ResSHyp']}")
+knee_fp = vt("FP", f"vaitrace_r7_knee{KNEE['FP']}")
+knee_rsh = vt("ResSHyp", f"vaitrace_r7_knee{KNEE['ResSHyp']}")
 
 
 def agg(rows, name):
-    """3-core aggregate for ``name``: (sum GOP/s, per-core eff %-range, per-core GB/s-range)."""
+    """3-core aggregate for ``name``: (sum GOP/s, per-core eff %-range, per-core GB/s-range, mean
+    per-core eff %)."""
     rs = [x for x in rows if x["name"] == name]
     per = [gops(x["wl"], x["hw"]) for x in rs]
     effs = [x["eff"] for x in rs]
     bws = [x["avgbw"] / 1000 for x in rs]  # MB/s -> GB/s
-    return sum(per), (min(effs), max(effs)), (min(bws), max(bws))
+    return sum(per), (min(effs), max(effs)), (min(bws), max(bws)), sum(effs) / len(effs)
 
 
 AGG = {
@@ -160,15 +162,18 @@ def roofline(mem_bw, peak, **kw):
     ax.plot(xs, np.minimum(peak, mem_bw * xs), **kw)
 
 
-roofline(AXI_GBPS, PEAK_GOPS, color=CEIL_COLOR, lw=1.7, zorder=3)  # 1 core, solid
-roofline(MEM_3, PEAK_3, color=CEIL_COLOR, lw=1.7, ls=(0, (5, 2)), zorder=3)  # 3 cores, dashed
-ax.fill_between(
-    xs, np.minimum(PEAK_GOPS, AXI_GBPS * xs), ylo, color=CEIL_COLOR, alpha=0.05, zorder=0
-)
+roofline(AXI_GBPS, PEAK_GOPS, color=SC_COLOR, lw=1.7, zorder=3)  # 1 core, solid, black
+roofline(
+    MEM_3, PEAK_3, color=AGG_COLOR, lw=1.7, ls=(0, (5, 2)), zorder=3
+)  # 3 cores, dashed, orange
 
 # --- markers: single-core x, its 3-core aggregate o, a dotted connector between -------
+#     each o is labelled with the mean per-core efficiency under 3-core fan-out, except
+#     h_a/h_s: their o's are superposed (same AI, ~same aggregate GOP/s), so they get one
+#     combined label instead of two printing on top of each other -----------------------
+AGG_LABEL_OFFSET = {"g_a_res": (7, -5)}  # nudged down, else it collides with the 3-core roof
 for k, (_, x, y_sc, _) in SC.items():
-    y_agg = AGG[k][0]
+    y_agg, _, _, eff_mean = AGG[k]
     ax.plot([x, x], [y_sc, y_agg], color=AGG_COLOR, lw=0.8, ls=":", zorder=4)
     ax.scatter([x], [y_sc], s=52, color=SC_COLOR, marker="x", linewidth=1.5, zorder=6)
     ax.scatter(
@@ -181,6 +186,36 @@ for k, (_, x, y_sc, _) in SC.items():
         marker="o",
         zorder=6,
     )
+    if k in ("h_a", "h_s"):
+        continue
+    ax.annotate(
+        f"{eff_mean:.0f}%",
+        (x, y_agg),
+        xytext=AGG_LABEL_OFFSET.get(k, (7, 0)),
+        textcoords="offset points",
+        ha="left",
+        va="center",
+        fontsize=7.8,
+        color=AGG_COLOR,
+        zorder=7,
+    )
+
+# h_a/h_s combined 3-core label: close, to the northeast of the point -- the point itself
+# already sits between the AXI (solid) and DDR (dashed) diagonals there, so this placement
+# stays clear of both instead of running into either.
+_ha_x, _ha_y_agg = SC["h_a"][1], AGG["h_a"][0]
+_combined_eff = (AGG["h_a"][3] + AGG["h_s"][3]) / 2  # equal-sized groups -> mean of means
+ax.annotate(
+    f"{_combined_eff:.0f}%",
+    (_ha_x, _ha_y_agg),
+    xytext=(2, 6),
+    textcoords="offset points",
+    ha="left",
+    va="bottom",
+    fontsize=7.8,
+    color=AGG_COLOR,
+    zorder=7,
+)
 
 ax.set_xscale("log")
 ax.set_yscale("log")
@@ -208,49 +243,51 @@ th_ddr = angle(25, DDR_GBPS * 25, 90, DDR_GBPS * 90)
 ax.text(
     360,
     PEAK_GOPS * 1.07,
-    f"1 core  ·  {PEAK_GOPS:.0f} GOP/s",
+    f"1 core {PEAK_GOPS:.0f} GOP/s",
     ha="left",
     va="bottom",
     fontsize=ANN_SIZE,
-    color=CEIL_COLOR,
+    color=SC_COLOR,
 )
 ax.text(
     360,
     PEAK_3 * 1.07,
-    f"3 cores  ·  {PEAK_3:.0f} GOP/s",
+    f"3 cores {PEAK_3:.0f} GOP/s",
     ha="left",
     va="bottom",
     fontsize=ANN_SIZE,
-    color=CEIL_COLOR,
+    color=SC_COLOR,
 )
 ax.text(
     23,
     AXI_GBPS * 23 * 1.14,
-    f"AXI {AXI_GBPS:.1f} GB/s (1 core)",
+    f"AXI {AXI_GBPS:.1f} GB/s",
     rotation=th_axi,
     rotation_mode="anchor",
     ha="left",
     va="bottom",
     fontsize=ANN_SIZE,
-    color=CEIL_COLOR,
+    color=SC_COLOR,
 )
 ax.text(
     23,
     DDR_GBPS * 23 * 1.14,
-    f"DDR {DDR_GBPS:.2f} GB/s (3 cores, shared)",
+    f"DDR {DDR_GBPS:.2f} GB/s",
     rotation=th_ddr,
     rotation_mode="anchor",
     ha="left",
     va="bottom",
     fontsize=ANN_SIZE,
-    color=CEIL_COLOR,
+    color=SC_COLOR,
 )
 
-# --- single-core point labels: name + 1-core efficiency (vaitrace Effic column) ------
+# --- single-core point labels -------------------------------------------------------
+# g_a / g_a+Res: name, then 1-core efficiency on its own line, centered directly under
+# the marker (two lines read as one unit without widening the label).
 ax.annotate(
-    f"{SC['g_a'][0]}  {SC['g_a'][3]:.1f}%",
+    f"{SC['g_a'][0]}\n({SC['g_a'][3]:.1f}%)",
     (SC["g_a"][1], SC["g_a"][2]),
-    xytext=(-4, -13),
+    xytext=(0, -8),
     textcoords="offset points",
     ha="center",
     va="top",
@@ -259,9 +296,9 @@ ax.annotate(
     zorder=7,
 )
 ax.annotate(
-    f"{SC['g_a_res'][0]}  {SC['g_a_res'][3]:.1f}%",
+    f"{SC['g_a_res'][0]}\n({SC['g_a_res'][3]:.1f}%)",
     (SC["g_a_res"][1], SC["g_a_res"][2]),
-    xytext=(0, -13),
+    xytext=(0, -8),
     textcoords="offset points",
     ha="center",
     va="top",
@@ -269,10 +306,11 @@ ax.annotate(
     color=SC_COLOR,
     zorder=7,
 )
+# h_a / h_s: single line, to the right of their marker, vertically centered on it.
 ax.annotate(
-    f"{SC['h_a'][0]} {SC['h_a'][3]:.1f}%",
+    f"{SC['h_a'][0]} ({SC['h_a'][3]:.1f}%)",
     (SC["h_a"][1], SC["h_a"][2]),
-    xytext=(11, 2),
+    xytext=(8, 0),
     textcoords="offset points",
     ha="left",
     va="center",
@@ -281,56 +319,24 @@ ax.annotate(
     zorder=7,
 )
 ax.annotate(
-    f"{SC['h_s'][0]} {SC['h_s'][3]:.1f}%",
+    f"{SC['h_s'][0]} ({SC['h_s'][3]:.1f}%)",
     (SC["h_s"][1], SC["h_s"][2]),
-    xytext=(-11, -2),
+    xytext=(8, 0),
     textcoords="offset points",
-    ha="right",
+    ha="left",
     va="center",
     fontsize=7.8,
     color=SC_COLOR,
     zorder=7,
 )
 
-# --- story annotation 1: g_a is compute-bound and scales ~3x to the 3-core roof -----
-#   sits in the gap between the single-core row and the aggregate row, spanning both g_a
-gar = AGG["g_a_res"][1]
-gap = AGG["g_a"][1]
-ax.text(
-    5200,
-    1950,
-    f"$g_a$: compute-bound, 3 cores $\\approx$ 3×\n"
-    f"residual {gar[0]:.0f}–{gar[1]:.0f}% / core, plain {gap[0]:.0f}–{gap[1]:.0f}%",
-    fontsize=ANN_SIZE,
-    color=AGG_COLOR,
-    ha="center",
-    va="center",
-)
+# The two story annotations formerly here ($g_a$ compute-bound/3x scaling; $h_a,h_s$
+# weight-load-bound) now live in the fig:roofline caption (main.tex) -- the plot was too
+# crowded. Numbers: SC[...][3] (1-core %), AGG[...] (3-core sum/range/mean %).
 
-# --- story annotation 2: the hyperprior kernels, weight-load-bound ------------------
-#   (the LdWB 97-99% and the "small wall-time share, not the system bottleneck" caveat
-#    live in the caption -- P1.5)
-ha_eff, ha_bw = AGG["h_a"][1], AGG["h_a"][2]
-ax.annotate(
-    r"$h_a,h_s$: weight-load-bound."
-    "\n"
-    f"1 core {SC['h_s'][3]:.0f}–{SC['h_a'][3]:.0f}% eff → "
-    f"{ha_eff[0]:.0f}–{ha_eff[1]:.0f}% / core under fan-out\n"
-    f"at {ha_bw[0]:.1f}–{ha_bw[1]:.1f} GB/s — shared-DDR contention",
-    xy=(SC["h_a"][1], (SC["h_s"][2] * AGG["h_a"][0]) ** 0.5),
-    xytext=(120, 112),
-    textcoords="data",
-    fontsize=ANN_SIZE,
-    color=SC_COLOR,
-    ha="left",
-    va="bottom",
-    arrowprops=dict(arrowstyle="-", color=SC_COLOR, lw=0.7),
-)
-
-# --- legend: marker meaning (upper-left, above the dashed diagonal) -----------------
+# --- legend: marker meaning (lower-right, clear of every point/ceiling) -------------
 ax.legend(
     handles=[
-        Line2D([], [], color=SC_COLOR, marker="x", ls="none", ms=7, mew=1.5, label="1 lane"),
         Line2D(
             [],
             [],
@@ -340,11 +346,12 @@ ax.legend(
             ms=7,
             mfc="none",
             mew=1.6,
-            label="3-core knee (aggregate)",
+            label="3 cores (averaged)",
         ),
+        Line2D([], [], color=SC_COLOR, marker="x", ls="none", ms=7, mew=1.5, label="1 core"),
     ],
-    loc="upper left",
-    bbox_to_anchor=(0.005, 0.995),
+    loc="lower right",
+    bbox_to_anchor=(0.995, 0.005),
     fontsize=ANN_SIZE,
     frameon=False,
     handletextpad=0.4,
@@ -361,9 +368,9 @@ print(
 print("  single core (1 lane):")
 for lab, x, y, eff in SC.values():
     print(f"    AI={x:9.1f}  {y:8.1f} GOP/s  eff={eff:5.1f}%   {lab}")
-print("  3-core aggregate (knee):")
-for k, (s, effr, bwr) in AGG.items():
+print("  3-core aggregate (r7 knee, fully optimized):")
+for k, (s, effr, bwr, eff_mean) in AGG.items():
     print(
         f"    {k:8s} sum={s:8.1f} GOP/s  per-core eff {effr[0]:.1f}-{effr[1]:.1f}%"
-        f"  AvgBw {bwr[0]:.2f}-{bwr[1]:.2f} GB/s"
+        f" (mean {eff_mean:.1f}%)  AvgBw {bwr[0]:.2f}-{bwr[1]:.2f} GB/s"
     )

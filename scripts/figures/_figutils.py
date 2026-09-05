@@ -245,17 +245,28 @@ def load_xmodel_subgraphs(arch: str) -> dict[str, dict]:
 
 # ---- vaitrace/<arch>/, occupancy/<arch>/, checks/<arch>/ ---------------------------
 def vaitrace_path(arch: str, which: str) -> Path:
-    """``which`` ∈ {``"1lane"``, ``"knee"``} → the per-core DPU-counter text dump.
+    """Per-core DPU-counter text dump. ``which`` selects the operating point.
 
-    The ``"knee"`` file is resolved at ``KNEE[arch]`` lanes: ``vaitrace_knee{K}.txt``.
-    FP was re-traced at its 12 L knee in P0.7 (``vaitrace_knee12.txt``); the 32 L
-    capture (``vaitrace_knee32.txt``) is kept for provenance but no longer the
-    default. If the exact-``K`` file is absent, fall back to the sole
-    ``vaitrace_knee*.txt`` on disk.
+    - ``"1lane"`` — one lane, uncontended. **The architecture-independent layer**: at
+      one lane every arch measures identically (``g_a`` 89.5 % plain / 96.6 % residual,
+      ``h_a`` 27.1 %, ``h_s`` 19.9 %), because efficiency there is a property of the
+      subgraph alone. This is the roofline's characterization layer.
+    - ``"r7_knee"`` — **the deployed configuration** (P0.9): fan-out at ``KNEE[arch]``
+      lanes *with* all CPU optimizations, i.e. the r7 rung the paper reports everywhere
+      else. Use this for the 3-core layer.
+    - ``"r7_t3"`` — same stack at 3 lanes, one per core. The control that isolates lane
+      count from the optimization stack.
+    - ``"knee"`` — legacy P0.2/P0.7 capture, fan-out only (**no** CPU optimizations), so
+      it sampled a lower DPU duty cycle than the system actually ships. Kept for
+      provenance; prefer ``"r7_knee"``.
     """
     d = DATE27 / "vaitrace" / arch
     if which == "1lane":
         return d / "vaitrace_1lane.txt"
+    if which == "r7_t3":
+        return d / "vaitrace_r7_t3.txt"
+    if which == "r7_knee":
+        return d / f"vaitrace_r7_knee{KNEE[arch]}.txt"
     if which == "knee":
         exact = d / f"vaitrace_knee{KNEE[arch]}.txt"
         if exact.is_file():
@@ -264,7 +275,9 @@ def vaitrace_path(arch: str, which: str) -> Path:
         if not hits:
             raise FileNotFoundError(f"no vaitrace_knee*.txt in {d}")
         return hits[0]
-    raise ValueError(f"vaitrace_path: which must be '1lane' or 'knee', got {which!r}")
+    raise ValueError(
+        f"vaitrace_path: which must be '1lane', 'r7_knee', 'r7_t3' or 'knee', got {which!r}"
+    )
 
 
 def occupancy_full_trace_path(arch: str, rung: int) -> Path:
