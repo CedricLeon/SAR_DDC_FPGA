@@ -584,11 +584,12 @@ that it is dry-run-verified, not re-executed.
     two archs carry them; all four live in the throughput table. Bands: "scheduling" = mt→knee,
     "CPU kernels" = +neon→+ent. Rung labels use the renames (`mt`, `dbuf`). Cumulative seq→+ent =
     ×5.5 / ×5.0 / ×3.7 / ×3.7. **The SD cold-read ceiling line is gone** — drop it from the caption.
-  - **F5 energy**: absolute **J/patch on a log scale**. seq→+ent per arch: 0.269→0.079 ·
-    0.333→0.102 · 1.034→0.480 · 1.153→0.551 J (3.4 / 3.3 / 2.2 / 2.1×). Board power 9.8–11.9 W →
-    15–21 W. *(r0 values re-based by P0.8, 2026-09-04: FP 0.271→0.269, ResFP 1.047→1.034, ResSHyp
-    1.146→1.153. **Every ratio still prints the same**, so only the absolute J endpoints move.)*
-    Same bands as F2.
+  - **F5 energy**: absolute **J/patch on a log scale**. seq→+ent per arch: 0.271→0.079 ·
+    0.335→0.102 · 1.042→0.480 · 1.157→0.551 J (3.4 / 3.3 / 2.2 / 2.1×). Board power 9.9–12.0 W →
+    15–21 W. *(r0 re-measured by P0.8b, 2026-09-04 — final values above. **Every ratio still prints
+    the same**; only the absolute J endpoints move, and they move by ~1 % whenever the board is
+    re-measured because J/patch tracks die temperature — see the reproducibility note under
+    `onboard_pipeline.md` §10's energy table before re-basing these again.)* Same bands as F2.
   - **F4 lanes**: every lane count now runs the **full optimized stack** (fanout+neon+dbuf+entropy,
     pinned), not `fo3p` — this **dissolves the old entropy-off/on `\CL{}` mismatch note**, delete it.
     Knee stars 205 / 146 / 41 / 38 patch/s. Dashed series legend = "CPU busy" (trace-derived);

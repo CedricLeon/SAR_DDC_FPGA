@@ -607,7 +607,7 @@ lanes: **FP 12 / SHyp 24 / ResFP 6 / ResSHyp 20**.
 
 | rung | FP | SHyp | ResFP | ResSHyp |
 | --- | --- | --- | --- | --- |
-| r0 seq | 36.9 (26.6) | 29.4 (22.4) | 11.2 (10.0) | 10.3 (9.3) |
+| r0 seq | 36.9 (26.6) | 29.4 (22.4) | 11.1 (10.0) | 10.4 (9.3) |
 | r1 mt | 83.7 | 58.0 | 13.4 | 12.4 |
 | r2 fo3 (naive) | 99.0 | 72.7 | 31.7 | 13.7 |
 | r3 fo3p (pinned) | 99.4 | 79.0 | 31.7 | 29.5 |
@@ -649,7 +649,7 @@ independent lanes past the cores, within ~1 % of peak by their 12 / 24-lane knee
 
 | rung | FP | SHyp | ResFP | ResSHyp |
 | --- | --- | --- | --- | --- |
-| r0 seq | 0.269 | 0.333 | 1.034 | 1.153 |
+| r0 seq | 0.271 | 0.335 | 1.042 | 1.157 |
 | r1 mt | 0.141 | 0.190 | 0.903 | 1.015 |
 | r2 fo3 (naive) | 0.125 | 0.161 | 0.538 | 0.944 |
 | r3 fo3p (pinned) | 0.125 | 0.151 | 0.539 | 0.613 |
@@ -661,19 +661,36 @@ independent lanes past the cores, within ~1 % of peak by their 12 / 24-lane knee
 *Energy = MPSoC (PS+PL) INA226, cooldown-gated to 58 °C; J/patch is the comparable metric (avg W drifts
 with thermal). The full per-rail-group breakdown is in each result JSON.*
 
+> **J/patch reproduces to ~1 %, not to the third decimal — quote it accordingly.** Measured directly:
+> the r0 rung was re-run twice on 2026-09-04 with byte-identical output and throughput stable to
+> ≤0.27 %, yet J/patch rose on **every** arch (FP 0.2694→0.2714, SHyp 0.3329→0.3352,
+> ResFP 1.0339→1.0420, ResSHyp 1.1533→1.1567, i.e. +0.3…+0.8 %). Cause is thermal, not noise: the
+> second pass started 1.4–4.0 °C hotter on every arch and drew 0.05–0.08 W more, while run durations
+> moved <0.3 % — leakage tracking die temperature. Rounding does not rescue it: at 2 dp three of the
+> four values still flip (0.33→0.34, 1.03→1.04, 1.15→1.16) because they sit on a boundary, and 1 dp
+> collapses FP and SHyp to the same "0.3". So **energy ratios are the stable quantity** (r7/r0 held at
+> 3.4 / 3.3 / 2.2 / 2.1× across both passes); absolute J/patch is a ~1 % number that will move
+> whenever the board is re-measured.
+>
+> **Caveat on the ratios themselves:** r0 is now the only rung measured on 2026-09-04 — r1–r7 are all
+> from 2026-08-31/09-01 (see each JSON's `provenance.run_utc`). The ladder's energy curve therefore
+> joins two thermal sessions at its first point, so the ×3.4/×2.1 endpoints mix sessions. Harmless at
+> the precision quoted, but a full-ladder re-run in one session is what would make them internally
+> consistent.
+
 **Findings.**
 
 - **Parallelism is arch-dependent, and fan-out is the universal best.** The DPU-bound archs
   (ResFP/ResSHyp) are unlocked by fan-out lanes (`--s1`, §4, is an early scaffold fan-out supersedes); the
   CPU-bound archs (FP/SHyp) by the thread pool + double-buffered read, and fan-out's independent
   pipelines lift them further still. Cumulative warm, r0→r7: FP **36.9→204.4 patch/s (×5.5)**,
-  SHyp **×5.0**, ResFP **×3.7**, ResSHyp **10.3→38.2 (×3.7)**.
+  SHyp **×5.0**, ResFP **×3.7**, ResSHyp **10.4→38.2 (×3.7)**.
 - **Storage was hiding the CPU parallelism.** The cold SD-read ceiling is ~92 patch/s (~23.5 MB/s) for
   every arch; the CPU-bound archs' warm throughput (FP 204, SHyp 147) runs 2–6× past it, so on the real
   SD card FP/SHyp are read-bound while ResFP/ResSHyp (warm ≈ cold from r3 on) are not. The r0 cold/warm
   gap (FP 26.6 → 36.9, SHyp 22.4 → 29.4) is the same signal at the sequential baseline.
-- **Parallelism costs power but saves energy.** FP r0→r7 **0.269→0.079 J/patch (×3.4)**;
-  ResSHyp **1.153→0.551 (×2.1)**. The draw is PL(DPU)-dominated for every arch — the residual archs
+- **Parallelism costs power but saves energy.** FP r0→r7 **0.271→0.079 J/patch (×3.4)**;
+  ResSHyp **1.157→0.551 (×2.1)**. The draw is PL(DPU)-dominated for every arch — the residual archs
   push far more of it; cross-arch ResSHyp costs **~7× the energy/patch** of FP.
 - **DDR is not a bottleneck.** vaitrace: the dominant DPU traffic (`g_a`) is ~0.65 GB/s (residual) to
   ~1.6 GB/s (plain), **~11–26×** under the 17.06 GB/s DDR4 ceiling (§2). CPU-side DDR is an estimate
