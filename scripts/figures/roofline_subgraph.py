@@ -206,7 +206,7 @@ for k, (_, x, y_sc, _) in SC.items():
 _ha_x, _ha_y_agg = SC["h_a"][1], AGG["h_a"][0]
 _combined_eff = (AGG["h_a"][3] + AGG["h_s"][3]) / 2  # equal-sized groups -> mean of means
 ax.annotate(
-    f"$\\sim${_combined_eff:.0f}%",
+    f"{_combined_eff:.0f}%",
     (_ha_x, _ha_y_agg),
     xytext=(2, 5),
     textcoords="offset points",

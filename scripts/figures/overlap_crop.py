@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Overlap figure (DATE'27): the per-patch seam, qualitatively + quantitatively.
 
-Panels:
-  (left)   overlap 0 reconstruction crop  -- visible seams at patch boundaries
-  (middle) overlap 2 reconstruction crop  -- same scene window, seams gone
-  (right)  seam-band PSNR vs overlap, all arch x lambda -- the quantitative closure
+Three independent panels, each saved as its own ``{pdf,png}`` so the manuscript can
+lay them out as LaTeX subfigures and cross-reference them separately:
+  overlap_ov0   -- overlap 0 reconstruction crop (visible seams at patch boundaries)
+  overlap_ov2   -- overlap 2 reconstruction crop (same scene window, seams gone)
+  overlap_psnr  -- seam-band PSNR vs overlap, all arch x lambda (the quantitative closure)
 
-Same scene window in both crops (ResSHyp lambda1000, biggest seam), so every patch
-boundary (red ticks, both axes) is at the identical spot. Display = log-intensity.
+The two crops share one scene window (ResSHyp lambda1000, biggest seam) and one
+grayscale mapping, so the seam is the only thing that changes between them; every
+patch boundary (red edge ticks) is at the identical spot. Display = log-intensity.
+The "overlap = 0 / 2" panel titles live in the LaTeX subcaptions, not the images.
 
 Data sources (the overlap study A3 is frozen -- not part of the date27 campaign):
   seam PSNR  <- results/benchmark_stream_overlap/overlap_table.csv   (in tree, survived P0.C)
@@ -26,7 +29,7 @@ window) are kept so the window can be moved, zoomed, or shown as a five-across
 strip without touching the 23 GB archive again. See results/date27/MANIFEST.md.
 
 Run:  conda activate DDC_FPGA && python scripts/figures/overlap_crop.py
-Out:  LaTeX/SAR_DDC_FPGA_DATE27/figures/images/overlap_crop.{pdf,png}
+Out:  LaTeX/SAR_DDC_FPGA_DATE27/figures/images/overlap_{ov0,ov2,psnr}.{pdf,png}
 """
 import csv
 
@@ -49,6 +52,12 @@ CROP_ROW0, CROP_COL0, CROP_SIZE = 7788, 6144, 1024
 
 ROW_C, COL_B, HALF = 8300, 6656, 170  # hand-pinned textured block (Hamburg), full-tile coords
 PATCH = 256
+
+# --- per-panel figure sizes (inches). The two crops are square and identical so they
+# read as a matched pair when scaled to the same subfigure width; the PSNR panel is a
+# touch wider/shorter to match the wider subfigure it goes in. ---
+CROP_FIGSIZE = (2.6, 2.6)
+PSNR_FIGSIZE = (4.0, 3.0)
 
 
 def load_crop(ov):
@@ -99,10 +108,25 @@ lc0, lc1 = COL_B - HALF - CROP_COL0, COL_B + HALF - CROP_COL0
 crop0 = logimg(load_crop(0)[lr0:lr1, lc0:lc1])
 crop2 = logimg(load_crop(2)[lr0:lr1, lc0:lc1])
 Hc, Wc = crop0.shape
-vmin, vmax = np.percentile(crop0, [2, 98])
+vmin, vmax = np.percentile(crop0, [2, 98])  # one mapping for both crops (fair comparison)
 # patch boundaries inside the render window (window-local coords), both axes
 verts = patch_boundaries(COL_B - HALF, COL_B + HALF)
 horis = patch_boundaries(ROW_C - HALF, ROW_C + HALF)
+
+
+def save_crop(img, name):
+    """One square crop panel: image + red patch-boundary ticks, no axes, tight margin."""
+    fig, ax = plt.subplots(figsize=CROP_FIGSIZE)
+    fig.subplots_adjust(0, 0, 1, 1)  # axes fill the figure; the red ticks then stick out
+    ax.imshow(img, cmap="gray", vmin=vmin, vmax=vmax, aspect="equal")
+    edge_ticks(ax, verts, horis, Hc, Wc)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    save_figure(fig, name, pad_inches=0.02)
+
+
+save_crop(crop0, "overlap_ov0")
+save_crop(crop2, "overlap_ov2")
 
 # --- seam PSNR vs overlap (dedupe: prefer warm; quality is mode-independent) ---
 series = {}
@@ -120,15 +144,7 @@ STYLE = {"FP": ARCH_COLORS["FP"], "ResSHyp": ARCH_COLORS["ResSHyp"]}
 # dash+gap cycle is visible even inside a short legend handle.
 LS = {20: (0, (2, 1.3)), 1000: "-"}
 
-fig, axes = plt.subplots(1, 3, figsize=(10.4, 3.5), gridspec_kw=dict(width_ratios=[1, 1, 1.25]))
-for ax, img, label in ((axes[0], crop0, "overlap=0"), (axes[1], crop2, "overlap=2")):
-    ax.imshow(img, cmap="gray", vmin=vmin, vmax=vmax, aspect="equal")
-    edge_ticks(ax, verts, horis, Hc, Wc)
-    ax.set_xlabel(label, fontsize=10)
-    ax.set_xticks([])
-    ax.set_yticks([])
-
-axp = axes[2]
+fig, axp = plt.subplots(figsize=PSNR_FIGSIZE)
 # Plot/legend order: both archs at lambda=1000 first, then both at lambda=20, so a
 # 2-column legend fills as one row per lambda (top=1000, bottom=20).
 for lam in (1000, 20):
@@ -147,16 +163,16 @@ for lam in (1000, 20):
             lw=1.6,
             label=f"{DISPLAY[arch]} $\\lambda${lam}",
         )
-axp.set_xlabel("overlap (px)")
-axp.set_ylabel("seam-band PSNR (dB)")
+axp.set_xlabel("overlap [px]")
+axp.set_ylabel("seam-band PSNR [dB]")
 axp.set_xticks([0, 2, 4, 8, 16])
 axp.spines[["top", "right"]].set_visible(False)
 axp.legend(
-    fontsize=10, frameon=False, loc="lower right", ncol=2, handlelength=2.6, columnspacing=1.0
+    fontsize=9, frameon=False, loc="lower right", ncol=2, handlelength=2.6, columnspacing=1.0
 )
-
 fig.tight_layout()
-save_figure(fig, "overlap_crop")
+save_figure(fig, "overlap_psnr")
+
 print(f"  verts={verts} horis={horis}")
 for k, rec in sorted(series.items()):
     print(f"  {k}: " + " ".join(f"ov{o}={rec[o]:.2f}" for o in sorted(rec)))
