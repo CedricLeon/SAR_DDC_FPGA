@@ -6,8 +6,8 @@ loaders, one band/label convention — but two separate floats in the manuscript
 this script emits two standalone figures rather than one two-panel figure:
 
 * ``--throughput`` → **F2** (Section III): bar height = cumulative speedup (each arch
-  ÷ its own ``seq``). Two shaded bands (mt–knee "scheduling", +neon–+ent
-  "CPU kernels"); ``seq`` and the knee→+neon boundary are set off by an unshaded gap.
+  ÷ its own ``seq``). Two shaded bands (mt–knee "DPU scheduling", +neon–+ent
+  "CPU work"); ``seq`` and the knee→+neon boundary are set off by an unshaded gap.
   The first/last rung group is labelled with its absolute patch/s.
 * ``--energy``     → **F5** (Section IV): bar height = J/patch (PS+PL INA226,
   cooldown-gated). Same rungs, same bands. Message: parallelism costs power but
@@ -61,9 +61,9 @@ def _positions() -> np.ndarray:
 
 
 def _bands(ax, pos, ytop, *, log=False):
-    """Shade the 'scheduling' (mt–knee) and 'CPU kernels' (+neon–+ent) bands."""
+    """Shade the 'DPU scheduling' (mt–knee) and 'CPU work' (+neon–+ent) bands."""
     y_label = ytop / 1.12 if log else ytop * 0.985
-    for name, lo, hi in (("scheduling", 1, 4), ("CPU kernels", 5, 7)):
+    for name, lo, hi in (("DPU scheduling", 1, 4), ("CPU work", 5, 7)):
         x0, x1 = pos[lo] - HALFW, pos[hi] + HALFW
         ax.axvspan(x0, x1, color="#000000", alpha=0.05, lw=0, zorder=0)
         ax.text(

@@ -29,7 +29,7 @@ Points:
     --threads KNEE[arch] --neon --prefetch --entropy) -- the deployed configuration,
     P0.9 -- from results/date27/vaitrace/<arch>/vaitrace_r7_knee{K}.txt. FP resolves to
     the 12 L knee. The g_a-residual and h_a/h_s aggregates are read from the ResSHyp
-    r7 knee-20 trace, where all three subgraphs run together in one condition.
+    r7 knee-15 trace, where all three subgraphs run together in one condition.
   arithmetic intensity uses the static xmodel_info byte estimate (const+input+output),
   the same denominator for the x-axis and any bandwidth read off the plot.
 
@@ -145,7 +145,7 @@ def agg(rows, name):
 
 AGG = {
     "g_a": agg(knee_fp, "g_a"),  # FP plain g_a, 3 cores @ 12 L knee
-    "g_a_res": agg(knee_rsh, "g_a"),  # ResSHyp residual g_a, 3 cores @ 20 L knee
+    "g_a_res": agg(knee_rsh, "g_a"),  # ResSHyp residual g_a, 3 cores @ 15 L knee
     "h_a": agg(knee_rsh, "h_a"),
     "h_s": agg(knee_rsh, "h_s"),
 }
@@ -206,9 +206,9 @@ for k, (_, x, y_sc, _) in SC.items():
 _ha_x, _ha_y_agg = SC["h_a"][1], AGG["h_a"][0]
 _combined_eff = (AGG["h_a"][3] + AGG["h_s"][3]) / 2  # equal-sized groups -> mean of means
 ax.annotate(
-    f"{_combined_eff:.0f}%",
+    f"$\\sim${_combined_eff:.0f}%",
     (_ha_x, _ha_y_agg),
-    xytext=(2, 6),
+    xytext=(2, 5),
     textcoords="offset points",
     ha="left",
     va="bottom",

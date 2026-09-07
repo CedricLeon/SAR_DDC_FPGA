@@ -146,7 +146,7 @@ text/figures gets computed by a `python3` command first (repo convention).
 | r1 `mt` | 4 CPU workers, shared serialized DPU (old `pool`) | obvious first step; big for CPU-bound archs |
 | r2 `fo3` | fan-out, 3 lanes (1/core), default round-robin placement | the *structure* change, isolated from oversubscription (3 L not 4 L — 4 on 3 cores is the imbalance case the lane study explains later) |
 | r3 `fo3p` | + pinned subgraph-to-core placement | the core fix |
-| r4 `knee` | fan-out at per-arch knee lanes (FP 12/SH 24/ResFP 6/ResSH 20), pinned | lane-count selection |
+| r4 `knee` | fan-out at per-arch knee lanes (FP 12/SH 21/ResFP 6/ResSH 15), pinned | lane-count selection |
 | r5 `+neon` | + NEON log-approx normalization | CPU kernel opt |
 | r6 `+dbuf` | + double-buffered row-block read | CPU kernel opt |
 | r7 `+ent` | + optimized rANS (flattened CDF + reciprocal, `4ddbcc8`) | CPU kernel opt |
@@ -220,7 +220,8 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   ~0) — replaces the old "2.8×" everywhere. Prose hook: naive round-robin leaves ResSHyp fan-out
   (13.7) barely above plain `mt` (12.4).
 - **Knee lanes (E2, all CPU opts on): FP 12 L** (was 32; peak 206.7 @ 48 L, 12 L within 1 %) ·
-  SHyp 24 · ResFP 6 · ResSHyp 20 unchanged. **Resolved 2026-09-01: FP r4–r7 re-run at 12 L**
+  **SHyp 21 L** (was 24; resolved 2026-09-06 after sampling multiples of 3) · ResFP 6 ·
+  **ResSHyp 15 L** (was 20; resolved 2026-09-06). **Resolved 2026-09-01: FP r4–r7 re-run at 12 L**
   (`results/date27/ladder/FP/r{4,5,6,7}_fo_t12_*_warm.json`; the 32 L files are kept, not deleted). r4→r7 @ 12 L: 144.0 → 172.5 → 189.8 → 204.4 patch/s
   (non-decreasing). r7@12 L agrees with the independent E2 lane-grid point at 12 L (205.3) to
   −0.41 %, confirming the knee. **Caveat, not a data problem**: r4–r6 @ 12 L are *not* all within 1 %
@@ -230,8 +231,10 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   pipeline's own saturation lane-count isn't necessarily the fully-optimized one's. The ladder
   deliberately pins one lane count across all cumulative rungs for a clean single progression; only
   the final (r7, full-stack) rung is guaranteed by construction to sit at the measured knee. Rule-of-
-  thumb prose: FP knee = 4× #cores — the old "3–4×" guess now has a measured anchor (SHyp stays
-  higher, 8×, GC entropy).
+  thumb prose: FP knee = 4× #cores; hyperprior archs need multiples of 3 (3 DPU subgraphs per lane →
+  round-robin balance) — SHyp 21=7×3, ResSHyp 15=5×3. **Resolved 2026-09-06: SHyp/ResSHyp r4–r7
+  re-run at 21/15 L** (`results/date27/ladder/{SHyp,ResSHyp}/r{4,5,6,7}_fo_t{21,15}_*_warm.json`; old
+  24 L / 20 L files kept). Metrics within measurement noise of old knees — shift is definitional.
 - **Sequential per-patch accounting — complete since P0.8 (2026-09-04).** `r0_seq_warm.json` now
   carries every stage on one instrument over the full scene, and they close on the measured total
   to within 0.2 %. **This is the canonical sequential breakdown** (`_figutils.load_seq_stages`);
@@ -260,7 +263,7 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   | | `g_a` plain | `g_a` residual | `h_a` | `h_s` |
   | --- | --- | --- | --- | --- |
   | 1 lane | 89.5 % | 96.6 % | 27.1 % | 19.9 % |
-  | deployed (r7 @ knee) | 82.3 % | 95.9 % | 14.1 / 20.0 % | 15.3 / 20.4 % |
+  | deployed (r7 @ knee) | 82.3 % | 95.9 % | 14.1 / 20.8 % | 15.5 / 19.7 % |
 
   (paired cells = SHyp / ResSHyp.) **The 1-lane layer is architecture-independent** — identical across
   archs, a property of the subgraph alone — and it is the characterization the figure exists to make.
@@ -289,12 +292,12 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   | arch | knee | %usr | %sys | %idle | busy |
   | --- | --- | --- | --- | --- | --- |
   | FP | 12 L | 67.4 | 8.3 | 24.3 | 75.7 |
-  | SHyp | 24 L | 77.0 | 8.3 | 14.7 | 85.3 |
+  | SHyp | 21 L | 76.4 | 8.5 | 15.1 | 84.9 |
   | ResFP | 6 L | 13.2 | 4.2 | 82.6 | 17.4 |
-  | ResSHyp | 20 L | 18.2 | 4.5 | 77.4 | 22.6 |
+  | ResSHyp | 15 L | 18.5 | 4.7 | 76.9 | 23.1 |
 
-  The CPU-bound / DPU-bound split is stark and quotable: **67–77 % %usr for FP/SHyp against
-  13–18 % for ResFP/ResSHyp**. *This validates the trace method rather than contradicting it*:
+  The CPU-bound / DPU-bound split is stark and quotable: **67–76 % %usr for FP/SHyp against
+  13–19 % for ResFP/ResSHyp**. *This validates the trace method rather than contradicting it*:
   trace-derived CPU busy for FP is 63–68 %, against mpstat's 67.4 % **%usr** — near-identical — and
   the gap to mpstat's 75.7 % total busy is the 8.3 % kernel time the trace cannot see (it only marks
   explicit pipeline stages: normalize, entropy, `g_a_cpu`). So "trace busy ≈ %usr" is the honest
@@ -357,15 +360,16 @@ r0–r6 run entropy-off. Its isolated speedup can additionally be quoted from th
   the campaign: campaign SHA, `make clean` rebuild, outputs into `results/date27/`, one MANIFEST
   line per run, λ=20/seed 0/overlap 2/snap grid/full scene/warm/power-on/batch 1.
   - **FP traces at the 12 L knee.** FP's `vaitrace/FP/vaitrace_knee32.txt` and
-    `occupancy/FP/r{4,7}_full.csv` were taken at 32 L, before the knee moved to 12 (§4.0). Re-run:
-    `vaitrace_knee12.txt` + `r4_full.csv` / `r7_full.csv` at `--threads 12`. Keep the 32 L files
+    `occupancy/FP/r{4,7}_full_t32.csv` were taken at 32 L, before the knee moved to 12 (§4.0). Re-run:
+    `vaitrace_knee12.txt` + `r{4,7}_full_t12.csv` at `--threads 12`. Keep the 32 L files
     (provenance, as with the ladder). Blocks F3's FP aggregate dots and any F7 panel.
   - **`mpstat` CPU probe at the knee, all 4 archs** (4 runs). The trace-derived `kind=cpu` busy %
-    stays the basis of F4's dashed series — it is self-consistent across all 15 lane counts and free
+    stays the basis of F4's dashed series — it is self-consistent across all lane counts and free
     — but **every CPU-occupancy number that lands in prose comes from `mpstat`**, so it stays
     comparable with the %usr/%sys/%idle framing `onboard_pipeline.md` §6 already uses. Knee only
-    (FP 12 / SHyp 24 / ResFP 6 / ResSHyp 20); the full-grid re-run (~60 runs, 2.5–3 h) is
+    (FP 12 / SHyp 21 / ResFP 6 / ResSHyp 15); the full-grid re-run is
     **explicitly not worth it** — resolved 2026-09-01. Output → `results/date27/cpu_probe/<arch>/`.
+    **Resolved 2026-09-06: SHyp/ResSHyp re-probed at new knees** (21/15 L); old 24/20 L files kept.
 
 ### 4.1a Cleanup + sweep specification (validated 2026-08-31 — execute exactly, don't improvise)
 
@@ -392,12 +396,12 @@ Figure scripts will read from this tree only.
 
 **Sweep table.** Global setup for every run: λ=20, seed 0, overlap 2, snap grid, full scene, warm
 read, power sampling on, batch 1; `make clean` rebuild once at campaign start; knee lanes = FP 32 /
-SH 24 / ResFP 6 / ResSH 20 *(as run; FP's measured knee moved to 12 L — gate review, §4.0)*.
+SH 24 / ResFP 6 / ResSH 20 *(as run; FP's knee moved to 12 L, SHyp to 21 L, ResSHyp to 15 L — gate review, §4.0)*.
 
 | ID | Experiment | Configs | Per arch | Feeds |
 | --- | --- | --- | --- | --- |
 | E1 | Ladder r0–r7 (cumulative) | r0 `seq` · r1 `--p0 --threads 4` · r2 fan-out 3 L *naive* placement · r3 fan-out 3 L pinned (default) · r4 fan-out knee-L pinned · r5 `+--neon` · r6 `+--prefetch` · r7 `+--entropy` | 8 warm runs + 1 cold `seq` (SD-read number) | F2 ladder, F5 energy, headline numbers |
-| E2 | Lane grid, all CPU opts on | `--p0 --fanout --prefetch --neon --entropy --threads N`, N ∈ {1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64} + subsampled occupancy trace per N (existing `--max-rows` methodology) | 15 runs + traces | F4 lane fig, F6 fp_cpu_stack, knee verification |
+| E2 | Lane grid, all CPU opts on | `--p0 --fanout --prefetch --neon --entropy --threads N`, N ∈ {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 16, 18, 20, 21, 24, 27, 30, 32, 48, 64} + subsampled occupancy trace per N (existing `--max-rows` methodology) | 22 runs + traces | F4 lane fig, F6 fp_cpu_stack, knee verification |
 | E3 | Per-stage s0, **entropy OFF** (true sequential baseline) + xdputil peaks | `benchmark_hardware` s0/compress @ λ=20; `collect_roofline.py` | 1 + 1 | F1 stacked_time, Tab. 2 |
 | E4 | vaitrace per-core counters | 1-lane (uncontended) + knee-lane operating point | 2 | F3 3-core roofline dots |
 | E5 | Occupancy checkpoints | full traces at r0, r4, r7 (configs exactly as E1) | 3 | F7 / occupancy text |

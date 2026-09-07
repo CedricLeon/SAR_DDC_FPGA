@@ -286,7 +286,7 @@ seed s0, λ=20 (throughput is λ-independent).
 We state **both models explicitly**, as these numbers evolve with the design (see §5/§10):
 
 - **FP** (factorized-prior, CPU-bound; `s0, λ=20, knee 12 L`): **52.4 MB/s warm** (23.5 cold), ~202× compression
-- **ResSHyp** (residual scale-hyperprior, DPU-bound; `s0, λ=20, knee 20 L`): **9.8 MB/s** (SD read fully hidden → warm ≈ cold), ~237× compression
+- **ResSHyp** (residual scale-hyperprior, DPU-bound; `s0, λ=20, knee 15 L`): **9.8 MB/s** (SD read fully hidden → warm ≈ cold), ~237× compression
 
 - **(a) Real-time** — compress as fast as acquired (**needs 358 MB/s**): FP → **6.9× short warm**
   (15.2× cold); ResSHyp → **37× short**.
@@ -320,7 +320,7 @@ Platform constants: downlink **270 Mb/s net / 300 gross**; SSMM **384 Gbit BOL /
 ground swath **30 km**; SLC **int16 4 B/px**.
 
 **Table B — current implementation vs. the worst-case objective** (single ZCU102, best schedule
-**fan-out** at each arch's knee — FP 12 lanes, ResSHyp 20; seed s0, λ=20; **warm** basis, **cold**
+**fan-out** at each arch's knee — FP 12 lanes, ResSHyp 15; seed s0, λ=20; **warm** basis, **cold**
 SD-testbed in parentheses; *evolves with the design*):
 
 | metric | FP (CPU-bound) | ResSHyp (DPU-bound) | requirement |

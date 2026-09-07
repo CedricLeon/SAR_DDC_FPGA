@@ -14,8 +14,8 @@ Three stacked panels over a shared log2 lane axis, one line per architecture
   (~100 %) while CPU-bound ones plateau a third idle with CPU higher.
 * **energy** — J/patch, from the same JSONs.
 
-A star marks each arch's **knee** (§4.0 gate review: FP 12 / SH 24 / ResFP 6 /
-ResSH 20) on every panel, annotated with that panel's value. Missing lane counts
+A star marks each arch's **knee** (§4.0 gate review: FP 12 / SH 21 / ResFP 6 /
+ResSH 15) on every panel, annotated with that panel's value. Missing lane counts
 are skipped.
 
 P1.0 migration: repointed to results/date27/; the ``sys.path`` hack into
@@ -46,6 +46,7 @@ from _figutils import (
     save_figure,
 )
 from matplotlib.lines import Line2D
+from matplotlib.transforms import ScaledTranslation
 
 LANES = LANE_GRID
 TICKS = LANE_GRID  # tick + label every measured lane count (not just powers of 2)
@@ -120,13 +121,24 @@ def main():
             _peak(ax_o, arch, cx, cu, "{:.0f}%", CPU_OCC_DY.get(arch, 7))
 
     for ax in (ax_t, ax_o, ax_e):
-        ax.grid(alpha=0.3, which="both")
+        ax.grid(alpha=0.22, which="both")
+        # a darker vertical rule at each per-arch knee
+        for m in sorted(set(KNEE.values())):
+            ax.axvline(m, color="#6f6f6f", lw=0.7, alpha=0.5, zorder=0)
     ax_o.axhline(100, color="gray", ls="--", lw=1, alpha=0.7)  # full DPU saturation
 
     ax_t.set_xscale("log", base=2)
     ax_e.set_xticks(TICKS)
     ax_e.set_xticklabels(TICKS, fontsize=7)
     ax_e.xaxis.set_minor_locator(plt.NullLocator())  # no extra unlabelled log2 minor ticks
+    # nudge the labels of near-touching tick pairs apart (points; +right / -left)
+    _LABEL_DX = {15: -2.0, 16: 2.0, 20: -2.0, 21: 2.0, 30: -1.0, 32: 1.0}
+    for lab in ax_e.get_xticklabels():
+        dx = _LABEL_DX.get(int(lab.get_text()))
+        if dx:
+            lab.set_transform(
+                lab.get_transform() + ScaledTranslation(dx / 72.0, 0, fig.dpi_scale_trans)
+            )
     ax_e.set_xlabel("CPU worker threads (log2 scale)", fontsize=11)
     ax_t.set_ylabel("throughput [patch/s]", fontsize=11)
     ax_o.set_ylabel("occupancy [%]", fontsize=11)

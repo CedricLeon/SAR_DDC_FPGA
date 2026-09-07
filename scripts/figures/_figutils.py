@@ -118,12 +118,12 @@ RUNG_LABELS: dict[int, str] = {
 
 # The two shaded bands the paper draws over the ladder (F2's job, not P1.0's — kept
 # here as the SSOT for the rung→band split). Ranges are inclusive rung indices.
-LADDER_BANDS: dict[str, tuple] = {"scheduling": (1, 4), "cpu kernels": (5, 7)}
+LADDER_BANDS: dict[str, tuple] = {"DPU scheduling": (1, 4), "CPU work": (5, 7)}
 
 # ======================================================================================
 # Knee lanes — per-arch fan-out operating point (§4.0 gate review, 2026-09-01)
 # ======================================================================================
-KNEE: dict[str, int] = {"FP": 12, "SHyp": 24, "ResFP": 6, "ResSHyp": 20}
+KNEE: dict[str, int] = {"FP": 12, "SHyp": 21, "ResFP": 6, "ResSHyp": 15}
 
 # ======================================================================================
 # results/date27/ loaders — one per subdir, resolving the flag-encoded filenames
@@ -179,7 +179,30 @@ def cold_read_ceiling(arch: str) -> float:
 
 
 # ---- lanes/<arch>/ -------------------------------------------------------------------
-LANE_GRID: list[int] = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64]
+LANE_GRID: list[int] = [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    12,
+    15,
+    16,
+    18,
+    20,
+    21,
+    24,
+    27,
+    30,
+    32,
+    48,
+    64,
+]
 
 
 def lane_json_path(arch: str, n: int) -> Path:
@@ -283,15 +306,27 @@ def vaitrace_path(arch: str, which: str) -> Path:
 def occupancy_full_trace_path(arch: str, rung: int) -> Path:
     """Full-scene occupancy trace at ladder rung 4 or 7 (the only two captured).
 
-    Resolved at ``KNEE[arch]`` lanes when a lane-tagged capture exists
-    (``r{rung}_full_t{K}.csv`` — FP's P0.7 re-trace at its 12 L knee), else the
-    untagged ``r{rung}_full.csv`` (captured at the as-run knee, 32 L for FP).
+    Resolved at ``KNEE[arch]`` lanes: ``r{rung}_full_t{K}.csv``.
     """
     if rung not in (4, 7):
         raise ValueError(f"occupancy/ only has r4 and r7 full-scene traces, not r{rung}")
-    d = DATE27 / "occupancy" / arch
-    tagged = d / f"r{rung}_full_t{KNEE[arch]}.csv"
-    return tagged if tagged.is_file() else d / f"r{rung}_full.csv"
+    path = DATE27 / "occupancy" / arch / f"r{rung}_full_t{KNEE[arch]}.csv"
+    if not path.is_file():
+        raise FileNotFoundError(f"expected occupancy trace is missing: {path}")
+    return path
+
+
+# Occupancy attribution lives in the sibling module fanout_occupancy (kept separate so
+# the trace-parsing stays out of this loader file); re-exported here so every figure
+# imports from one place.
+from fanout_occupancy import (  # noqa: E402
+    cpu_occupancy_series,
+    lanes_available,
+    occupancy,
+    occupancy_series,
+)
+
+__all_occupancy__ = ["occupancy", "occupancy_series", "cpu_occupancy_series", "lanes_available"]
 
 
 def checks_dir(arch: str) -> Path:
@@ -307,18 +342,18 @@ def cpu_probe_mpstat(arch: str) -> dict[str, float]:
     there is no lane sweep (§4.0). ``all``-row samples, first/last 10 % trimmed as
     ramp/drain; reproduces the §4.0 gate-review table.
     """
-    hits = sorted((DATE27 / "cpu_probe" / arch).glob("knee_*_mpstat.log"))
-    if not hits:
-        raise FileNotFoundError(f"no knee_*_mpstat.log in {DATE27 / 'cpu_probe' / arch}")
+    path = DATE27 / "cpu_probe" / arch / f"knee_{KNEE[arch]}_mpstat.log"
+    if not path.is_file():
+        raise FileNotFoundError(f"expected cpu_probe file is missing: {path}")
     rows = []
-    with open(hits[0]) as fh:
+    with open(path) as fh:
         for line in fh:
             p = line.split()
             # "HH:MM:SS all %usr %nice %sys %iowait %irq %soft %steal %guest %gnice %idle"
             if len(p) >= 12 and p[1] == "all" and p[0][2] == ":":
                 rows.append((float(p[2]), float(p[4]), float(p[11])))
     if len(rows) < 5:
-        raise ValueError(f"{hits[0]}: only {len(rows)} mpstat 'all' rows — cannot trim")
+        raise ValueError(f"{path}: only {len(rows)} mpstat 'all' rows — cannot trim")
     k = max(1, len(rows) // 10)
     win = rows[k:-k]
     n = len(win)

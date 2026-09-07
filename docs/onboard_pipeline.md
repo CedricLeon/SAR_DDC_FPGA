@@ -209,9 +209,9 @@ dropped from the lane figure.
 **Operating point per arch** = the **knee**: the smallest lane count within ~1 % of the warm-throughput
 peak, clear of the XRT wall. Trading ≤1 % throughput for far less oversubscription (fewer threads, less
 memory, more XRT margin), it is what the paper reports and what the r0–r7 ladder pins across every rung:
-**FP 12 / SHyp 24 / ResFP 6 / ResSHyp 20 lanes**. The unconstrained warm
+**FP 12 / SHyp 21 / ResFP 6 / ResSHyp 15 lanes**. The unconstrained warm
 peak sits higher and later for the CPU-bound archs (FP 206.7 @ 48 L, SHyp 147.6 @ 48 L) but buys nothing
-over the knee; the DPU-bound archs peak essentially at their knee (ResFP 41.1 @ 6 L, ResSHyp 38.6 @ 24 L).
+over the knee; the DPU-bound archs peak essentially at their knee (ResFP 41.1 @ 6 L, ResSHyp 38.4 @ 15 L).
 The knee also sidesteps SHyp's noisy iters-1 48 L peak. Reference table: **§10**.
 
 **Why iters=1 suffices.** Each point is a full-scene average over 7 540 patches, so the law of large
@@ -361,7 +361,7 @@ gets while its neighbours run. Two layers therefore answer two different questio
 | --- | --- | --- | --- | --- |
 | **1 lane** (uncontended) | 89.5 % | 96.6 % | 27.1 % | 19.9 % |
 | 3 lanes, full stack | 86.3 / 86.6 % | 95.9 / 96.0 % | 20.4 / 22.9 % | 21.0 / 22.2 % |
-| **deployed** (r7 @ knee) | 82.3 % | 95.9 % | 14.1 / 20.0 % | 15.3 / 20.4 % |
+| **deployed** (r7 @ knee) | 82.3 % | 95.9 % | 14.1 / 20.8 % | 15.5 / 19.7 % |
 
 *(paired cells are SHyp / ResSHyp; `results/date27/vaitrace/<arch>/vaitrace_r7_knee<N>.txt`.)*
 
@@ -391,7 +391,7 @@ lane *k*'s `g_a` → core *k* mod 3, validated against the `device_core_id` logs
 reconstructed compute intervals `[t1 − e, t1]` on it over the **steady-state window** (last lane to
 start → first lane to finish, trimming fill + drain). Result (occupancy panel of the lane-scaling figure,
 all archs × lanes; `fanout_occupancy.py`): at each arch's knee the residual archs saturate the 3 cores
-(ResFP 99.6 %, ResSHyp 95.8 %), the light archs plateau **~30–38 % idle** (FP 70.1 %, SHyp 62.5 % busy) —
+(ResFP 99.6 %, ResSHyp 95.8 %), the light archs plateau **~30–39 % idle** (FP 70.1 %, SHyp 61.1 % busy) —
 so their roof is not the DPU. Two mechanisms surface: **~2 lanes/core** are needed to hide the CPU-feed
 gap (ResFP 87.5 % → 99.6 % from 3 → 6 lanes, its knee), and a **4-lane dip** — a load imbalance when the
 round-robin stacks two heavy `g_a` on one core (lanes ≠ 3·k): ResSHyp falls from 82.5 % at 3 lanes to
@@ -407,9 +407,9 @@ trace attribution at the same operating point:
 | arch | knee | CPU %usr | %sys | %idle | DPU busy (mean of 3 cores) | binding side |
 | --- | --- | --- | --- | --- | --- | --- |
 | FP | 12 L | 67.4 | 8.3 | 24.3 | 70.1 | CPU (balanced) |
-| SHyp | 24 L | 77.0 | 8.3 | 14.7 | 62.5 | **CPU** |
+| SHyp | 21 L | 76.4 | 8.5 | 15.1 | 61.1 | **CPU** |
 | ResFP | 6 L | 13.2 | 4.2 | 82.6 | 99.6 | **DPU** |
-| ResSHyp | 20 L | 18.2 | 4.5 | 77.4 | 95.8 | **DPU** |
+| ResSHyp | 15 L | 18.5 | 4.7 | 76.9 | 95.8 | **DPU** |
 
 Kernel time stays 4–8 % throughout. For the CPU-bound archs the entropy coder dominates: uncontended
 (1 lane) FP spends **4.72 ms/patch in `eb_enc` + 3.71 ms in `normalize`** (8.95 ms total), SHyp **9.65 ms
@@ -435,8 +435,8 @@ write, queueing).
 
 **This is what the knee *is*, measured.** Past 12 lanes the inflation keeps climbing while throughput
 does not: 12 L → 64 L costs **22 % more CPU work per patch (12.23 → 14.94 ms) for 0 % more throughput**
-(205.3 → 205.4). SHyp shows the same shape more sharply (14.11 ms at 1 L → 28.72 at its 24 L knee,
-2.04×). Choosing the knee over the peak is therefore not a tie-break on noise — it is refusing to pay
+(205.3 → 205.4). SHyp shows the same shape more sharply (13.8 ms at 1 L → 32.1 at its 21 L knee,
+2.33×). Choosing the knee over the peak is therefore not a tie-break on noise — it is refusing to pay
 contention for nothing.
 
 *(Sources: `results/date27/cpu_probe/` for %usr/%sys/%idle, the E2 lane traces for per-patch CPU work
@@ -623,7 +623,7 @@ and `results/date27/lanes/` and are canonical in §4.0.
 **The r0–r7 ladder** (cumulative — each rung = the one above + the named change; `mt` = 4-worker thread
 pool, `fo3` = fan-out 3 lanes naive placement, `fo3p` = + pinned subgraph→core placement, `knee` =
 fan-out at the per-arch knee, `+dbuf` = double-buffered row-block read, `+ent` = optimized rANS). Knee
-lanes: **FP 12 / SHyp 24 / ResFP 6 / ResSHyp 20**.
+lanes: **FP 12 / SHyp 21 / ResFP 6 / ResSHyp 15**.
 
 *Throughput — warm patch/s (r0 cold in parens = SD-testbed floor); **bold** = the r7 operating point:*
 
@@ -633,12 +633,12 @@ lanes: **FP 12 / SHyp 24 / ResFP 6 / ResSHyp 20**.
 | r1 mt | 83.7 | 58.0 | 13.4 | 12.4 |
 | r2 fo3 (naive) | 99.0 | 72.7 | 31.7 | 13.7 |
 | r3 fo3p (pinned) | 99.4 | 79.0 | 31.7 | 29.5 |
-| r4 knee | 144.0 | 111.9 | 38.5 | 34.1 |
-| r5 +neon | 172.5 | 128.0 | 38.8 | 34.8 |
-| r6 +dbuf | 189.8 | 143.8 | 41.0 | 38.2 |
-| r7 +ent | **204.4** | **146.8** | **41.1** | **38.2** |
+| r4 knee | 144.0 | 113.4 | 38.5 | 34.3 |
+| r5 +neon | 172.5 | 128.7 | 38.8 | 35.3 |
+| r6 +dbuf | 189.8 | 143.6 | 41.0 | 38.3 |
+| r7 +ent | **204.4** | **146.4** | **41.1** | **38.4** |
 
-*SLC MB/s = patch/s × 0.256 (the 1.93 GB tile over 7 540 patches) → r7: FP 52.4, SHyp 37.6, ResFP 10.5,
+*SLC MB/s = patch/s × 0.256 (the 1.93 GB tile over 7 540 patches) → r7: FP 52.4, SHyp 37.5, ResFP 10.5,
 ResSHyp 9.8. On the real SD card the light archs are read-bound at ~23.5 MB/s (cold-read ceiling,
 `results/date27/ladder/*/r0_seq_cold.json`); the residual archs are compute-bound (cold ≈ warm).*
 
@@ -658,13 +658,13 @@ I/O costs 0.92–0.94 ms/patch and is near-constant in absolute terms.
 | arch | knee lanes | patch/s | SLC MB/s | J/patch |
 | --- | --- | --- | --- | --- |
 | FP | 12 | 204.4 | 52.4 | 0.079 |
-| SHyp | 24 | 146.8 | 37.6 | 0.102 |
+| SHyp | 21 | 146.4 | 37.5 | 0.103 |
 | ResFP | 6 | 41.1 | 10.5 | 0.480 |
-| ResSHyp | 20 | 38.2 | 9.8 | 0.551 |
+| ResSHyp | 15 | 38.4 | 9.8 | 0.555 |
 
 Fan-out is the best config for **every** arch. The DPU-bound archs (ResFP, ResSHyp) plateau early as
 the 3 cores saturate (by ~6 / ~12 lanes, ~10 MB/s); the CPU-bound archs (FP, SHyp) keep gaining from
-independent lanes past the cores, within ~1 % of peak by their 12 / 24-lane knee (unconstrained peak
+independent lanes past the cores, within ~1 % of peak by their 12 / 21-lane knee (unconstrained peak
 206.7 / 147.6 @ 48 L — no gain over the knee).
 
 *Energy — warm J/patch; **bold** = the r7 operating point:*
@@ -675,10 +675,10 @@ independent lanes past the cores, within ~1 % of peak by their 12 / 24-lane knee
 | r1 mt | 0.141 | 0.190 | 0.903 | 1.015 |
 | r2 fo3 (naive) | 0.125 | 0.161 | 0.538 | 0.944 |
 | r3 fo3p (pinned) | 0.125 | 0.151 | 0.539 | 0.613 |
-| r4 knee | 0.096 | 0.120 | 0.493 | 0.582 |
-| r5 +neon | 0.086 | 0.111 | 0.492 | 0.579 |
-| r6 +dbuf | 0.083 | 0.104 | 0.480 | 0.551 |
-| r7 +ent | **0.079** | **0.102** | **0.480** | **0.551** |
+| r4 knee | 0.096 | 0.119 | 0.493 | 0.583 |
+| r5 +neon | 0.086 | 0.111 | 0.492 | 0.577 |
+| r6 +dbuf | 0.083 | 0.104 | 0.480 | 0.556 |
+| r7 +ent | **0.079** | **0.103** | **0.480** | **0.555** |
 
 *Energy = MPSoC (PS+PL) INA226, cooldown-gated to 58 °C; J/patch is the comparable metric (avg W drifts
 with thermal). The full per-rail-group breakdown is in each result JSON.*
@@ -712,14 +712,14 @@ with thermal). The full per-rail-group breakdown is in each result JSON.*
   SD card FP/SHyp are read-bound while ResFP/ResSHyp (warm ≈ cold from r3 on) are not. The r0 cold/warm
   gap (FP 26.6 → 36.9, SHyp 22.4 → 29.4) is the same signal at the sequential baseline.
 - **Parallelism costs power but saves energy.** FP r0→r7 **0.271→0.079 J/patch (×3.4)**;
-  ResSHyp **1.157→0.551 (×2.1)**. The draw is PL(DPU)-dominated for every arch — the residual archs
+  ResSHyp **1.157→0.555 (×2.1)**. The draw is PL(DPU)-dominated for every arch — the residual archs
   push far more of it; cross-arch ResSHyp costs **~7× the energy/patch** of FP.
 - **DDR is not a bottleneck.** vaitrace: the dominant DPU traffic (`g_a`) is ~0.65 GB/s (residual) to
   ~1.6 GB/s (plain), **~11–26×** under the 17.06 GB/s DDR4 ceiling (§2). CPU-side DDR is an estimate
   (~100–150 MB/s; no `perf` on the board) — the wide margin holds either way.
 - **The CPU-bound archs are limited by compress *compute*, not the DPU or the OS.** At FP's 12-lane knee
   the 4 A53 cores fill to **67 % user-space** (rANS + normalize) against **70 % DPU busy** — a balanced
-  pipeline with 24 % idle left over — and kernel time is 8 %. SHyp leans further: 77 % usr against 62 %
+  pipeline with 24 % idle left over — and kernel time is 8 %. SHyp leans further: 76 % usr against 61 %
   DPU. The roof mechanism (per-patch CPU work inflating 1.37× by the knee, plus a persistent
   balanced-pipeline idle) is **§6**.
 - **Compression** (byte-identical across every config; **λ=20, the chosen operating point**): FP bpp

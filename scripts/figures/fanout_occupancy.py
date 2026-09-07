@@ -251,7 +251,8 @@ def occupancy_series(arch: str):
 
 def main():
     """Print the per-core DPU + 4-core CPU occupancy table across every arch x lane trace."""
-    knee = {"FP": 12, "SHyp": 24, "ResFP": 6, "ResSHyp": 20}  # == _figutils.KNEE (§4.0)
+    from _figutils import KNEE as knee
+
     hdr = (
         f"{'arch':8} {'L':>4} {'win_ms':>7} {'c0':>5} {'c1':>5} {'c2':>5} "
         f"{'dpu%':>6} {'[lo':>5} {'hi]':>5} {'cpu4%':>6} {'map':>6}"

@@ -75,10 +75,10 @@ State as of 2026-09-04: `main.tex` = 585 lines, 7 sections, bullet-form. Numbers
     - Lane-count selection: DPU-bound need ≥ ~2 lanes/core to hide CPU work; more for hyperprior
       archs juggling more DPU calls
     - Lane study (Fig. lane): throughput / occupancy / energy vs lanes; long flat roofs, so the
-      operating point is the **knee** (smallest lane count within 1 % of peak) — FP 12, SH 24,
-      ResFP 6, ResSH 20; trades ≤1 % throughput for far less oversubscription
+      operating point is the **knee** (smallest lane count within 1 % of peak) — FP 12, SH 21,
+      ResFP 6, ResSH 15; trades ≤1 % throughput for far less oversubscription
     - Observations: DPU-bound saturate early (ResFP 99.6 %, ResSH 90.9 % DPU); CPU-bound fill the
-      A53s late, 67–77 % %usr at the knee
+      A53s late, 67–76 % %usr at the knee
     - No hard wall: hyperprior archs (3 runners/lane) hit `ulimit -n`=1024 at 113 lanes (339
       runners), liftable with `prlimit`; memory never binds (~1.2 GiB peak resident, CMA ~6 MB per
       runner) — *open DS callout: compress to one sentence, drop the last data point*
