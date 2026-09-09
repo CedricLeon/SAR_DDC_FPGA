@@ -93,24 +93,21 @@ def _peak(ax, arch, xs, ys, fmt, dy):
 
 def main():
     """Entry point."""
-    fig, (ax_t, ax_o, ax_e) = plt.subplots(
-        3, 1, sharex=True, figsize=(9.2, 9.6), gridspec_kw={"height_ratios": [2.6, 2.0, 1.5]}
+    fig, (ax_t, ax_o) = plt.subplots(
+        2, 1, sharex=True, figsize=(9.2, 7.2), gridspec_kw={"height_ratios": [2.6, 2.0]}
     )
     # Per-arch knee-label offset (points) where the default (+7, above) collides with a
     # neighbour; every arch not listed keeps +7. Hand-tuned for the date27 grid.
-    ENERGY_DY = {"ResFP": -7}  # below instead of above
     DPU_OCC_DY = {"SHyp": -7, "FP": 7}  # FP DPU busy sits just above its own CPU-busy label
     CPU_OCC_DY = {"ResFP": -7, "FP": -8}  # FP CPU busy label goes below the FP DPU one
 
     for arch, color in COLORS.items():
         mk = MARKERS[arch]
-        xs, mean, std, jp = series(arch)
+        xs, mean, std, _jp = series(arch)
         if len(xs):
             ax_t.plot(xs, mean, "-", marker=mk, color=color, label=DISPLAY[arch], markersize=4)
             ax_t.fill_between(xs, mean - std, mean + std, color=color, alpha=0.18, lw=0)
-            ax_e.plot(xs, jp, "-", marker=mk, color=color, markersize=4)
             _peak(ax_t, arch, xs, mean, "{:.0f}", 7)
-            _peak(ax_e, arch, xs, jp, "{:.2f}", ENERGY_DY.get(arch, 7))
         ox, om, _, _ = occupancy_series(arch)
         if len(ox):
             ax_o.plot(ox, om, "-", marker=mk, color=color, markersize=4)
@@ -120,7 +117,7 @@ def main():
             ax_o.plot(cx, cu, "--", color=color, lw=1.5, alpha=0.85)
             _peak(ax_o, arch, cx, cu, "{:.0f}%", CPU_OCC_DY.get(arch, 7))
 
-    for ax in (ax_t, ax_o, ax_e):
+    for ax in (ax_t, ax_o):
         ax.grid(alpha=0.22, which="both")
         # a darker vertical rule at each per-arch knee
         for m in sorted(set(KNEE.values())):
@@ -128,18 +125,18 @@ def main():
     ax_o.axhline(100, color="gray", ls="--", lw=1, alpha=0.7)  # full DPU saturation
 
     ax_t.set_xscale("log", base=2)
-    ax_e.set_xticks(TICKS)
-    ax_e.set_xticklabels(TICKS, fontsize=7)
-    ax_e.xaxis.set_minor_locator(plt.NullLocator())  # no extra unlabelled log2 minor ticks
+    ax_o.set_xticks(TICKS)
+    ax_o.set_xticklabels(TICKS, fontsize=8)
+    ax_o.xaxis.set_minor_locator(plt.NullLocator())  # no extra unlabelled log2 minor ticks
     # nudge the labels of near-touching tick pairs apart (points; +right / -left)
     _LABEL_DX = {15: -2.0, 16: 2.0, 20: -2.0, 21: 2.0, 30: -1.0, 32: 1.0}
-    for lab in ax_e.get_xticklabels():
+    for lab in ax_o.get_xticklabels():
         dx = _LABEL_DX.get(int(lab.get_text()))
         if dx:
             lab.set_transform(
                 lab.get_transform() + ScaledTranslation(dx / 72.0, 0, fig.dpi_scale_trans)
             )
-    ax_e.set_xlabel("CPU worker threads (log2 scale)", fontsize=11)
+    ax_o.set_xlabel("CPU worker threads (log2 scale)", fontsize=11)
     ax_t.set_ylabel("throughput [patch/s]", fontsize=11)
     ax_o.set_ylabel("occupancy [%]", fontsize=11)
     ax_o.set_ylim(0, 116)
@@ -155,7 +152,6 @@ def main():
         framealpha=0.9,
         handlelength=2.2,
     )
-    ax_e.set_ylabel("energy [J/patch]", fontsize=11)
     ax_t.set_ylim(top=ax_t.get_ylim()[1] * 1.08)  # headroom so the peak label clears the top
 
     handles, labels = ax_t.get_legend_handles_labels()

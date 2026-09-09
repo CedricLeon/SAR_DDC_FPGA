@@ -151,7 +151,7 @@ AGG = {
 }
 
 # ======================================================================================
-fig, ax = plt.subplots(figsize=(5.6, 4.2))
+fig, ax = plt.subplots(figsize=(5.6, 3.4))
 xlo, xhi = 20.0, 2.6e4
 ylo, yhi = 80.0, 5200.0
 xs = np.geomspace(xlo, xhi, 400)
@@ -208,7 +208,7 @@ _combined_eff = (AGG["h_a"][3] + AGG["h_s"][3]) / 2  # equal-sized groups -> mea
 ax.annotate(
     f"{_combined_eff:.0f}%",
     (_ha_x, _ha_y_agg),
-    xytext=(2, 5),
+    xytext=(2, 3),
     textcoords="offset points",
     ha="left",
     va="bottom",

@@ -111,7 +111,7 @@ data = {a: load_arch(a) for a in ARCHS}
 xpos = {a: i for i, a in enumerate(ARCHS)}
 BW = 0.60
 
-fig, ax = plt.subplots(figsize=(5.2, 4.3))
+fig, ax = plt.subplots(figsize=(5.2, 3.4))
 for a in ARCHS:
     vals, total = data[a]
     bottom = 0.0
@@ -152,7 +152,7 @@ for a in ARCHS:
         color="#000000",
     )
 
-ax.set_ylim(0, 107)
+ax.set_ylim(0, 100)
 ax.set_xticks([xpos[a] for a in ARCHS])
 ax.set_xticklabels([DISPLAY[a] for a in ARCHS], fontsize=10)
 ax.set_ylabel("latency [ms]")
@@ -169,6 +169,7 @@ ax.legend(
     frameon=False,
     loc="upper left",
     bbox_to_anchor=(0.0, 1.0),
+    borderaxespad=0,
     handlelength=1.2,
     labelspacing=0.3,
 )

@@ -178,7 +178,7 @@ def do_throughput(absolute: bool = False):
     def annotate(ax, a, xs, ys):
         if absolute or a not in ("FP", "ResSHyp"):
             return
-        for r in (0, 7):  # seq/+ent patch/s for the extremes (inner bars collide)
+        for r in (0, 4, 7):  # seq/+ent patch/s for the extremes (inner bars collide)
             ax.annotate(
                 f"{absol[a][r]:.0f}",
                 (xs[r], ys[r]),

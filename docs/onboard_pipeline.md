@@ -170,7 +170,7 @@ lane counts, cooldown-gated, writing into `results/date27/lanes/<arch>/`.
 ARCH=ResSHyp                                    # repeat for FP, SHyp, ResFP
 python scripts/fpga/deploy/deploy.py --model-name ${ARCH}-relu_s0_L20_pt \
     --skip-compile --skip-infer --skip-fetch    # push xmodel + entropy_params to the board
-for N in 1 2 3 4 5 6 8 10 12 16 20 24 32 48 64; do
+for N in 1 2 3 4 5 6 8 9 10 12 15 16 18 20 21 24 27 30 32 48 64; do
   python scripts/fpga/benchmark/stream_benchmark.py \
       --schedule p0 --fanout --neon --prefetch --entropy --threads $N \
       --keep-cache --overlap 2 --cooldown --power --iters 1 \
