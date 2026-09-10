@@ -579,7 +579,7 @@ that it is dry-run-verified, not re-executed.
   1). Deadline table: every cell recomputed from `results/date27/` with python, ×-ratios → % of
   requirement + `\okmark`/`\failmark`, 9.9 → 10.1 GB, rate/duration sourcing sentence. Cross-platform
   table: FPGA cols re-sourced to r7/r0 warm, best-per-row bolded (Orin numbers verified against
-  `results/benchmark_jetson/orin/power_sweep/` — see W6 note). Tab. 1 untouched.
+  `results/benchmark_jetson/orin/batch_precision_sweep/` — see W6 note). Tab. 1 untouched.
 - [ ] **F9** Dataflow figures (`system_dataflow`, `SAR_DDC_inference_dataflow`) — annotate datatypes
   along the path (int16 → fp32 → int8 → bitstream), align style with the palette convention.
   *Start from LaTeX `main`, not from a worktree.* The old `date27-ddc-dataflow-fig` branch was an
@@ -651,8 +651,8 @@ the section's bullets into prose under the new skeleton, keeping the §4.0 ledge
   R5); *Energy* (F5 + short
   discussion: PL dominates draw; more optimization ⇒ less J/patch despite higher W).
   - **`tab:baseline` Orin numbers (verified 2026-09-03, P1.3):** all 24 cells are
-    `results/benchmark_jetson/orin/power_sweep/<arch>_<mode>.json` (4 archs × {MAXN, MODE_50W,
-    MODE_30W, MODE_15W}; the table shows MAXN + MODE_15W). Throughput = `throughput_patch_s`;
+    `results/benchmark_jetson/orin/batch_precision_sweep/<arch>_{MAXN,MODE_15W}_b1_fp32_nofuse.json`
+    (refreshed b1/fp32; the table shows MAXN + MODE_15W). Throughput = `throughput_patch_s`;
     **W and J/patch are the compute-only rails** (`power.avg_power_w_compute_only`,
     `energy_j_compute_only / n_patches` — VDD_GPU_SOC + VDD_CPU_CV, excluding the VIN_SYS_5V0 board
     rail). ⚠ the FPGA columns are full-board INA226 — W6 should either state this asymmetry or

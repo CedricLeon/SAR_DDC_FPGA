@@ -116,6 +116,23 @@ def cmd_compress(args: argparse.Namespace) -> None:
     H, W, _ = tile.shape
     print(f"[ddc-edge] tile: {tile_path.name} [{H}x{W}x2]")
 
+    # Warmup: a discarded compress over the first N patch-rows at the SAME batch/precision/fuse, to
+    # absorb the one-time CC-8.7 PTX->SASS JIT compile so it lands here, not inside the timed run.
+    # Runs before the power sampler starts, so warmup work is excluded from energy.
+    if args.warmup_rows > 0:
+        print(f"[ddc-edge] warmup: {args.warmup_rows} patch-rows (absorb JIT) ...")
+        compress_tile(
+            net,
+            tile,
+            args.overlap,
+            device,
+            StageTimer(device),
+            max_rows=args.warmup_rows,
+            batch_size=args.batch_size,
+            precision=args.precision,
+            fuse_reim=args.fuse_reim,
+        )
+
     sampler = make_power_sampler() if args.power else None
     if args.power and sampler is None:
         print(
@@ -127,7 +144,15 @@ def cmd_compress(args: argparse.Namespace) -> None:
 
     t_compress0 = time.perf_counter()
     records, grid_r, grid_a = compress_tile(
-        net, tile, args.overlap, device, timer, max_rows=args.max_rows
+        net,
+        tile,
+        args.overlap,
+        device,
+        timer,
+        max_rows=args.max_rows,
+        batch_size=args.batch_size,
+        precision=args.precision,
+        fuse_reim=args.fuse_reim,
     )
     t_compress_wall = time.perf_counter() - t_compress0
 
@@ -136,6 +161,8 @@ def cmd_compress(args: argparse.Namespace) -> None:
     power_result = sampler.results() if sampler is not None else None
 
     n_patches = len(records)
+    n_batches = -(-n_patches // args.batch_size) if n_patches else 0  # ceil division
+    batch_latency_ms = t_compress_wall / n_batches * 1000.0 if n_batches else 0.0
     payload_bytes = sum(len(z) + len(y) for z, y in records)
 
     tile_id = args.tile_id or tile_path.stem
@@ -181,6 +208,12 @@ def cmd_compress(args: argparse.Namespace) -> None:
         "tile_id": tile_id,
         "overlap": args.overlap,
         "max_rows": args.max_rows,
+        "batch_size": args.batch_size,
+        "precision": args.precision,
+        "fuse_reim": args.fuse_reim,
+        "warmup_rows": args.warmup_rows,
+        "n_batches": n_batches,
+        "batch_latency_ms": batch_latency_ms,
         "grid_r": grid_r,
         "grid_a": grid_a,
         "n_patches": n_patches,
@@ -205,8 +238,12 @@ def cmd_compress(args: argparse.Namespace) -> None:
     }
 
     print(
+        f"[ddc-edge] config: batch_size={args.batch_size} precision={args.precision} "
+        f"fuse_reim={args.fuse_reim} ({n_batches} batches)"
+    )
+    print(
         f"[ddc-edge] compress: {n_patches} patches ({grid_a} x {grid_r}) | bpp={bpp:.4f} | "
-        f"{throughput:.2f} patch/s | total={t_total:.1f}s"
+        f"{throughput:.2f} patch/s | total={t_total:.1f}s | batch_latency={batch_latency_ms:.2f}ms"
     )
     print(
         f"  timing(ms/patch): patchify={stages_ms.get('patchify', 0) / max(n_patches, 1):.3f} "
@@ -241,7 +278,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
     )
 
     if args.model_dir:
-        ckpt_path, manifest = resolve_checkpoint_from_model_dir(
+        ckpt_path, _ = resolve_checkpoint_from_model_dir(
             Path(args.model_dir).resolve(), PROJECT_ROOT
         )
     else:
@@ -249,7 +286,10 @@ def cmd_verify(args: argparse.Namespace) -> None:
     net = load_model_from_checkpoint(ckpt_path).to(device)
 
     gt = np.load(args.gt)
-    result = score_ddc_against_gt(net, records, gt, device, sample=args.sample)
+    result = score_ddc_against_gt(
+        net, records, gt, device, sample=args.sample, precision=args.precision
+    )
+    result["precision"] = args.precision
     print(
         f"[ddc-edge] scored {result['n_scored']}/{result['n_total_records']} patches vs GT: "
         f"PSNR {result['psnr_mean']:.2f} ± {result['psnr_std']:.2f} dB (min {result['psnr_min']:.2f}) | "
@@ -308,6 +348,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cap azimuth patch-rows for a quick test (-1 = full scene).",
     )
     c.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Patches per forward pass (default 1 = strictly sequential, byte-identical to the "
+        "pre-batching baseline). Counts patches, not tensor rows.",
+    )
+    c.add_argument(
+        "--precision",
+        choices=["fp32", "fp16", "bf16"],
+        default="fp32",
+        help="Conv-subgraph precision via torch.autocast (entropy coder stays FP32). "
+        "fp16/bf16 change the bitstream + quality; decode must use the same precision.",
+    )
+    c.add_argument(
+        "--fuse-reim",
+        action="store_true",
+        help="Independent optimization: run real+imag as one [2*batch,...] g_a call instead of two "
+        "[batch,...] calls. Off by default so pure batching can be measured on its own.",
+    )
+    c.add_argument(
+        "--warmup-rows",
+        type=int,
+        default=0,
+        help="Discarded warmup pass over the first N patch-rows (same batch/precision/fuse) before "
+        "the timed run, to absorb the one-time CC-8.7 JIT compile (0 = off). ~8 is plenty.",
+    )
+    c.add_argument(
         "--power",
         action="store_true",
         help="Sample power during compression (tegrastats > nvidia-smi > null).",
@@ -334,6 +401,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=200,
         help="Patches to score (-1 = all; default 200, evenly spaced).",
+    )
+    v.add_argument(
+        "--precision",
+        choices=["fp32", "fp16", "bf16"],
+        default="fp32",
+        help="Decode-side conv precision — MUST match the precision the .ddc was compressed at, or "
+        "the hyperprior entropy decode desyncs.",
     )
     v.add_argument("--json", default="", help="Write full results to this JSON path.")
     v.set_defaults(func=cmd_verify)

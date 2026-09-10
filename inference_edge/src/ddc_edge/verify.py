@@ -28,6 +28,7 @@ def score_ddc_against_gt(
     gt_patches: np.ndarray,
     device: torch.device,
     sample: int = -1,
+    precision: str = "fp32",
 ) -> dict[str, Any]:
     """Decode up to `sample` records (all, if -1) and score each against `gt_patches[idx]` (linear-
     amplitude, `[n, 256, 256]`) using the current, post-fix metric basis (`src/utils/metrics.py`:
@@ -50,7 +51,9 @@ def score_ddc_against_gt(
     per_patch: list[dict[str, float]] = []
     for idx in idxs:
         z_bytes, y_bytes = records[idx]
-        recon = decompress_record(net, z_bytes, y_bytes, device, y_shape, z_shape)
+        recon = decompress_record(
+            net, z_bytes, y_bytes, device, y_shape, z_shape, precision=precision
+        )
         gt = gt_patches[idx]
         recon_t = torch.from_numpy(recon).unsqueeze(0).unsqueeze(0)
         gt_t = torch.from_numpy(gt).unsqueeze(0).unsqueeze(0)
