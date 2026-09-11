@@ -46,6 +46,7 @@ from _figutils import (
     save_figure,
 )
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from matplotlib.transforms import ScaledTranslation
 
 LANES = LANE_GRID
@@ -105,7 +106,7 @@ def main():
         mk = MARKERS[arch]
         xs, mean, std, _jp = series(arch)
         if len(xs):
-            ax_t.plot(xs, mean, "-", marker=mk, color=color, label=DISPLAY[arch], markersize=4)
+            ax_t.plot(xs, mean, "-", marker=mk, color=color, markersize=4)
             ax_t.fill_between(xs, mean - std, mean + std, color=color, alpha=0.18, lw=0)
             _peak(ax_t, arch, xs, mean, "{:.0f}", 7)
         ox, om, _, _ = occupancy_series(arch)
@@ -136,9 +137,9 @@ def main():
             lab.set_transform(
                 lab.get_transform() + ScaledTranslation(dx / 72.0, 0, fig.dpi_scale_trans)
             )
-    ax_o.set_xlabel("CPU worker threads (log2 scale)", fontsize=11)
-    ax_t.set_ylabel("throughput [patch/s]", fontsize=11)
-    ax_o.set_ylabel("occupancy [%]", fontsize=11)
+    ax_o.set_xlabel("CPU worker threads (log2 scale)", fontsize=13)
+    ax_t.set_ylabel("throughput [patch/s]", fontsize=13)
+    ax_o.set_ylabel("occupancy [%]", fontsize=13)
     ax_o.set_ylim(0, 116)
     ax_o.legend(
         handles=[
@@ -148,13 +149,15 @@ def main():
         loc="upper left",
         bbox_to_anchor=(0.01, 0.83),  # top of box just under the 100% line, no overlap
         borderaxespad=0,
-        fontsize=10,
+        fontsize=14,
         framealpha=0.9,
         handlelength=2.2,
     )
     ax_t.set_ylim(top=ax_t.get_ylim()[1] * 1.08)  # headroom so the peak label clears the top
 
-    handles, labels = ax_t.get_legend_handles_labels()
+    # arch-color + knee legend: rectangles (ladder-figure style), one column, top-left of
+    # the throughput panel.
+    handles = [Patch(facecolor=COLORS[a], edgecolor="white", label=DISPLAY[a]) for a in COLORS]
     handles.append(
         Line2D(
             [0],
@@ -165,22 +168,26 @@ def main():
             markerfacecolor="#555",
             markeredgecolor="black",
             markeredgewidth=0.6,
+            label="knee",
         )
     )
-    labels.append("knee")
-    fig.tight_layout(rect=(0, 0.05, 1, 1))
-    fig.legend(
-        handles,
-        labels,
-        loc="lower center",
-        ncol=len(labels),
-        fontsize=11,
+    ax_t.legend(
+        handles=handles,
+        loc="upper left",
+        ncol=1,
         frameon=True,
-        bbox_to_anchor=(0.5, 0.02),
+        facecolor="white",
+        edgecolor="#cccccc",
+        framealpha=1.0,
+        fontsize=14,
+        handlelength=1.0,
+        handletextpad=0.4,
+        labelspacing=0.25,
+        borderpad=0.4,
+        borderaxespad=0.4,
     )
-    # keep the pre-migration save behaviour (png dpi 140, no tight bbox — the bottom
-    # fig.legend is placed manually and a tight crop would clip it)
-    save_figure(fig, "lane_scaling", dpi=140, bbox_inches=None)
+    fig.tight_layout()
+    save_figure(fig, "lane_scaling", dpi=140)
 
 
 if __name__ == "__main__":
