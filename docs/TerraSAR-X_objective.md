@@ -155,7 +155,7 @@ Space-segment / ground-segment:
 | **SSMM** (solid-state mass memory = the on-board recorder) | **384 Gbit BOL / 256 Gbit EOL** | [Pitz p.618]; EOL also [eoP] ([eoP] says 320 Gbit BOL — immaterial, we size on EOL 32 GB) |
 | **Orbit period** | **~94.9 min** | two independent derivations, below — **solid** |
 | Ground contact frequency | ~1 contact per orbit | [eoP] — ESTIMATE: contacts are mission-planned and alternate TSX/TDX, no fixed cadence |
-| Acquisition constraint | **≤ 180 s monostatic per orbit** (power-budget ceiling), now ~¼ of that, battery ageing | colleague, attributed to [Fritz] — **ESTIMATE, no public source**. ⚠ [eoP]'s "< 180 s" is a roll-slew time, *not* an imaging budget — do not cite it as support; loosest public bound: ≤ 10 min thermal [Pitz p.617] @user: Asked fritz for a source/to confirm. |
+| Acquisition constraint | **≤ 180 s monostatic per orbit** (power-budget ceiling), now ~¼ of that, battery ageing | [Pitz p.617]: "170 s/orbit in average, with 10% margin" (worst-case EOL power budget, solar-string failure) — **solid**; 180 s falls inside the stated margin (170×1.10=187 s). ⚠ [eoP]'s "< 180 s" is a roll-slew time, *not* an imaging budget — do not cite it as support. |
 | Ground contact window | ~5–10 min; Neustrelitz ~90 GB/day | colleague — 5–10 min consistent with LEO pass geometry + [eoP] daily link totals; 90 GB/day plausible but uncited → ESTIMATE |
 | Stripmap / Spotlight duty cycle | **18 % / 20 %** (on transmit) | [eoP] spec table — *transmit* duty within a take (PRF-level), not the orbit imaging fraction |
 
@@ -341,11 +341,10 @@ SD-testbed in parentheses; *evolves with the design*):
 - **Worst-case = 45°** (not 60°): the incidence–PRF coupling (§3.3) makes 45°×3800 the honest peak;
   60° would add range samples but lose PRF.
 - **BAQ 8:4** assumed as the raw baseline; the operational per-scene setting is not pinned.
-- **Sourcing status of the two headline deadline inputs** (each = solid rate × colleague-reported
-  duration; the durations are ESTIMATEs with no public source, see §2 table):
-  - **64.5 GB worst-case orbit** = 358 MB/s (solid, §3.4) × **180 s take (ESTIMATE)**. Weak sanity
-    bound: at 358 MB/s the 32 GB EOL SSMM fills in ~89 s, so takes much longer than ~180 s couldn't
-    be buffered uncompressed anyway.
+- **Sourcing status of the two headline deadline inputs**:
+  - **64.5 GB worst-case orbit** = 358 MB/s (solid, §3.4) × **180 s take** ([Pitz p.617], solid — see
+    §2). Weak sanity bound: at 358 MB/s the 32 GB EOL SSMM fills in ~89 s, so takes much longer than
+    ~180 s couldn't be buffered uncompressed anyway.
   - **Single-contact budget** = 33.75 MB/s (solid: net 270 Mb/s verbatim [Pitz p.617]; [eoP]'s
     300 Mbit/s is the gross rate) × **5 min contact (ESTIMATE)**. ⚠ Units: 33.75 MB/s × 300 s =
     **10.1 GB (decimal)** = 9.9 GiB — the deadline table's "9.9 GB" is really GiB; restate as
@@ -379,11 +378,12 @@ SD-testbed in parentheses; *evolves with the design*):
 
 Background for the paper's framing, from a colleague. Checked against the primary sources in
 `docs/references/` and the web — outcome and citations in the §2 table and §6: the 180 s take
-budget and the 90 GB/day figure remain uncited ESTIMATEs; the 5–10 min contact and the 270 Mb/s
-net downlink are supported.
+budget is now sourced ([Pitz p.617], see §2); the 90 GB/day figure remains an uncited ESTIMATE.
+The 5–10 min contact and the 270 Mb/s net downlink are supported.
 
 - **Acquisition & timing.** TSX had a ~180 s monostatic acquisition budget per satellite per orbit
-  (360 s for the TSX/TDX pair); battery ageing has since cut it to ~¼. What matters operationally is
+  ([Pitz p.617]: 170 s average with 10% margin, worst-case EOL power budget; 360 s for the TSX/TDX
+  pair); battery ageing has since cut it to ~¼. What matters operationally is
   finishing before the **next ground contact**, not the next orbit — contacts recur from a few orbits
   to a few minutes apart.
 - **Ground contacts.** Duration depends on the ground-station antenna and pass geometry: typically
