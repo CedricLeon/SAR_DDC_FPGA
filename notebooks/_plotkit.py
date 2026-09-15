@@ -402,16 +402,19 @@ def aggregate_rd(
 # ======================================================================================
 # 5. Plot core
 # ======================================================================================
-def export_manuscript(fig: Figure, manuscript_name: str | None, *, save: bool = True) -> None:
-    """Save a figure to the manuscript figures/images dir as PDF (overrides old PNG).
+def export_manuscript(
+    fig: Figure, manuscript_name: str | None, *, save: bool = True, fmt: str = "pdf"
+) -> None:
+    """Save a figure to the manuscript figures/images dir (PDF by default).
 
     Set the module-level ``EXPORT_SUFFIX`` to write next to the existing figures instead of
     replacing them (e.g. ``_plotkit.EXPORT_SUFFIX = "_new"`` → ``fig_crossprecision_RD_new.pdf``),
     which is how a before/after pair is produced without losing the current manuscript version.
+    Pass ``fmt="svg"`` (etc.) to export a different format instead of overriding the PDF.
     """
     if not (save and manuscript_name):
         return
-    dst = MANUSCRIPT_DIR / f"{manuscript_name}{EXPORT_SUFFIX}.pdf"
+    dst = MANUSCRIPT_DIR / f"{manuscript_name}{EXPORT_SUFFIX}.{fmt}"
     fig.savefig(dst, bbox_inches="tight")
     print(f"{g}→ manuscript:{e} {dst.relative_to(ROOT_DIR)}")
 
