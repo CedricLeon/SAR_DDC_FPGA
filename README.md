@@ -50,6 +50,8 @@ Because work is still ongoing, you should expect some inconsistencies between so
 | [docs/FPGA_benchmark.md](docs/FPGA_benchmark.md) | ZCU102 hardware, benchmark methodology, power, results |
 | [docs/GPU_benchmark.md](docs/GPU_benchmark.md) | Host GPU/CPU benchmark and the unified cross-platform runner |
 | [docs/onboard_pipeline.md](docs/onboard_pipeline.md) | Onboard streaming pipeline (receive → despeckle + compress → downlink): design & results |
+| [docs/entropy_coding.md](docs/entropy_coding.md) | CPU rANS entropy coder: internals, profiling, the `--entropy` optimization & unimplemented axes |
+| [docs/edge_baseline.md](docs/edge_baseline.md) | Jetson AGX Orin embedded-GPU cross-platform baseline (batch × precision sweep, quality) |
 | [docs/Notebooks.md](docs/Notebooks.md) | Analysis notebooks: purpose, data flow, shared modules (`_plotkit`, `_benchmark_loader`) |
 
 For people interested to follow the workflows described below and reproduce results, I organize the project as such:

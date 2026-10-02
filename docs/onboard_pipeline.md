@@ -11,13 +11,13 @@
 Status: **implemented + measured.** The streaming compressor, the parallel/I/O optimizations (§4), the
 DPU fan-out core-scaling (§5–§6), the symmetrization (§7) and overlap (§8) studies, and the full-scene
 throughput/latency/energy sweep (§10) are done and board-verified at the coherent setup (λ=20, overlap
-2, snap grid, four architectures). The Orin Jetson embedded-GPU baseline (N2, §12) is done and board-verified
-across the full 4-arch × 4-power-mode matrix; a per-arch quality sweep and Thor both remain (§12). The
-classical SAR baseline (N5, §10) is resolved paper-only — no CCSDS standard targets SAR, so the paper
-cites the closest literature instead of reimplementing.
-The N7 re-verification sweep is done (§13) — canonical numbers now live in `results/date27/`
-(`MANIFEST.md`); remaining work is the DATE'27 figure/writing plan (`DATE27_paper_plan.md` §4).
-Last updated 2026-09-01.
+2, snap grid, four architectures). The Orin Jetson embedded-GPU baseline (N2) is done and board-verified
+across the full 4-arch × 4-power-mode matrix (→ `edge_baseline.md`; a per-arch quality sweep and Thor
+remain). The classical SAR baseline (N5, §10) is resolved paper-only — no CCSDS standard targets SAR, so
+the paper cites the closest literature instead of reimplementing. The N7 re-verification sweep is done —
+canonical numbers now live in `results/date27/` (`MANIFEST.md`). The CPU rANS entropy coder has its own
+deep-dive → `entropy_coding.md`.
+Last updated 2026-09-11.
 
 ---
 
@@ -43,7 +43,10 @@ Last updated 2026-09-01.
 | **PS DDR4** (RAM) | 4 GB spec; **3.84 GiB** seen, **~3.0 GiB free** | Working memory: in-flight patches, queues, weights | `/proc/meminfo` + UG1182 |
 | DPU on-chip (BRAM/URAM) | ~84 % of ZU9EG BRAM (3× B4096) | DPU weight/activation buffers (VART) | `FPGA_benchmark.md` + PG338 |
 
-- **4× A53 cores** (`nproc=4`) → parallel-worker budget, shared with DPU dispatch + OS.
+- **4× A53 cores** (`nproc=4`) → parallel-worker budget, shared with DPU dispatch + OS. NEON compute
+  peak **9.6 GFLOP/s per core, 38.4 GFLOP/s per chip** (1 FMLA/cycle × 4 fp32 lanes × 2 FLOP/FMA ×
+  1.2 GHz; LLVM `AArch64SchedA53.td` + on-board microbenchmark, 99.8 % achieved). The FMA fusion credit
+  makes this **2× a naïve "4 FLOP/cycle" estimate** — a `19.2 GFLOP/s` figure undercounts by exactly 2×.
 - Queues between stages are a non-issue: **~50 MB at depth 16** vs ~3 GB free.
 - **SD sequential read ≈ 23.5–23.8 MB/s** (measured cold: 1.93 GB ÷ 81 s) — the **Step-1 read ceiling**.
   To emulate a *faster persistent store* we use a warm read.
@@ -63,6 +66,11 @@ Last updated 2026-09-01.
   theoretical 9.6 / 17.06 ceilings; the ~13.7 GB/s is quoted in text — it implies `h_a`/`h_s` hit
   DDR even sooner than the drawn line). BibTeX: `luDemystifyingSoftHardened2022`,
   `manevUnexpectedDiversityQuantitative2019`.
+- **Achievable A53 CPU→DDR bandwidth (scalar load/store path) ≈ 2.44 GB/s single-core, 6.86 GB/s 4-core**
+  (NEON STREAM-triad, on-board) — 40 % of the 17.06 GB/s theoretical ceiling, and it **contends**
+  (per-core rate drops ~30 % under 4-way load — one shared DDR4 channel). This is the CPU load/store
+  route, distinct from the DPU/DMA ceiling above (~half of what the DMA engines sustain) — quoted for
+  CPU-kernel context, not directly comparable to the DMA-path numbers.
 - **DPU = 3× DPUCZDX8G B4096 @ 300 MHz → 1229 GOP/s per core** (4096 ops/cycle × 0.30 GHz; the guide
   lists 1400 @ 350 MHz) [PG338, *DPUCZDX8G Peak Performance*; clock from `xdputil query`]. Roofline
   ridge vs DDR = 1229 ÷ 17.06 = 72 OP/byte.
@@ -134,16 +142,14 @@ mis-triggers incremental builds — any A/B comparison or measurement campaign m
 - **`--neon` — vectorized normalize/denorm.** NEON log/exp (Cephes/Pommier, `neon_mathfun.h`) behind a
   runtime flag, scalar path kept for A/B. Kernel error vs libm = 7e-8 → **byte-transparent encode** (≪
   the INT8 `g_a` step, so no quantisation flips). **2.42× faster normalize in isolation**.
-- **`--entropy` — rANS reciprocal-table coder.** Flattened CDF table + a precomputed reciprocal per entry,
-  replacing a per-symbol division in the flush loop. Activable with a runtime flag: the pre-optimization
-  CDF-lookup + divide path is kept alongside it for A/B (both live in `entropy_models.{cpp,hpp}` /
-  `rans/rans_interface_cxx.{cpp,hpp}`, selected once per `compress()` call).
-  **Table sizes, so the coder's constants don't get conflated:** the rANS probability scale is
-  `precision = 16` (`rans_interface_cxx.cpp`), i.e. frequencies sum to $2^16$ = 65 536 — that 65 k is a
-  *normalization total, not a table length*. The CDF tables themselves are per-channel and much smaller:
-  entropy bottleneck **256 × 28 = 7 168 int32 (28 KB)**, Gaussian conditional **64 × 3 133 = 200 512
-  int32 (802 KB)** (`entropy_params/{eb,gc}_quantized_cdf.npy`). The GC table being ~28× the EB one is
-  the structural reason `gc_compress` costs ~9.7 ms/patch against `eb_enc`'s ~4.7 (§6).
+- **`--entropy` — rANS reciprocal-table coder.** Flattened per-channel CDF table + a precomputed
+  reciprocal per entry, replacing a per-symbol division in the flush loop; byte-identical, selected once
+  per `compress()` call (the pre-optimization CDF-lookup + divide path is kept alongside it for A/B, both
+  in `entropy_models.{cpp,hpp}` / `rans/rans_interface_cxx.{cpp,hpp}`). The Gaussian-conditional (GC)
+  CDF table is ~28× the entropy-bottleneck (EB) one, the structural reason `gc_compress` costs
+  ~9.7 ms/patch against `eb_enc`'s ~4.7 (§6). **Coder internals, table sizes, profiling (lookup-bound,
+  not arithmetic), the flush-regression lesson, unimplemented axes, and the reproduce recipe →
+  `entropy_coding.md`.**
 - **`--power` — energy instrumentation.** `PowerSampler` (INA226 sysfs + PMBus) wraps the compress
   phase → total J, **J/patch**, and the per-rail-group breakdown (PL / PS / DPU_fabric / PS_compute /
   MGT / MPSoC mean W) — the DPU-vs-CPU energy split.
@@ -339,7 +345,7 @@ zero-host-overhead `xdputil benchmark` synthetic peak** for the identical xmodel
 i.e. physically impossible. The E4 value (0.72 ms) sits exactly at that synthetic peak, where an
 uncontended kernel belongs; `h_a` likewise sits at its own 0.82 ms peak in both eras. vaitrace's
 hardware counter over-reads short (sub-ms) transposed-conv kernels in small captures; the fix is the
-5×-longer E4 sample. (Investigation 2026-09-03, `DATE27_paper_plan.md` P0.6.)
+5×-longer E4 sample. (Investigation 2026-09-03.)
 
 **`h_a`/`h_s` are weight-load-bound, not DDR-bound.** **LdWB** (external-memory weight+bias read, MB)
 is 97–99 % of their total DDR traffic (vs 16 % for residual `g_a`, which is feature-map-dominated —
@@ -612,8 +618,8 @@ is per-patch framing, it scales with patch count, not with scene size.
 
 ## 10. Results
 
-**The sweep.** The DATE'27 campaign (`DATE27_paper_plan.md` §4.1a; canonical tree
-`results/date27/`, per-run provenance in its `MANIFEST.md`) runs the cumulative **r0–r7** optimization
+**The sweep.** The DATE'27 campaign (canonical tree `results/date27/`, per-run provenance — full CLI
+flags, host+board git SHA, model, date — in its `MANIFEST.md`) runs the cumulative **r0–r7** optimization
 ladder (E1) and a 15-point fan-out lane grid (E2) on the full **7 540-patch** Hamburg scene (overlap 2,
 snap grid, §3), warm, through the harness (§4). All four archs, λ=20 — throughput is **λ-independent**
 (L20 = L1000 within ~1 %, since rANS time scales with the *number of latents*, not bpp). The r0–r7
@@ -789,93 +795,11 @@ archived `results/benchmark_stream/` / `results/benchmark_hardware/` trees and a
 
 ---
 
-## 12. Jetson embedded-GPU baseline (N2)
+## 12. Edge embedded-GPU baseline (Jetson AGX Orin)
 
-**Status: implemented, board-verified across the full 4-arch × 4-power-mode matrix, quality spot-
-checked.** A naive, unoptimized baseline by design (mirrors the FPGA's `seq` mode: no threading, no
-fan-out, no DPU-style placement — not a re-run of the systems-engineering ladder on different silicon).
-Supplies the recognisable `N× vs a named baseline` DATE expects. **→ main.tex §eval + abstract.**
-
-Code, environment setup, deployment recipe, and known quirks (incl. a cross-GPU decode gotcha) →
-`inference_edge/README.md`. Package = `inference_edge/` (`ddc-edge` CLI). Sweep orchestration →
-`scripts/evaluation/jetson_power_arch_sweep.py` (handles the nvpmodel mode-switch reboot —
-`MODE_30W`/`MODE_15W` disable CPU cores relative to `MAXN`/`MODE_50W`, which this L4T's nvpmodel build
-requires a reboot to apply). The batch × precision × fuse grid and its per-arch bpp fail-fast are
-driven by the same script's `--batch-sizes`/`--precisions`/`--fuse` flags; the table below is built by
-`scripts/evaluation/jetson_batch_precision_table.py`.
-
-**Results — batch × precision sweep** (Orin, all 4 λ=20/relu archs, overlap=2, full scene, 7,540
-patches, clocks pinned, `--warmup-rows 8`, power on). Each cell is **`patch/s · W · mJ/patch`**, all
-compute-only (`VDD_GPU_SOC`+`VDD_CPU_CV` via tegrastats — the FPGA's peripherals-excluded convention,
-matching main.tex's cross-platform table); `mJ/patch = W / (patch/s)`. Precisions run best-first
-(bf16 ≈ fp16 here — both quality-neutral, ≈0 dB, and leave bpp unchanged). Real/imag fusion
-(`--fuse-reim`) was swept too but moved throughput ≤0.2% at the operating point, so it is omitted.
-<mark>Highlight</mark> marks the best throughput / lowest power / lowest energy per architecture;
-**bold** cells are hyperprior (`SHyp`/`ResSHyp`) configs at batch>1, whose numbers are *indicative only*
-— that batched `.ddc` is not decodable (see *Why these GPU numbers are indicative* below).
-
-<table>
-<thead>
-<tr><th rowspan="2" align="center">mode</th><th rowspan="2" align="center">batch</th><th rowspan="2" align="center">prec</th><th colspan="3" align="center">FP</th><th colspan="3" align="center">ResFP</th><th colspan="3" align="center">SHyp</th><th colspan="3" align="center">ResSHyp</th></tr>
-<tr><th align="center">patch/s</th><th align="center">W</th><th align="center">mJ</th><th align="center">patch/s</th><th align="center">W</th><th align="center">mJ</th><th align="center">patch/s</th><th align="center">W</th><th align="center">mJ</th><th align="center">patch/s</th><th align="center">W</th><th align="center">mJ</th></tr>
-</thead>
-<tbody>
-<tr><td rowspan="9" align="center"><b>MAXN</b></td><td rowspan="3" align="center">32</td><td align="center">bf16</td><td>159.5</td><td>12.7</td><td>80</td><td>106.1</td><td>22.4</td><td>211</td><td><b>73.6</b></td><td><b>10.8</b></td><td><b>146</b></td><td><b>59.5</b></td><td><b>17.0</b></td><td><b>285</b></td></tr>
-<tr><td align="center">fp16</td><td><mark>160.4</mark></td><td>12.6</td><td>79</td><td><mark>107.0</mark></td><td>23.0</td><td>215</td><td><b><mark>73.7</mark></b></td><td><b>10.7</b></td><td><b>145</b></td><td><b><mark>59.8</mark></b></td><td><b>17.4</b></td><td><b>290</b></td></tr>
-<tr><td align="center">fp32</td><td>142.4</td><td>14.6</td><td>103</td><td>72.8</td><td>28.7</td><td>395</td><td><b>69.7</b></td><td><b>11.7</b></td><td><b>168</b></td><td><b>47.3</b></td><td><b>22.6</b></td><td><b>478</b></td></tr>
-<tr><td rowspan="3" align="center">8</td><td align="center">bf16</td><td>156.9</td><td>12.9</td><td>82</td><td>103.9</td><td>22.4</td><td>216</td><td><b>70.5</b></td><td><b>10.9</b></td><td><b>155</b></td><td><b>57.3</b></td><td><b>16.7</b></td><td><b>292</b></td></tr>
-<tr><td align="center">fp16</td><td>157.4</td><td>12.8</td><td>81</td><td>104.6</td><td>23.0</td><td>220</td><td><b>70.7</b></td><td><b>10.8</b></td><td><b>152</b></td><td><b>57.6</b></td><td><b>17.2</b></td><td><b>299</b></td></tr>
-<tr><td align="center">fp32</td><td>120.0</td><td>18.8</td><td>157</td><td>67.4</td><td>29.7</td><td>440</td><td><b>62.0</b></td><td><b>14.1</b></td><td><b>228</b></td><td><b>44.2</b></td><td><b>23.5</b></td><td><b>531</b></td></tr>
-<tr><td rowspan="3" align="center">1</td><td align="center">bf16</td><td>119.2</td><td>12.5</td><td>105</td><td>80.4</td><td>21.6</td><td>268</td><td>40.2</td><td>10.4</td><td>258</td><td>35.3</td><td>15.1</td><td>429</td></tr>
-<tr><td align="center">fp16</td><td>118.9</td><td>12.4</td><td>104</td><td>80.5</td><td>21.9</td><td>272</td><td>40.5</td><td>10.4</td><td>256</td><td>35.2</td><td>15.2</td><td>433</td></tr>
-<tr><td align="center">fp32</td><td>119.4</td><td>14.4</td><td>120</td><td>64.1</td><td>26.4</td><td>413</td><td>41.3</td><td>11.2</td><td>271</td><td>32.3</td><td>18.3</td><td>565</td></tr>
-<tr><td rowspan="6" align="center"><b>MODE_15W</b></td><td rowspan="3" align="center">32</td><td align="center">bf16</td><td>75.9</td><td>4.3</td><td>56</td><td>45.5</td><td>6.0</td><td><mark>132</mark></td><td><b>36.3</b></td><td><b>3.8</b></td><td><b>104</b></td><td><b>27.4</b></td><td><b>5.1</b></td><td><b><mark>186</mark></b></td></tr>
-<tr><td align="center">fp16</td><td>76.8</td><td>4.2</td><td><mark>55</mark></td><td>45.9</td><td>6.1</td><td>133</td><td><b>36.4</b></td><td><b>3.8</b></td><td><b><mark>103</mark></b></td><td><b>27.5</b></td><td><b>5.1</b></td><td><b>187</b></td></tr>
-<tr><td align="center">fp32</td><td>66.4</td><td>4.6</td><td>69</td><td>29.2</td><td>7.2</td><td>246</td><td><b>33.9</b></td><td><b>4.0</b></td><td><b>119</b></td><td><b>20.4</b></td><td><b>6.2</b></td><td><b>305</b></td></tr>
-<tr><td rowspan="3" align="center">1</td><td align="center">bf16</td><td>58.5</td><td><mark>4.0</mark></td><td>68</td><td>34.4</td><td><mark>6.0</mark></td><td>174</td><td>20.9</td><td><mark>3.6</mark></td><td>172</td><td>16.7</td><td><mark>4.8</mark></td><td>286</td></tr>
-<tr><td align="center">fp16</td><td>58.7</td><td><mark>4.0</mark></td><td>68</td><td>34.6</td><td>6.0</td><td>173</td><td>21.0</td><td><mark>3.6</mark></td><td>171</td><td>16.7</td><td><mark>4.8</mark></td><td>287</td></tr>
-<tr><td align="center">fp32</td><td>55.6</td><td>4.6</td><td>83</td><td>26.3</td><td>6.8</td><td>256</td><td>20.8</td><td>3.9</td><td>190</td><td>14.7</td><td>5.3</td><td>362</td></tr>
-</tbody>
-</table>
-
-Source: `results/benchmark_jetson/orin/batch_precision_sweep/` (one JSON per run,
-`<arch>_<mode>_b<batch>_<prec>_<fuse>.json`). Compress-only; quality is separate (below).
-
-Findings: **(1)** precision helps the residual archs most (`ResFP` b32 ×1.47 fp16-over-fp32) and the
-entropy-bound `SHyp` least (×1.06, dominated by CPU rANS not convs); batching helps the hyperprior
-archs most (`SHyp` ×1.82, `ResSHyp` ×1.70 from b1→b32 fp16) as their extra `h_a`/`h_s` conv work
-parallelizes, vs. ×1.33–1.35 for `FP`/`ResFP`. Combined (b1/fp32 → b32/fp16) the win is ×1.34 (`FP`),
-×1.67 (`ResFP`), ×1.79 (`SHyp`), ×1.85 (`ResSHyp`) throughput and ~1.5–2.0× less energy. **(2)** `SHyp`
-stays slower than `ResFP` (b1/fp32: 41 vs 64 patch/s) despite `ResFP`'s ~3.8× heavier `g_a` — its
-second entropy pass (EB for `z`, GC for `y`) outweighs the one heavy `g_a`.
-
-**Quality** (SHyp only — no per-arch quality sweep yet): verified against MERLIN GT (overlap=0, full
-7,482-patch coverage, decoded on-device — see the cross-GPU decode note in the README): **PSNR 28.05 ±
-5.24 dB, SSIM 0.8144 ± 0.1055**, consistent with the neighboring FP/ResSHyp λ=20 reference numbers.
-Visual crop comparison → `results/benchmark_jetson/orin/jetson_vs_fpga_vs_merlin_crop.png`.
-
-Timing/power methodology independently audited (`StageTimer` cross-checked against `torch.cuda.Event`,
-timer overhead and `--power`'s own perturbation both confirmed negligible) — full report:
-[[project_jetson_edge_pipeline]] memory.
-
-**Why these GPU numbers are indicative, not a deployable-configuration headline.** The obvious way to
-raise GPU throughput is to batch several patches through each forward pass. That is a valid, equal-bpp,
-equal-quality speedup for the **factorized-prior** archs (a batched `.ddc` still decodes correctly), but
-**not** for the **hyperprior** archs. A hyperprior decoder does not store the per-patch entropy tables —
-it recovers them by *re-running* `h_s` at decode time to reproduce the scales the encoder used, and the
-entropy coder is exact only if that reproduction is bit-identical. Running `h_s` on a batch of patches
-versus one patch at a time changes its output by a hair (floating-point sums reorder with batch size),
-which is enough to snap a few borderline scales into a neighbouring table and desync the entropy decode —
-the reconstruction then blows up rather than degrading gracefully. So a batched hyperprior `.ddc`
-measures the compute cost but is not a usable artifact (same failure class as decoding on a different GPU
-or precision). We therefore report per-patch, per-configuration hardware costs as **indicative** of the
-platform's capability, not as a single optimized operating point uniform across the four architectures.
-
-**Remaining:**
-
-- Per-arch quality (PSNR/SSIM) sweep — currently SHyp only.
-- Thor: blocked on a torch/NCCL aarch64 ABI gap, deferred — see `inference_edge/README.md`.
-- TensorRT/FP16 — explicitly out of scope for this baseline, a separate future conversation if wanted.
+The Orin Jetson cross-platform baseline (N2) — the batch × precision sweep, the SHyp quality spot-check,
+and the "why batched hyperprior numbers are indicative" analysis — moved to its own doc:
+**`edge_baseline.md`**. Code, deployment recipe, and quirks are in `inference_edge/README.md`.
 
 ---
 
@@ -910,6 +834,12 @@ filled.
 
 ### Deferred / optional
 
+- **`--neon` normalize — recover more of the NEON headroom.** The kernel reaches only ~3.3 % of the
+  single-core NEON peak (§2): not memory-bound (it moves ~1 MiB/patch, 8× under the STREAM bound), but an
+  **unrolled serial dependency chain** (an 8-deep Horner `log_ps` evaluation) that the in-order A53 cannot
+  hide — it has one dependency chain in flight, not the ~10+ needed to fill the FP pipeline. Manually
+  interleaving 2–4 independent `log_ps` evaluations per loop iteration would plausibly recover a large
+  fraction of the gap. Byte-transparent if done; unpursued (the 2.42× over scalar is already the shipped win).
 - **N4 — INT8 `g_s` output cap** at 2100.1 (clips the brightest ~0.7 % of pixels). Metric-invisible;
   lives as a one-line **limitation** in `main.tex` §Discussion, not a deepening study.
 - **On-ground SHyp `.ddc` decoder** (optional, decoupled). Reproduce the board INT8 `h_s` on host so

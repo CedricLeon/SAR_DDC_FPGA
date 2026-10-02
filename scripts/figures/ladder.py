@@ -73,7 +73,7 @@ def _bands(ax, pos, ytop, *, log=False):
             ha="center",
             va="top",
             fontsize=6.5,
-            color="#808080",
+            color="black",
         )
 
 
@@ -199,7 +199,7 @@ def do_throughput(absolute: bool = False):
         facecolor="white",
         edgecolor="#cccccc",
         framealpha=1.0,
-        fontsize=7.0,
+        fontsize=5.0,
         loc="upper left",
         handlelength=1.0,
         handletextpad=0.4,
@@ -259,7 +259,7 @@ def do_energy(absolute: bool = False):
         facecolor="white",
         edgecolor="#cccccc",
         framealpha=1.0,
-        fontsize=7.0,
+        fontsize=5.0,
         loc="upper center",
         bbox_to_anchor=(0.5, -0.11),  # its own box, one row, just below the x labels
         ncol=len(ARCHS),

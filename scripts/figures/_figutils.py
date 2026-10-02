@@ -14,9 +14,9 @@ agree on:
 * **names** — results-tree dir names (``FP SHyp ResFP ResSHyp``) → paper display
   names (``FP SH ResFP ResSH``).
 * **rung labels** — the cumulative optimization ladder r0-r7
-  (``docs/DATE27_paper_plan.md`` §4.0). Paper-level names only; the CLI flags they
+  (``docs/onboard_pipeline.md`` §10). Paper-level names only; the CLI flags they
   map to are fixed and live in ``LADDER_STEMS``.
-* **knee lanes** — per-arch fan-out operating point (§4.0 gate review, 2026-09-01).
+* **knee lanes** — per-arch fan-out operating point (``docs/onboard_pipeline.md`` §5, §10).
 * **loaders** — one helper per ``results/date27/`` subdir, resolving the
   flag-encoded filenames.
 * **occupancy attribution** — re-exported from ``fanout_occupancy`` (moved into
@@ -99,7 +99,7 @@ CPU_BOUND: list[str] = ["FP", "SHyp"]
 DPU_BOUND: list[str] = ["ResFP", "ResSHyp"]
 
 # ======================================================================================
-# Optimization ladder — cumulative rungs r0–r7 (docs/DATE27_paper_plan.md §4.0)
+# Optimization ladder — cumulative rungs r0–r7 (docs/onboard_pipeline.md §10)
 # ======================================================================================
 RUNGS: list[int] = list(range(8))
 

@@ -44,6 +44,8 @@ Read only what's relevant to the task at hand.
 | Benchmark: ZCU102 hardware, methodology, power, results, future work + journal | `docs/FPGA_benchmark.md` |
 | GPU/CPU host benchmark + cross-platform (CPU/GPU/FPGA) comparison & unified runner | `docs/GPU_benchmark.md` |
 | Onboard streaming pipeline (SLC→`.ddc`): design + measurements — fan-out core-scaling, symmetrization/overlap studies, full-scene throughput/energy/deadline results | `docs/onboard_pipeline.md` ← **systems paper** |
+| CPU rANS entropy coder — internals, per-stage profiling (lookup-bound diagnosis), the `--entropy` optimization + unimplemented axes | `docs/entropy_coding.md` |
+| Jetson AGX Orin embedded-GPU cross-platform baseline — batch × precision sweep, quality, "indicative numbers" caveat | `docs/edge_baseline.md` |
 | Analysis notebooks: purpose, data flow, shared modules (`_plotkit`, `_benchmark_loader`) | `docs/Notebooks.md` |
 | Vitis AI tools (xdputil static info, vaitrace DPU profiling, Vitis Analyzer) — capabilities + jargon-free glossary | `docs/AMD_Vitis_AI.md` |
 
