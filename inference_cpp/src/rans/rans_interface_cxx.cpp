@@ -211,6 +211,101 @@ std::vector<uint8_t> BufferedRansEncoderCxx::flush() {
 }
 
 // ---------------------------------------------------------------------------
+// BufferedRansEncoderCxx::encode_with_indexes_legacy — pre-4ddbcc8 baseline,
+// restored verbatim from commit 324744f (4ddbcc8^): per-symbol CDF pointer-chase,
+// no precomputed reciprocal table. _syms_legacy stores the raw (start, range)
+// directly, consumed by flush_legacy()'s divide-based Rans64EncPut.
+// ---------------------------------------------------------------------------
+void BufferedRansEncoderCxx::encode_with_indexes_legacy(
+    const std::vector<int32_t>& symbols,
+    const std::vector<int32_t>& indexes,
+    const std::vector<std::vector<int32_t>>& cdfs,
+    const std::vector<int32_t>& cdfs_sizes,
+    const std::vector<int32_t>& offsets)
+{
+    assert(cdfs.size() == cdfs_sizes.size());
+
+    DDC_RPROF_CUR(::ddc::rprof::ST_LOOKUP);  // forward CDF-lookup pass (builds _syms_legacy)
+
+    for (size_t i = 0; i < symbols.size(); ++i) {
+        const int32_t cdf_idx = indexes[i];
+        assert(cdf_idx >= 0 && cdf_idx < static_cast<int32_t>(cdfs.size()));
+
+        const auto& cdf = cdfs[cdf_idx];
+        const int32_t max_value = cdfs_sizes[cdf_idx] - 2;
+        assert(max_value >= 0);
+        assert((max_value + 1) < static_cast<int32_t>(cdf.size()));
+
+        int32_t value = symbols[i] - offsets[cdf_idx];
+
+        uint32_t raw_val = 0;
+        if (value < 0) {
+            raw_val = static_cast<uint32_t>(-2 * value - 1);
+            value   = max_value;
+        } else if (value >= max_value) {
+            raw_val = static_cast<uint32_t>(2 * (value - max_value));
+            value   = max_value;
+        }
+
+        assert(value >= 0 && value < cdfs_sizes[cdf_idx] - 1);
+        _syms_legacy.push_back({static_cast<uint16_t>(cdf[value]),
+                                static_cast<uint16_t>(cdf[value + 1] - cdf[value]),
+                                false});
+
+        if (value == max_value) {
+            int32_t n_bypass = 0;
+            while ((raw_val >> (n_bypass * bypass_precision)) != 0) ++n_bypass;
+
+            int32_t val = n_bypass;
+            while (val >= static_cast<int32_t>(max_bypass_val)) {
+                _syms_legacy.push_back({max_bypass_val, max_bypass_val + 1u, true});
+                val -= max_bypass_val;
+            }
+            _syms_legacy.push_back({static_cast<uint16_t>(val),
+                                    static_cast<uint16_t>(val + 1), true});
+
+            for (int32_t j = 0; j < n_bypass; ++j) {
+                const int32_t bv = (raw_val >> (j * bypass_precision)) & max_bypass_val;
+                _syms_legacy.push_back({static_cast<uint16_t>(bv),
+                                        static_cast<uint16_t>(bv + 1), true});
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BufferedRansEncoderCxx::flush_legacy — pre-4ddbcc8 baseline: divide-based
+// Rans64EncPut per symbol (restored verbatim from 324744f). Output is
+// byte-identical to flush()'s divide-free Rans64EncPutSymbol path.
+// ---------------------------------------------------------------------------
+std::vector<uint8_t> BufferedRansEncoderCxx::flush_legacy() {
+    DDC_RPROF_CUR(::ddc::rprof::ST_FLUSH);  // reverse rANS renorm loop + byte copy
+
+    Rans64State rans;
+    Rans64EncInit(&rans);
+
+    std::vector<uint32_t> output(_syms_legacy.size(), 0xCCCCCCCCu);
+    uint32_t* ptr = output.data() + output.size();
+
+    while (!_syms_legacy.empty()) {
+        const RansSymbolLegacy sym = _syms_legacy.back();
+        if (!sym.bypass) {
+            Rans64EncPut(&rans, &ptr, sym.start, sym.range, precision);
+        } else {
+            Rans64EncPutBits(&rans, &ptr, sym.start, bypass_precision);
+        }
+        _syms_legacy.pop_back();
+    }
+
+    Rans64EncFlush(&rans, &ptr);
+
+    const size_t n32 = static_cast<size_t>(
+        std::distance(ptr, output.data() + output.size()));
+    const uint8_t* byte_ptr = reinterpret_cast<const uint8_t*>(ptr);
+    return std::vector<uint8_t>(byte_ptr, byte_ptr + n32 * sizeof(uint32_t));
+}
+
+// ---------------------------------------------------------------------------
 // RansEncoderCxx::encode_with_indexes — fast path
 // ---------------------------------------------------------------------------
 std::vector<uint8_t> RansEncoderCxx::encode_with_indexes(
@@ -240,6 +335,21 @@ std::vector<uint8_t> RansEncoderCxx::encode_with_indexes(
     BufferedRansEncoderCxx enc;
     enc.encode_with_indexes(symbols, indexes, cdfs, cdfs_sizes, offsets);
     return enc.flush();
+}
+
+// ---------------------------------------------------------------------------
+// RansEncoderCxx::encode_with_indexes_legacy — pre-4ddbcc8 baseline (stateless)
+// ---------------------------------------------------------------------------
+std::vector<uint8_t> RansEncoderCxx::encode_with_indexes_legacy(
+    const std::vector<int32_t>& symbols,
+    const std::vector<int32_t>& indexes,
+    const std::vector<std::vector<int32_t>>& cdfs,
+    const std::vector<int32_t>& cdfs_sizes,
+    const std::vector<int32_t>& offsets)
+{
+    BufferedRansEncoderCxx enc;
+    enc.encode_with_indexes_legacy(symbols, indexes, cdfs, cdfs_sizes, offsets);
+    return enc.flush_legacy();
 }
 
 // ---------------------------------------------------------------------------

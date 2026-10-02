@@ -1,0 +1,273 @@
+{
+  "model_name": "SHyp-relu_s0_L20_pt",
+  "label": "p0_t20_fo_pf_neon_ent_warm_r16",
+  "schedule": "p0",
+  "s1": false,
+  "fanout": true,
+  "lane_major": false,
+  "threads": 20,
+  "lanes": [
+    {
+      "lane": 0,
+      "patches": 49,
+      "ga_ms_patch": 46.74,
+      "ga_ms_call": 23.37,
+      "ha_ms_patch": 38.514,
+      "hs_ms_patch": 20.174,
+      "norm_ms_patch": 6.51,
+      "entropy_ms_patch": 15.32
+    },
+    {
+      "lane": 1,
+      "patches": 47,
+      "ga_ms_patch": 53.59,
+      "ga_ms_call": 26.8,
+      "ha_ms_patch": 18.107,
+      "hs_ms_patch": 37.733,
+      "norm_ms_patch": 8.0,
+      "entropy_ms_patch": 16.29
+    },
+    {
+      "lane": 2,
+      "patches": 41,
+      "ga_ms_patch": 86.5,
+      "ga_ms_call": 43.25,
+      "ha_ms_patch": 22.186,
+      "hs_ms_patch": 21.727,
+      "norm_ms_patch": 6.6,
+      "entropy_ms_patch": 15.48
+    },
+    {
+      "lane": 3,
+      "patches": 50,
+      "ga_ms_patch": 42.2,
+      "ga_ms_call": 21.1,
+      "ha_ms_patch": 39.892,
+      "hs_ms_patch": 21.931,
+      "norm_ms_patch": 5.86,
+      "entropy_ms_patch": 15.55
+    },
+    {
+      "lane": 4,
+      "patches": 47,
+      "ga_ms_patch": 48.74,
+      "ga_ms_call": 24.37,
+      "ha_ms_patch": 15.633,
+      "hs_ms_patch": 43.979,
+      "norm_ms_patch": 6.43,
+      "entropy_ms_patch": 16.44
+    },
+    {
+      "lane": 5,
+      "patches": 41,
+      "ga_ms_patch": 84.17,
+      "ga_ms_call": 42.09,
+      "ha_ms_patch": 25.861,
+      "hs_ms_patch": 16.27,
+      "norm_ms_patch": 7.1,
+      "entropy_ms_patch": 17.34
+    },
+    {
+      "lane": 6,
+      "patches": 49,
+      "ga_ms_patch": 43.98,
+      "ga_ms_call": 21.99,
+      "ha_ms_patch": 36.248,
+      "hs_ms_patch": 22.853,
+      "norm_ms_patch": 6.03,
+      "entropy_ms_patch": 17.59
+    },
+    {
+      "lane": 7,
+      "patches": 49,
+      "ga_ms_patch": 46.87,
+      "ga_ms_call": 23.44,
+      "ha_ms_patch": 15.974,
+      "hs_ms_patch": 43.493,
+      "norm_ms_patch": 5.08,
+      "entropy_ms_patch": 16.51
+    },
+    {
+      "lane": 8,
+      "patches": 46,
+      "ga_ms_patch": 72.19,
+      "ga_ms_call": 36.1,
+      "ha_ms_patch": 22.446,
+      "hs_ms_patch": 16.785,
+      "norm_ms_patch": 7.67,
+      "entropy_ms_patch": 15.68
+    },
+    {
+      "lane": 9,
+      "patches": 46,
+      "ga_ms_patch": 45.86,
+      "ga_ms_call": 22.93,
+      "ha_ms_patch": 43.766,
+      "hs_ms_patch": 21.305,
+      "norm_ms_patch": 7.56,
+      "entropy_ms_patch": 15.85
+    },
+    {
+      "lane": 10,
+      "patches": 47,
+      "ga_ms_patch": 48.68,
+      "ga_ms_call": 24.34,
+      "ha_ms_patch": 21.302,
+      "hs_ms_patch": 40.534,
+      "norm_ms_patch": 6.69,
+      "entropy_ms_patch": 15.64
+    },
+    {
+      "lane": 11,
+      "patches": 44,
+      "ga_ms_patch": 78.31,
+      "ga_ms_call": 39.15,
+      "ha_ms_patch": 20.144,
+      "hs_ms_patch": 17.526,
+      "norm_ms_patch": 7.44,
+      "entropy_ms_patch": 18.34
+    },
+    {
+      "lane": 12,
+      "patches": 51,
+      "ga_ms_patch": 44.86,
+      "ga_ms_call": 22.43,
+      "ha_ms_patch": 34.944,
+      "hs_ms_patch": 21.285,
+      "norm_ms_patch": 5.61,
+      "entropy_ms_patch": 15.61
+    },
+    {
+      "lane": 13,
+      "patches": 46,
+      "ga_ms_patch": 55.35,
+      "ga_ms_call": 27.68,
+      "ha_ms_patch": 19.108,
+      "hs_ms_patch": 37.034,
+      "norm_ms_patch": 6.78,
+      "entropy_ms_patch": 16.74
+    },
+    {
+      "lane": 14,
+      "patches": 41,
+      "ga_ms_patch": 89.18,
+      "ga_ms_call": 44.59,
+      "ha_ms_patch": 22.386,
+      "hs_ms_patch": 18.118,
+      "norm_ms_patch": 7.65,
+      "entropy_ms_patch": 15.74
+    },
+    {
+      "lane": 15,
+      "patches": 49,
+      "ga_ms_patch": 47.81,
+      "ga_ms_call": 23.91,
+      "ha_ms_patch": 36.657,
+      "hs_ms_patch": 20.984,
+      "norm_ms_patch": 6.7,
+      "entropy_ms_patch": 15.31
+    },
+    {
+      "lane": 16,
+      "patches": 47,
+      "ga_ms_patch": 53.71,
+      "ga_ms_call": 26.85,
+      "ha_ms_patch": 15.801,
+      "hs_ms_patch": 40.756,
+      "norm_ms_patch": 6.07,
+      "entropy_ms_patch": 15.96
+    },
+    {
+      "lane": 17,
+      "patches": 44,
+      "ga_ms_patch": 79.06,
+      "ga_ms_call": 39.53,
+      "ha_ms_patch": 21.2,
+      "hs_ms_patch": 17.248,
+      "norm_ms_patch": 5.73,
+      "entropy_ms_patch": 18.43
+    },
+    {
+      "lane": 18,
+      "patches": 47,
+      "ga_ms_patch": 44.77,
+      "ga_ms_call": 22.38,
+      "ha_ms_patch": 41.416,
+      "hs_ms_patch": 22.754,
+      "norm_ms_patch": 5.76,
+      "entropy_ms_patch": 17.35
+    },
+    {
+      "lane": 19,
+      "patches": 47,
+      "ga_ms_patch": 53.87,
+      "ga_ms_call": 26.93,
+      "ha_ms_patch": 16.225,
+      "hs_ms_patch": 39.354,
+      "norm_ms_patch": 7.05,
+      "entropy_ms_patch": 15.49
+    }
+  ],
+  "prefetch": true,
+  "neon": true,
+  "entropy": true,
+  "windowed": true,
+  "cold": false,
+  "tile": "data/full_scene_i16.npy",
+  "max_rows": 16,
+  "n_patches": 928,
+  "grid": [
+    16,
+    58
+  ],
+  "bpp": 0.1086,
+  "iters": 1,
+  "totals_s": [
+    7.4
+  ],
+  "median_total_s": 7.4,
+  "median_patch_s": 125.84,
+  "scene_bytes": 1932736344,
+  "slc_mb_s": 261.180587027027,
+  "read_ms": 1625.9,
+  "avg_power_w": null,
+  "energy_j": null,
+  "j_per_patch": null,
+  "power_groups": {},
+  "overlap": 2,
+  "provenance": {
+    "git_sha": "3a198c3",
+    "git_dirty": true,
+    "run_utc": "2026-08-31T20:33:26+00:00"
+  },
+  "thermal": {
+    "baseline": {
+      "die_c": 60.5,
+      "ps_c": 58.6,
+      "pl_c": 60.5,
+      "a53_mhz": 1199,
+      "a53_throttled": false
+    },
+    "cooldowns": [
+      {
+        "wait_s": 10.6,
+        "target_c": 58.0,
+        "start_die_c": 61.1,
+        "end_die_c": 57.3,
+        "capped": false
+      }
+    ],
+    "post_iter": [
+      {
+        "die_c": 59.4,
+        "ps_c": 58.7,
+        "pl_c": 59.4,
+        "a53_mhz": 1199,
+        "a53_throttled": false
+      }
+    ],
+    "max_die_c": 59.4,
+    "min_a53_mhz": 1199,
+    "throttled": false
+  }
+}

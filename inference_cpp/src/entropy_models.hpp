@@ -45,8 +45,13 @@ public:
     // Compress one batch item of latent z.
     // z: flat float32 buffer (H*W*C), layout HWC.
     // H, W: spatial dimensions.
+    // use_entropy_opt: true (default) = flattened-CDF + reciprocal rANS coder (4ddbcc8);
+    //   false = pre-optimization CDF-lookup + divide baseline. Picked once per call, never
+    //   inside the per-symbol loop — driven by BenchPipeline::set_entropy_opt() /
+    //   stream_pipeline's --entropy flag.
     // Returns one bitstring per batch item.
-    std::vector<uint8_t> compress(const float* z, int H, int W) const;
+    std::vector<uint8_t> compress(const float* z, int H, int W,
+                                  bool use_entropy_opt = true) const;
 
     // Decompress one bitstring back to latent z (H, W, C).
     // Output: flat float32 vector, length H*W*C, layout HWC.
@@ -80,10 +85,11 @@ public:
     void load_params(const std::filesystem::path& params_dir);
 
     // Compress y (H*W*C float, HWC) given scale estimates (H*W*C float, HWC).
-    // means may be nullptr (no mean shift).
+    // means may be nullptr (no mean shift). use_entropy_opt: see EntropyBottleneck::compress.
     std::vector<uint8_t> compress(const float* y, const float* scales,
                                   const float* means,   // may be nullptr
-                                  int H, int W, int C) const;
+                                  int H, int W, int C,
+                                  bool use_entropy_opt = true) const;
 
     // Decompress one bitstring.
     // scales, means: (H*W*C) — same as compress.

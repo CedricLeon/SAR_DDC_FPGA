@@ -1,0 +1,102 @@
+{
+  "model_name": "ResSHyp-relu_s0_L20_pt",
+  "label": "p0_t2_fo_pf_neon_ent_warm",
+  "schedule": "p0",
+  "s1": false,
+  "fanout": true,
+  "lane_major": false,
+  "threads": 2,
+  "lanes": [
+    {
+      "lane": 0,
+      "patches": 3770,
+      "ga_ms_patch": 73.42,
+      "ga_ms_call": 36.71,
+      "ha_ms_patch": 2.621,
+      "hs_ms_patch": 1.006,
+      "norm_ms_patch": 3.74,
+      "entropy_ms_patch": 10.15
+    },
+    {
+      "lane": 1,
+      "patches": 3770,
+      "ga_ms_patch": 73.61,
+      "ga_ms_call": 36.8,
+      "ha_ms_patch": 1.25,
+      "hs_ms_patch": 2.107,
+      "norm_ms_patch": 3.73,
+      "entropy_ms_patch": 10.22
+    }
+  ],
+  "prefetch": true,
+  "neon": true,
+  "entropy": true,
+  "windowed": true,
+  "cold": false,
+  "tile": "data/full_scene_i16.npy",
+  "max_rows": -1,
+  "n_patches": 7540,
+  "grid": [
+    130,
+    58
+  ],
+  "bpp": 0.133,
+  "iters": 1,
+  "totals_s": [
+    345.4
+  ],
+  "median_total_s": 345.4,
+  "median_patch_s": 21.83,
+  "scene_bytes": 1932736344,
+  "slc_mb_s": 5.595646624203821,
+  "read_ms": 5181.1,
+  "avg_power_w": 15.58,
+  "energy_j": 5374.8,
+  "j_per_patch": 0.7128,
+  "power_groups": {
+    "DPU_fabric": 12.952,
+    "FMC": 0.0,
+    "MGT": 0.112,
+    "MPSoC": 15.582,
+    "PL": 13.352,
+    "PS": 2.229,
+    "PS_compute": 1.815,
+    "peripherals": 2.458
+  },
+  "overlap": 2,
+  "provenance": {
+    "git_sha": "3a198c3",
+    "git_dirty": true,
+    "run_utc": "2026-08-31T22:12:34+00:00"
+  },
+  "thermal": {
+    "baseline": {
+      "die_c": 55.4,
+      "ps_c": 55.4,
+      "pl_c": 55.1,
+      "a53_mhz": 1199,
+      "a53_throttled": false
+    },
+    "cooldowns": [
+      {
+        "wait_s": 0.2,
+        "target_c": 58.0,
+        "start_die_c": 56.3,
+        "end_die_c": 56.3,
+        "capped": false
+      }
+    ],
+    "post_iter": [
+      {
+        "die_c": 63.7,
+        "ps_c": 63.5,
+        "pl_c": 63.7,
+        "a53_mhz": 1199,
+        "a53_throttled": false
+      }
+    ],
+    "max_die_c": 63.7,
+    "min_a53_mhz": 1199,
+    "throttled": false
+  }
+}

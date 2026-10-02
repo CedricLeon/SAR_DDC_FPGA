@@ -14,6 +14,11 @@ Results:
     fpga  → results/benchmark_hardware/<model>/<config>_<scenario>.json             (benchmark_sweep.py, SSH)
 Both share the aligned schema; the unified loader (notebooks/_benchmark_loader.py) reads both.
 
+TGRS-era tool. `results/benchmark_hardware/` was archived to `/mnt/vitisAI/DDC_results_archive/2026-08-31/`
+after the DATE'27 campaign; the FPGA backend still re-populates it if run, but DATE'27's cross-platform
+story uses `results/date27/` (FPGA) + `results/benchmark_jetson/` (edge). Kept for TGRS-revision
+reproducibility — the `--no-fpga` host path is unaffected.
+
 Extensible to new hardware: a backend is a callable registered in BACKENDS. To add e.g. a Jetson
 edge GPU, write a backend that runs its own benchmark (locally or over SSH) emitting the aligned
 schema into results/benchmark_unified/, register it, and add a `--no-jetson` toggle.
@@ -87,6 +92,13 @@ def backend_fpga(ctx: dict, args: argparse.Namespace) -> bool:
     Re-runs the board sweep; relies on the ZCU102 being reachable. Skip with --no-fpga to reuse the
     FPGA results already in results/benchmark_hardware/.
     """
+    if not HARDWARE_DIR.exists():
+        print(
+            f"[unified] NOTE: {HARDWARE_DIR.relative_to(ROOT)} does not exist — it was archived to "
+            "/mnt/vitisAI/DDC_results_archive/2026-08-31/ after the DATE'27 campaign. This backend "
+            "will re-create it (TGRS-era schema). For DATE'27 numbers use results/date27/. "
+            "Pass --no-fpga to run host-only."
+        )
     cmd = [
         sys.executable,
         BENCHMARK_SWEEP,

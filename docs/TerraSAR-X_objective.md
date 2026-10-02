@@ -152,11 +152,12 @@ Space-segment / ground-segment:
 | quantity | value | source |
 | --- | --- | --- |
 | **X-band downlink** | **270 Mb/s net** (300 Mb/s gross channel) | net: [Pitz p.617]; gross: [eoP], [W&B] |
-| **SSMM** (solid-state mass memory = the on-board recorder) | **384 Gbit BOL / 256 Gbit EOL** | [Pitz p.618]; EOL also [eoP] |
-| **Orbit period** | **~94.9 min** | two independent derivations, below |
-| Ground contact frequency | ~1 contact per orbit | [eoP] — *weak, pin before citing* |
-| Acquisition constraint | **≤ 180 s monostatic per orbit** (physical ceiling set by the power budget), now ~¼ of that, battery ageing | via colleague [Fritz] |
-| Ground contact window | ~5–10 min; Neustrelitz ~90 GB/day | colleague — *to confirm* |
+| **SSMM** (solid-state mass memory = the on-board recorder) | **384 Gbit BOL / 256 Gbit EOL** | [Pitz p.618]; EOL also [eoP] ([eoP] says 320 Gbit BOL — immaterial, we size on EOL 32 GB) |
+| **Orbit period** | **~94.9 min** | two independent derivations, below — **solid** |
+| Ground contact frequency | ~1 contact per orbit | [eoP] — ESTIMATE: contacts are mission-planned and alternate TSX/TDX, no fixed cadence |
+| Acquisition constraint | **≤ 180 s monostatic per orbit** (power-budget ceiling), now ~¼ of that, battery ageing | [Pitz p.617]: "170 s/orbit in average, with 10% margin" (worst-case EOL power budget, solar-string failure) — **solid**; 180 s falls inside the stated margin (170×1.10=187 s). ⚠ [eoP]'s "< 180 s" is a roll-slew time, *not* an imaging budget — do not cite it as support. |
+| Ground contact window | ~5–10 min; Neustrelitz ~90 GB/day | colleague — 5–10 min consistent with LEO pass geometry + [eoP] daily link totals; 90 GB/day plausible but uncited → ESTIMATE |
+| Stripmap / Spotlight duty cycle | **18 % / 20 %** (on transmit) | [eoP] spec table — *transmit* duty within a take (PRF-level), not the orbit imaging fraction |
 
 > **Orbit period — ~94.9 min, cross-checked two ways.** (i) Repeat-cycle: 11 d × 1440 min ÷ 167 orbits
 > = 94.85 min — *loose*, since a repeat ground track closes over 11 **nodal** days, not 11 solar days.
@@ -284,13 +285,13 @@ measured single-ZCU102 for both archs (FP, ResSHyp) on a **warm** basis (compute
 seed s0, λ=20 (throughput is λ-independent).
 We state **both models explicitly**, as these numbers evolve with the design (see §5/§10):
 
-- **FP** (factorized-prior, CPU-bound; `s0, λ=20, fan-out 64L`): **51.1 MB/s warm** (22.0 cold), ~202× compression
-- **ResSHyp** (residual scale-hyperprior, DPU-bound; `s0, λ=20, fan-out 24L`): **9.9 MB/s** (SD read fully hidden → warm ≈ cold), ~237× compression
+- **FP** (factorized-prior, CPU-bound; `s0, λ=20, knee 12 L`): **52.4 MB/s warm** (23.5 cold), ~202× compression
+- **ResSHyp** (residual scale-hyperprior, DPU-bound; `s0, λ=20, knee 15 L`): **9.8 MB/s** (SD read fully hidden → warm ≈ cold), ~237× compression
 
-- **(a) Real-time** — compress as fast as acquired (**needs 358 MB/s**): FP → **7.0× short warm**
-  (16.3× cold); ResSHyp → **36× short**.
+- **(a) Real-time** — compress as fast as acquired (**needs 358 MB/s**): FP → **6.9× short warm**
+  (15.2× cold); ResSHyp → **37× short**.
 - **(b) Before next contact** — finish the 64.5 GB take before the next pass ~92 min away (**needs
-  11.7 MB/s**): FP → **met, 4.4× headroom warm** (1.9× cold — met on every basis) ✅; ResSHyp →
+  11.7 MB/s**): FP → **met, 4.5× headroom warm** (2.0× cold — met on every basis) ✅; ResSHyp →
   **1.2× short**.
 - **(c) Downlink-fit** — compressed output must fit the 33.75 MB/s net link: FP → **1.8 MB/s, fits
   19×** ✅; ResSHyp → **1.5 MB/s, fits 22×** ✅ (set by compression ratio, not throughput).
@@ -319,16 +320,16 @@ Platform constants: downlink **270 Mb/s net / 300 gross**; SSMM **384 Gbit BOL /
 ground swath **30 km**; SLC **int16 4 B/px**.
 
 **Table B — current implementation vs. the worst-case objective** (single ZCU102, best schedule
-**fan-out** at each arch's roof — FP 64 lanes, ResSHyp 24; seed s0, λ=20; **warm** basis, **cold**
+**fan-out** at each arch's knee — FP 12 lanes, ResSHyp 15; seed s0, λ=20; **warm** basis, **cold**
 SD-testbed in parentheses; *evolves with the design*):
 
 | metric | FP (CPU-bound) | ResSHyp (DPU-bound) | requirement |
 | --- | --- | --- | --- |
-| SLC throughput | 51.1 (22.0 cold) MB/s | 9.9 MB/s (read hidden) | — |
+| SLC throughput | 52.4 (23.5 cold) MB/s | 9.8 MB/s (read hidden) | — |
 | compression ratio (λ=20) | ~202× | ~237× | — |
 | compressed worst-case take | 0.32 GB | 0.27 GB | ≤ contact budget |
-| (a) real-time | 7.0× short (16.3× cold) | 36× short | 358 MB/s |
-| (b) before-contact (92 min) | ✅ 4.4× headroom (1.9× cold) | 1.2× short | 11.7 MB/s |
+| (a) real-time | 6.9× short (15.2× cold) | 37× short | 358 MB/s |
+| (b) before-contact (92 min) | ✅ 4.5× headroom (2.0× cold) | 1.2× short | 11.7 MB/s |
 | (c) downlink-fit | ✅ fits 19× | ✅ fits 22× | ≤ 33.75 MB/s net |
 
 ---
@@ -340,8 +341,14 @@ SD-testbed in parentheses; *evolves with the design*):
 - **Worst-case = 45°** (not 60°): the incidence–PRF coupling (§3.3) makes 45°×3800 the honest peak;
   60° would add range samples but lose PRF.
 - **BAQ 8:4** assumed as the raw baseline; the operational per-scene setting is not pinned.
-- **Contact-window / duty-cycle figures** (180 s, ~90 GB/day, 5–10 min) are colleague-reported — to be
-  confirmed against a mission-operations source.
+- **Sourcing status of the two headline deadline inputs**:
+  - **64.5 GB worst-case orbit** = 358 MB/s (solid, §3.4) × **180 s take** ([Pitz p.617], solid — see
+    §2). Weak sanity bound: at 358 MB/s the 32 GB EOL SSMM fills in ~89 s, so takes much longer than
+    ~180 s couldn't be buffered uncompressed anyway.
+  - **Single-contact budget** = 33.75 MB/s (solid: net 270 Mb/s verbatim [Pitz p.617]; [eoP]'s
+    300 Mbit/s is the gross rate) × **5 min contact (ESTIMATE)**. ⚠ Units: 33.75 MB/s × 300 s =
+    **10.1 GB (decimal)** = 9.9 GiB — the deadline table's "9.9 GB" is really GiB; restate as
+    10.1 GB for consistency with the decimal 64.5 GB.
 
 ---
 
@@ -369,10 +376,14 @@ SD-testbed in parentheses; *evolves with the design*):
 
 ## 9. Mission context & colleague notes (to confirm)
 
-Background for the paper's framing, from a colleague — **not yet tied to a primary source**:
+Background for the paper's framing, from a colleague. Checked against the primary sources in
+`docs/references/` and the web — outcome and citations in the §2 table and §6: the 180 s take
+budget is now sourced ([Pitz p.617], see §2); the 90 GB/day figure remains an uncited ESTIMATE.
+The 5–10 min contact and the 270 Mb/s net downlink are supported.
 
 - **Acquisition & timing.** TSX had a ~180 s monostatic acquisition budget per satellite per orbit
-  (360 s for the TSX/TDX pair); battery ageing has since cut it to ~¼. What matters operationally is
+  ([Pitz p.617]: 170 s average with 10% margin, worst-case EOL power budget; 360 s for the TSX/TDX
+  pair); battery ageing has since cut it to ~¼. What matters operationally is
   finishing before the **next ground contact**, not the next orbit — contacts recur from a few orbits
   to a few minutes apart.
 - **Ground contacts.** Duration depends on the ground-station antenna and pass geometry: typically

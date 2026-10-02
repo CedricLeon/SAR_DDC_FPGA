@@ -3,7 +3,11 @@
 compressai_original.py
 docker_run.sh
 # FPGA-specific files
-results/
+# results/ is untracked bulk, EXCEPT results/date27/: the DATE'27 campaign is the
+# paper's canonical data (~31 MB, frozen, MANIFEST.md-provenanced) and is versioned
+# so the figures are reproducible from a clone.
+results/*
+!results/date27/
 context/
 # C++ inference build directories (build_local, build_aarch64, etc.)
 inference_cpp/build*/
@@ -165,3 +169,12 @@ dmypy.json
 
 # Aim logging
 .aim
+
+# DATE'27 campaign data — see `results/*` + `!results/date27/` near the top. That
+# negation lets git descend into the tree, but later generic rules above (`*.log`,
+# `*.zip`, `*.tar.gz`, …) re-exclude some campaign records (e.g. the P0.7
+# `cpu_probe/*_mpstat.log` samplers). Re-include everything under the dir so it
+# stays fully tracked and byte-exact for figure reproducibility.
+!results/date27/**
+# ...except the scratch dir for bare `stream_benchmark.py` runs (not canonical campaign data).
+results/date27/adhoc/

@@ -32,6 +32,7 @@ struct StreamOptions {
     int threads = 3;                 // worker count for --p0 (= DPU lanes when --fanout)
     bool prefetch = false;           // double-buffer: read row-block N+1 while compressing N (windowed)
     bool neon = false;               // NEON-vectorised normalize/denorm (else scalar libm)
+    bool entropy = false;            // rANS flattened-CDF + reciprocal coder (4ddbcc8); off = pre-opt CDF-lookup + divide baseline
     bool power = false;              // sample INA226/PMBus board power across the compress phase
     std::filesystem::path trace_out; // if set (--trace, --fanout only): dump per-lane stage timeline CSV
     bool verbose = false;
@@ -59,6 +60,13 @@ struct StreamResult {
     // per-bucket wall-clock totals (ms)
     double t_read_ms = 0, t_patchify_ms = 0, t_normalize_ms = 0, t_dpu_ms = 0,
            t_entropy_ms = 0, t_write_ms = 0, t_total_ms = 0;
+    // t_dpu_ms / t_entropy_ms split per BenchPipeline::stage_* call — sequential path only
+    // (stream_compress_tile); the two aggregates stay the sums, so downstream readers are unaffected.
+    // Names match benchmark_hardware's StageTimer labels (bench_configs.cpp) so a seq breakdown and
+    // an s0 one compare key-for-key. The p0/fan-out paths leave these at 0: their per-lane totals
+    // live in lane_perf.
+    double t_ga_ms = 0, t_ha_ms = 0, t_hs_ms = 0;
+    double t_eb_compress_ms = 0, t_eb_decompress_ms = 0, t_gc_compress_ms = 0;
     // power (only when --power and INA226 sensors present)
     bool power_ok = false;
     double avg_power_w = 0.0;                     // MPSoC group (PS+PL) mean over the compress phase

@@ -1,0 +1,90 @@
+15:13:25 [INFO ] XModelLoader: found 4 recognised subgraphs in meta.json
+15:13:25 [INFO ] [DPUSubgraphRunner] L0_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:25 [INFO ] [DPUSubgraphRunner] L1_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:25 [INFO ] [DPUSubgraphRunner] L2_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:25 [INFO ] [DPUSubgraphRunner] L3_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L4_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L5_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L6_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L7_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L8_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L9_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L10_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L11_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L12_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L13_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L14_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L15_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L16_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L17_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L18_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L19_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L20_g_a in=65536 out=32768 in_scale=64.000000 out_scale=0.125000
+15:13:26 [INFO ] [DPUSubgraphRunner] L0_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L1_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L2_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L3_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L4_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L5_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L6_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L7_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L8_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L9_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L10_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L11_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L12_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L13_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L14_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L15_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L16_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L17_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L18_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L19_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L20_h_a in=65536 out=1024 in_scale=8.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L0_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L1_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L2_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L3_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L4_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L5_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L6_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L7_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L8_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L9_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L10_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L11_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L12_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L13_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L14_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L15_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L16_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L17_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L18_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L19_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+15:13:26 [INFO ] [DPUSubgraphRunner] L20_h_s in=1024 out=65536 in_scale=16.000000 out_scale=0.062500
+stream_pipeline [p0+fanout]: 7540 patches (130 x 58) | bpp=0.1474 | 146.12 patch/s | total=51.6 s
+  [fanout/pinned] threads=21 ; read=15745.8 write=66.2 ms (compute stages overlapped)
+  [lane 0] patches=384 | g_a=57.49 ms/patch (28.75/call) h_a=18.937 h_s=18.795 norm=12.23 entropy=20.83 (ms/patch)
+  [lane 1] patches=376 | g_a=57.98 ms/patch (28.99/call) h_a=20.506 h_s=19.424 norm=12.07 entropy=20.64 (ms/patch)
+  [lane 2] patches=320 | g_a=69.54 ms/patch (34.77/call) h_a=29.748 h_s=23.298 norm=10.29 entropy=20.81 (ms/patch)
+  [lane 3] patches=385 | g_a=59.59 ms/patch (29.79/call) h_a=17.504 h_s=18.346 norm=11.38 entropy=21.34 (ms/patch)
+  [lane 4] patches=373 | g_a=59.30 ms/patch (29.65/call) h_a=20.673 h_s=18.800 norm=11.22 entropy=21.92 (ms/patch)
+  [lane 5] patches=321 | g_a=70.35 ms/patch (35.18/call) h_a=26.470 h_s=24.603 norm=11.37 entropy=21.20 (ms/patch)
+  [lane 6] patches=380 | g_a=58.69 ms/patch (29.34/call) h_a=18.543 h_s=18.967 norm=11.44 entropy=21.81 (ms/patch)
+  [lane 7] patches=375 | g_a=58.59 ms/patch (29.29/call) h_a=19.820 h_s=20.548 norm=11.35 entropy=21.19 (ms/patch)
+  [lane 8] patches=315 | g_a=72.94 ms/patch (36.47/call) h_a=28.684 h_s=23.519 norm=12.12 entropy=19.49 (ms/patch)
+  [lane 9] patches=391 | g_a=58.11 ms/patch (29.06/call) h_a=19.033 h_s=17.061 norm=11.03 entropy=20.56 (ms/patch)
+  [lane 10] patches=369 | g_a=61.23 ms/patch (30.62/call) h_a=20.685 h_s=18.237 norm=12.17 entropy=21.25 (ms/patch)
+  [lane 11] patches=321 | g_a=69.72 ms/patch (34.86/call) h_a=27.995 h_s=23.052 norm=12.67 entropy=20.20 (ms/patch)
+  [lane 12] patches=386 | g_a=58.25 ms/patch (29.13/call) h_a=18.799 h_s=17.128 norm=10.76 entropy=22.37 (ms/patch)
+  [lane 13] patches=366 | g_a=59.21 ms/patch (29.60/call) h_a=22.474 h_s=18.969 norm=12.11 entropy=21.57 (ms/patch)
+  [lane 14] patches=324 | g_a=68.25 ms/patch (34.13/call) h_a=26.483 h_s=24.105 norm=11.78 entropy=20.91 (ms/patch)
+  [lane 15] patches=378 | g_a=59.21 ms/patch (29.60/call) h_a=18.143 h_s=19.200 norm=11.48 entropy=22.16 (ms/patch)
+  [lane 16] patches=372 | g_a=60.84 ms/patch (30.42/call) h_a=20.638 h_s=17.976 norm=11.08 entropy=21.95 (ms/patch)
+  [lane 17] patches=323 | g_a=67.18 ms/patch (33.59/call) h_a=27.835 h_s=26.284 norm=11.48 entropy=20.19 (ms/patch)
+  [lane 18] patches=379 | g_a=58.24 ms/patch (29.12/call) h_a=20.127 h_s=17.148 norm=11.12 entropy=23.15 (ms/patch)
+  [lane 19] patches=377 | g_a=59.70 ms/patch (29.85/call) h_a=19.633 h_s=17.744 norm=11.46 entropy=21.48 (ms/patch)
+  [lane 20] patches=325 | g_a=70.34 ms/patch (35.17/call) h_a=26.372 h_s=20.336 norm=12.94 entropy=21.18 (ms/patch)
+  [prefetch] row-block N+1 read overlapped with compress of N
+  [power] 15.26 W (MPSoC) | 773.0 J | 0.1025 J/patch
+  [power-groups] DPU_fabric=11.965 FMC=0.000 MGT=0.112 MPSoC=15.265 PL=12.365 PS=2.900 PS_compute=2.280 peripherals=3.106

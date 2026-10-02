@@ -54,6 +54,38 @@ _LANE = re.compile(
 )
 # Per-rail-group mean W (PL/PS/DPU_fabric/PS_compute/MGT/MPSoC) — the DPU(PL) vs CPU(PS) energy split.
 _POWER_GROUPS = re.compile(r"\[power-groups\]\s*(.+)")
+# Per-stage wall-clock totals (ms), printed by the SEQUENTIAL schedule only: with --p0 the stages
+# run concurrently, so a per-stage total is no longer a partition of the wall clock and the binary
+# prints read/write alone. `dpu` is split per subgraph on the second line (h_* are 0 for FP/ResFP).
+_STAGES = re.compile(
+    r"timing\(ms\): read=([\d.]+) patchify=([\d.]+) normalize=([\d.]+) dpu=([\d.]+) "
+    r"entropy=([\d.]+) write=([\d.]+)"
+)
+_DPU_SPLIT = re.compile(r"dpu-split\(ms\): g_a=([\d.]+) h_a=([\d.]+) h_s=([\d.]+)")
+_ENT_SPLIT = re.compile(
+    r"entropy-split\(ms\): eb_compress=([\d.]+) eb_decompress=([\d.]+) gc_compress=([\d.]+)"
+)
+# Stage keys in pipeline order: one bucket per BenchPipeline::stage_* call, named as
+# benchmark_hardware's StageTimer labels so a seq breakdown compares key-for-key with an s0 one.
+# `dpu` (= g_a+h_a+h_s) and `entropy` (= eb_compress+eb_decompress+gc_compress) are kept alongside
+# as the aggregates older readers use — aggregation is the plotter's decision, not the measurement's.
+# Order is the true pipeline-temporal one (SHyp): the side-z coding physically sits between h_a and
+# h_s, exactly as bench_configs.cpp sequences it —
+#   normalize -> g_a -> h_a -> eb_compress -> eb_decompress -> h_s -> gc_compress
+# so a stacked bar drawn in this order is honest for both topologies (FP/ResFP zero the h_* and the
+# eb_decompress/gc_compress buckets, leaving eb_compress as their single, main-stream entropy stage).
+STAGE_KEYS = (
+    "read",
+    "patchify",
+    "normalize",
+    "g_a",
+    "h_a",
+    "eb_compress",
+    "eb_decompress",
+    "h_s",
+    "gc_compress",
+    "write",
+)
 
 
 def ssh_capture(remote_cmd: str) -> str:
@@ -112,6 +144,42 @@ def parse_run(stdout: str) -> dict:
         }
         for m in _LANE.findall(stdout)
     ]
+    st, sp, ep = _STAGES.search(stdout), _DPU_SPLIT.search(stdout), _ENT_SPLIT.search(stdout)
+    stages = None
+    if st and sp and ep:  # sequential schedule only — all three lines or none
+        read_ms, patchify, normalize, dpu, entropy, write = (float(v) for v in st.groups())
+        ga, ha, hs = (float(v) for v in sp.groups())
+        eb_c, eb_d, gc_c = (float(v) for v in ep.groups())
+        stages = {
+            "read": read_ms,
+            "patchify": patchify,
+            "normalize": normalize,
+            "g_a": ga,
+            "h_a": ha,
+            "eb_compress": eb_c,
+            "eb_decompress": eb_d,
+            "h_s": hs,
+            "gc_compress": gc_c,
+            "write": write,
+            # Derived from the parts, never parsed: the binary prints `dpu`/`entropy` on a
+            # different line at coarser precision, and two rounded sources for one quantity is how
+            # `entropy != eb+eb+gc` sneaks into a JSON. The printed aggregates are still checked
+            # below, so a genuine desync between the C++ sums and the parts is a hard error.
+            "dpu": ga + ha + hs,
+            "entropy": eb_c + eb_d + gc_c,
+            "total": float(total_s) * 1000.0,
+        }
+        for name, parsed, derived in (
+            ("dpu", dpu, stages["dpu"]),
+            ("entropy", entropy, stages["entropy"]),
+        ):
+            if (
+                abs(parsed - derived) > 0.5
+            ):  # print rounding is ~0.002 ms; 0.5 ms means a real desync
+                raise RuntimeError(
+                    f"stream_pipeline {name} aggregate ({parsed:.3f} ms) disagrees with the sum of "
+                    f"its stages ({derived:.3f} ms) — the C++ accumulators are out of sync"
+                )
     pg = _POWER_GROUPS.search(stdout)
     power_groups = {}
     if pg:
@@ -135,6 +203,7 @@ def parse_run(stdout: str) -> dict:
         "j_per_patch": float(pw.group(3)) if pw else None,
         "power_groups": power_groups,
         "lanes": lanes,
+        "stages_ms": stages,
     }
 
 
@@ -176,6 +245,28 @@ def _median_groups(runs: list) -> dict:
     return out
 
 
+def _median_stages(runs: list, n_patches: int):
+    """Per-stage wall-clock medians across the timed iterations, as ``(totals_ms, per_patch_ms)``.
+
+    ``(None, None)`` when the schedule printed no breakdown — ``--p0`` overlaps the stages, so a
+    per-stage total is not a partition of the wall clock there and only read/write are reported.
+
+    ``residual`` closes the bar: the run total minus the eight measured stages. It is the one-off
+    setup/teardown inside ``t_total`` that no stage covers (xmodel + entropy-table load, grid
+    construction, power-sampler start/stop). Recorded rather than hidden, so the breakdown always
+    sums to ``total`` exactly.
+    """
+    per_run = [r["stages_ms"] for r in runs if r.get("stages_ms")]
+    if not per_run:
+        return None, None
+    if n_patches <= 0:
+        raise RuntimeError(f"cannot derive per-patch stage means from n_patches={n_patches}")
+    keys = (*STAGE_KEYS, "dpu", "entropy", "total")
+    totals = {k: statistics.median(s[k] for s in per_run) for k in keys}
+    totals["residual"] = totals["total"] - sum(totals[k] for k in STAGE_KEYS)
+    return totals, {k: v / n_patches for k, v in totals.items()}
+
+
 def _git_provenance() -> dict:
     """Record which host source produced this run (the board binary is rebuilt from it)."""
 
@@ -214,11 +305,15 @@ def schedule_flags(args) -> list:
         flags.append("--prefetch")
     if args.neon:
         flags.append("--neon")
+    if args.entropy:
+        flags.append("--entropy")
     if args.power:
         flags.append("--power")
     flags += ["--overlap", str(args.overlap)]  # always forward: stream_pipeline now defaults to 2
     if args.max_rows >= 0:
         flags += ["--max-rows", str(args.max_rows)]
+    if args.trace:
+        flags += ["--trace", args.trace]
     return flags
 
 
@@ -246,6 +341,8 @@ def label(args, cold: bool) -> str:
         parts.append("pf")
     if args.neon:
         parts.append("neon")
+    if args.entropy:
+        parts.append("ent")
     if (
         args.overlap != CANONICAL_OVERLAP
     ):  # canonical overlap stays unsuffixed; flag deviations only
@@ -279,7 +376,19 @@ def parse_args():
     p.add_argument("--threads", type=int, default=4, help="worker count for --schedule p0")
     p.add_argument("--prefetch", action="store_true", help="double-buffer row-block reads")
     p.add_argument("--neon", action="store_true", help="NEON-vectorised normalize/denorm")
+    p.add_argument(
+        "--entropy",
+        action="store_true",
+        help="rANS flattened-CDF+reciprocal optimization (4ddbcc8); default off = "
+        "pre-optimization CDF-lookup+divide baseline (matches stream_pipeline's own default)",
+    )
     p.add_argument("--power", action="store_true", help="sample board power (INA226/PMBus)")
+    p.add_argument(
+        "--trace",
+        default="",
+        help="board-side path for the fan-out per-lane timeline CSV "
+        "(stream_pipeline --trace; requires --fanout)",
+    )
     p.add_argument(
         "--overlap",
         type=int,
@@ -393,6 +502,12 @@ def main():
     # Denominator = the unique scene payload (overlap-independent), NOT n_patches x patch_bytes,
     # which double-counts overlapped pixels and inflates MB/s as overlap grows.
     slc_mb_s = scene_bytes / med_total / 1e6 if med_total > 0 else 0.0
+    stage_totals, stage_per_patch = _median_stages(runs, n_patches)
+    if args.schedule == "seq" and stage_totals is None:
+        raise RuntimeError(
+            "sequential run printed no per-stage breakdown — stale stream_pipeline on the board? "
+            "(rebuild with --rebuild-cpp)"
+        )
 
     result = {
         "model_name": model_name,
@@ -407,6 +522,7 @@ def main():
         ),  # per-lane fan-out timing (median over iters; placement diagnosis)
         "prefetch": args.prefetch,
         "neon": args.neon,
+        "entropy": args.entropy,
         "windowed": not args.whole,
         "cold": cold,
         "tile": args.tile,
@@ -421,6 +537,12 @@ def main():
         "scene_bytes": scene_bytes,
         "slc_mb_s": slc_mb_s,
         "read_ms": _median_opt(r["read_ms"] for r in runs),
+        # Full sequential stage breakdown (None for --p0, whose stages overlap): wall-clock totals
+        # and per-patch means in ms, one bucket per stage_* call (STAGE_KEYS, temporal order) plus
+        # the `dpu` / `entropy` aggregates, `residual` (setup/teardown) and `total`. The STAGE_KEYS
+        # buckets + residual = total exactly; the two aggregates are derived, not extra time.
+        "stages_ms": stage_totals,
+        "stage_ms_per_patch": stage_per_patch,
         "avg_power_w": _median_opt(r["avg_power_w"] for r in runs),
         "energy_j": _median_opt(r["energy_j"] for r in runs),
         "j_per_patch": _median_opt(r["j_per_patch"] for r in runs),
@@ -444,7 +566,9 @@ def main():
     out = (
         Path(args.out)
         if args.out
-        else REPO_ROOT / "results" / "benchmark_stream" / model_name / f"{label(args, cold)}.json"
+        # canonical campaign runs pass --out explicitly (e.g. results/date27/lanes/<arch>/...);
+        # a bare invocation lands in an adhoc scratch dir, not the archived benchmark_stream/ tree.
+        else REPO_ROOT / "results" / "date27" / "adhoc" / model_name / f"{label(args, cold)}.json"
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2))
@@ -459,6 +583,12 @@ def main():
         f" median: {med_patch_s:.2f} patch/s | {slc_mb_s:.1f} MB/s SLC | "
         f"full-tile {med_total:.2f} s | bpp {runs[0]['bpp']:.4f}{pw}"
     )
+    if stage_per_patch:
+        print(
+            " stages (ms/patch): "
+            + "  ".join(f"{k}={stage_per_patch[k]:.3f}" for k in (*STAGE_KEYS, "residual"))
+            + f"  || total={stage_per_patch['total']:.3f}"
+        )
     rel = out.relative_to(REPO_ROOT) if out.is_relative_to(REPO_ROOT) else out
     print(f" -> {rel}")
 

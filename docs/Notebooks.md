@@ -13,7 +13,7 @@ W&B (cedric-leonard/SAR_DDC_FPGA)
     └─ fetch_wandb_runs.py ──> notebooks/SAR_DDC_FPGA_all_runs_WandB.csv   (GPU FP32 quality, one row/run)
 
 results/fpga/compiled_models/<model>/results/        (FPGA INT8 quality + reconstructions)
-results/benchmark_hardware/<model>/<config>_<scenario>.json   (FPGA latency/power, C++ benchmark_hardware)
+results/benchmark_hardware/<model>/<config>_<scenario>.json   (FPGA latency/power, C++ benchmark_hardware — archived 2026-08-31; DATE'27 board data in results/date27/)
 results/benchmark_unified/<model>/baseline_<scenario>_<platform>.json   (host CPU/GPU, benchmark_gpu.py)
 
         │ loaded via shared modules

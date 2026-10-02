@@ -18,6 +18,21 @@ no DPU-style subgraph/runner placement (there is no DPU here). One patch at a ti
 This is intentional: the goal is a clean baseline number, not a re-implementation of the FPGA's
 systems-engineering ladder on a different chip.
 
+### Optional throughput/precision knobs
+
+The default (`--batch-size 1 --precision fp32`, no `--fuse-reim`) is exactly the baseline above. Three
+opt-in knobs enable a throughput/precision sensitivity study on top of it, without changing that default:
+
+- `--batch-size N` — N patches per forward pass (GPU parallelism). Counts patches; real and imag stay
+  two separate `g_a` calls unless `--fuse-reim` folds them into one `[2N,…]` call (a separable extra).
+- `--precision {fp32,fp16,bf16}` — `torch.autocast` on the conv subgraphs only; the entropy coder stays
+  FP32. fp16/bf16 are quality-neutral (≈0 dB) and leave bpp unchanged.
+- `--warmup-rows N` — a discarded warmup pass that absorbs the one-time CC-8.7 JIT (see Known quirks).
+
+**These are compress/throughput levers only for hyperprior archs:** a batched (or cross-precision)
+hyperprior `.ddc` is *not decodable* — see "Decode must match the encode" below. So anything you decode
+or `verify` must use `--batch-size 1` at the matching precision. Full analysis → `docs/onboard_pipeline.md` §12.
+
 ## Why a separate package, not an extension of `benchmark_gpu.py`
 
 `scripts/evaluation/benchmark_gpu.py` predates several pipeline changes (dropped symmetrization,
@@ -87,9 +102,10 @@ still works. Then `pip install -e inference_edge/` inside the venv.
 
 ```bash
 ddc-edge compress --model-dir <path with manifest.json> --tile <tile.npy or .cos> --out out.ddc \
-    [--overlap 2] [--max-rows N] [--power] [--json results.json]
+    [--overlap 2] [--max-rows N] [--batch-size N] [--precision fp32|fp16|bf16] [--fuse-reim] \
+    [--warmup-rows N] [--power] [--json results.json]
 ddc-edge verify --model-dir <path with manifest.json> --ddc <compressed.ddc> --gt <merlin_gt.npy> \
-    [--sample 200] [--json verify.json]
+    [--sample 200] [--precision fp32|fp16|bf16] [--json verify.json]
 ```
 
 `verify` decodes a `.ddc` and scores it (PSNR/SSIM, `src/utils/metrics.py`, AMP_LIN_99 basis) against a
@@ -99,11 +115,11 @@ pre-computed GT stack (e.g. `data/cache/symstudy/*_full_merlin_gt.npy`, built fo
 needing to regenerate GT or remap indices for an overlapping grid. The `overlap=2` production run is a
 separate invocation from the one you verify.
 
-### Decode must run on the same GPU that compressed (hyperprior archs)
+### Decode must match the encode — same device, precision, and batch 1 (hyperprior archs)
 
 **`GaussianConditional`'s entropy decode needs every element's `scale` in the exact same
 `gc_scale_table` bucket it was encoded with — and `h_s`'s FP32 output is not bit-reproducible across
-GPU architectures.** A small numeric drift between two different GPUs is enough to push some elements
+GPU architectures, across `--precision`, or between a batched compress and the per-record decode.** A small numeric drift between two different GPUs is enough to push some elements
 across a bucket boundary, desyncing the entropy decode for those specific elements: not imprecise, but
 *wrong* (observed: a decoded value of 5,136,333 where O(1) is normal, propagating to `inf` after
 denormalization). Same mechanism `docs/onboard_pipeline.md`'s "on-ground SHyp decoder" note already

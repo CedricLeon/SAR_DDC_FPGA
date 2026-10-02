@@ -1,0 +1,37 @@
+DPU Summary:
+==========================================================================================================================================================
+DPU Id      | Bat | DPU SubGraph                                                    | WL     | SW_RT  | HW_RT  | Effic | LdWB  | LdFM   | StFM  | AvgBw   
+------------+-----+-----------------------------------------------------------------+--------+--------+--------+-------+-------+--------+-------+---------
+DPUCZDX8G_1 | 1   | ...alScaleHyperpriorDPUWrapper_Sequential_g_a__Conv2d_3__ret_33 | 39.755 | 36.282 | 33.554 | 96.4  | 3.520 | 10.766 | 7.531 | 650.205 
+DPUCZDX8G_1 | 1   | ...alScaleHyperpriorDPUWrapper_Sequential_h_a__Conv2d_0__ret_35 | 0.275  | 1.167  | 0.821  | 27.3  | 4.688 | 0.062  | ~0    | 5788.271
+DPUCZDX8G_1 | 1   | ...perpriorDPUWrapper_Sequential_h_s__ConvTranspose2d_0__ret_41 | 0.176  | 0.977  | 0.594  | 24.2  | 3.001 | 0.021  | 0.082 | 5226.862
+DPUCZDX8G_3 | 1   | ...alScaleHyperpriorDPUWrapper_Sequential_g_a__Conv2d_3__ret_33 | 39.755 | 36.840 | 34.092 | 94.9  | 3.520 | 10.766 | 7.531 | 639.939 
+DPUCZDX8G_3 | 1   | ...alScaleHyperpriorDPUWrapper_Sequential_h_a__Conv2d_0__ret_35 | 0.275  | 2.652  | 2.127  | 10.5  | 4.688 | 0.062  | ~0    | 2234.147
+DPUCZDX8G_3 | 1   | ...perpriorDPUWrapper_Sequential_h_s__ConvTranspose2d_0__ret_41 | 0.176  | 1.442  | 0.849  | 16.9  | 3.001 | 0.021  | 0.082 | 3655.605
+DPUCZDX8G_2 | 1   | ...alScaleHyperpriorDPUWrapper_Sequential_g_a__Conv2d_3__ret_33 | 39.755 | 36.342 | 33.612 | 96.3  | 3.520 | 10.766 | 7.531 | 649.084 
+DPUCZDX8G_2 | 1   | ...alScaleHyperpriorDPUWrapper_Sequential_h_a__Conv2d_0__ret_35 | 0.275  | 1.473  | 1.009  | 22.2  | 4.688 | 0.062  | ~0    | 4708.628
+DPUCZDX8G_2 | 1   | ...perpriorDPUWrapper_Sequential_h_s__ConvTranspose2d_0__ret_41 | 0.176  | 1.184  | 0.712  | 20.1  | 3.001 | 0.021  | 0.082 | 4357.306
+==========================================================================================================================================================
+
+Notes:
+"~0": Value is close to 0, Within range of (0, 0.001)
+Bat: Batch size of the DPU instance
+WL(Work Load): Computation workload (MAC indicates two operations), unit is GOP
+SW_RT(Software Run time): The execution time calculate by software in milliseconds, unit is ms
+HW_RT(Hareware Run time): The execution time from hareware operation in milliseconds, unit is ms
+Effic(Efficiency): The DPU actual performance divided by peak theoretical performance,unit is %
+Perf(Performance): The DPU performance in unit of GOP per second, unit is GOP/s
+LdFM(Load Size of Feature Map): External memory load size of feature map, unit is MB
+LdWB(Load Size of Weight and Bias): External memory load size of bias and weight, unit is MB
+StFM(Store Size of Feature Map): External memory store size of feature map, unit is MB
+AvgBw(Average bandwidth): External memory average bandwidth. unit is MB/s
+....
+
+
+CPU Functions(Not in Graph, e.g.: pre/post-processing, vai-runtime):
+===========================================================================
+Function                               | Device | Runs | AverageRunTime(ms)
+---------------------------------------+--------+------+-------------------
+vart::TensorBuffer::copy_tensor_buffer | CPU    | 7424 | 0.061             
+xir::XrtCu::run                        | CPU    | 3712 | 26.994            
+===========================================================================

@@ -1,0 +1,93 @@
+{
+  "model_name": "FP-relu_s0_L20_pt",
+  "label": "p0_t2_fo_pf_neon_ent_warm_r16",
+  "schedule": "p0",
+  "s1": false,
+  "fanout": true,
+  "lane_major": false,
+  "threads": 2,
+  "lanes": [
+    {
+      "lane": 0,
+      "patches": 464,
+      "ga_ms_patch": 10.73,
+      "ga_ms_call": 5.37,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 3.74,
+      "entropy_ms_patch": 4.87
+    },
+    {
+      "lane": 1,
+      "patches": 464,
+      "ga_ms_patch": 10.8,
+      "ga_ms_call": 5.4,
+      "ha_ms_patch": 0.0,
+      "hs_ms_patch": 0.0,
+      "norm_ms_patch": 3.73,
+      "entropy_ms_patch": 4.82
+    }
+  ],
+  "prefetch": true,
+  "neon": true,
+  "entropy": true,
+  "windowed": true,
+  "cold": false,
+  "tile": "data/full_scene_i16.npy",
+  "max_rows": 16,
+  "n_patches": 928,
+  "grid": [
+    16,
+    58
+  ],
+  "bpp": 0.1294,
+  "iters": 1,
+  "totals_s": [
+    9.6
+  ],
+  "median_total_s": 9.6,
+  "median_patch_s": 97.11,
+  "scene_bytes": 1932736344,
+  "slc_mb_s": 201.3267025,
+  "read_ms": 824.6,
+  "avg_power_w": null,
+  "energy_j": null,
+  "j_per_patch": null,
+  "power_groups": {},
+  "overlap": 2,
+  "provenance": {
+    "git_sha": "3a198c3",
+    "git_dirty": true,
+    "run_utc": "2026-08-31T19:34:59+00:00"
+  },
+  "thermal": {
+    "baseline": {
+      "die_c": 58.2,
+      "ps_c": 55.2,
+      "pl_c": 58.2,
+      "a53_mhz": 1199,
+      "a53_throttled": false
+    },
+    "cooldowns": [
+      {
+        "wait_s": 0.2,
+        "target_c": 58.0,
+        "start_die_c": 56.7,
+        "end_die_c": 56.7,
+        "capped": false
+      }
+    ],
+    "post_iter": [
+      {
+        "die_c": 58.2,
+        "ps_c": 57.5,
+        "pl_c": 58.2,
+        "a53_mhz": 1199,
+        "a53_throttled": false
+      }
+    ],
+    "max_die_c": 58.2,
+    "min_a53_mhz": 1199,
+    "throttled": false
+  }
+}

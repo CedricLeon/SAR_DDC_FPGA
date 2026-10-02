@@ -64,6 +64,10 @@ static void usage(const char* prog)
         << "  --output  <path>           JSON output path [default: benchmark_result.json]\n"
         << "  --power                    enable INA226 + PMBus power sampling\n"
         << "  --idle-baseline-s <N>      idle baseline window in seconds [default: 10]\n"
+        << "  --no-entropy-opt           disable the rANS flattened-CDF+reciprocal optimization\n"
+        << "                             (4ddbcc8); s0/s1 only. Default: optimization ON (matches\n"
+        << "                             stream_pipeline's default; pass this for a pre-optimization\n"
+        << "                             sequential baseline).\n"
         << "  --verbose                  enable verbose logging\n";
 }
 
@@ -83,6 +87,7 @@ int main(int argc, char** argv)
     int          idle_baseline_s  = 10;
     bool         power_flag       = false;
     bool         verbose          = false;
+    bool         entropy_off      = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -107,6 +112,7 @@ int main(int argc, char** argv)
         else if (arg == "--output")           output_str      = next();
         else if (arg == "--power")            power_flag      = true;
         else if (arg == "--idle-baseline-s")  idle_baseline_s = std::stoi(next());
+        else if (arg == "--no-entropy-opt")   entropy_off     = true;
         else if (arg == "--verbose")          verbose         = true;
         else if (arg == "--help" || arg == "-h") { usage(argv[0]); return 0; }
         else {
@@ -203,6 +209,7 @@ int main(int argc, char** argv)
             pipeline_ptr = std::make_unique<ddc::BenchPipeline>(xmodel_path, params_path);
             if (config_name == "s1")
                 pipeline_ptr->init_s1();
+            pipeline_ptr->set_entropy_opt(!entropy_off);
         }
 
         // Power sampler — idle baseline before, active window around benchmark
@@ -271,6 +278,7 @@ int main(int argc, char** argv)
         out["params"]           = params_str;
         out["dpu_cores"]        = dpu_cores;
         out["entropy_threads"]  = entropy_thds;
+        out["entropy_opt"]      = !entropy_off;
         out["warmup"]           = warmup;
         out["iters"]            = result.num_iters;
         out["subset_patches"]   = subset;

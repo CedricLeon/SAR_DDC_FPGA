@@ -135,6 +135,15 @@ public:
     void set_neon(bool on) { use_neon_ = on; }
     bool use_neon() const { return use_neon_; }
 
+    // Toggle the rANS entropy-coder optimization (4ddbcc8: flattened CDF + reciprocal,
+    // divide-free flush) used by stage_eb_compress / stage_gc_compress. Default ON, so
+    // callers that never touch this (benchmark_hardware, dump_latents) keep today's
+    // behaviour unchanged. stream_pipeline's --entropy flag is the only place this is
+    // turned OFF, to reach the pre-optimization (CDF-lookup + divide) baseline needed
+    // for the DATE'27 optimization-ladder rungs r0-r6.
+    void set_entropy_opt(bool on) { use_entropy_opt_ = on; }
+    bool use_entropy_opt() const { return use_entropy_opt_; }
+
     // Allocate a PatchState with all buffers pre-sized for this model's output
     // shapes and H×W input.  Call once per worker; reuse across iterations.
     PatchState make_patch_state(int H, int W) const;
@@ -212,6 +221,7 @@ private:
     bool has_gc_  = false;
     bool has_s1_  = false;
     bool use_neon_ = false;
+    bool use_entropy_opt_ = true;
 };
 
 } // namespace ddc

@@ -102,8 +102,8 @@ def score_arrays(recon: np.ndarray, gt: np.ndarray) -> dict:
     Reports full-tile MSE/PSNR/SSIM/EPD, plus PSNR/SSIM split into the **seam band** (±3px of the
     patch grid, where independent-patch seams live) and the **interior**. Overlap fixes seams,
     whose effect the full-tile mean dilutes ~21x, so the seam split is the sensitive number (§10).
-    MS-SSIM omitted at full-scene scale (torchmetrics OOMs). Takes ``gt`` as an array so batch
-    callers (rescore_overlap_tiles.py) load the 1.9 GB GT once.
+    MS-SSIM omitted at full-scene scale (torchmetrics OOMs). Takes ``gt`` as an array so a batch
+    caller can load the 1.9 GB GT once.
     """
     import math
 
